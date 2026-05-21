@@ -21,6 +21,8 @@ dist/
 MediaWaveTV.app/
 MediaWave2000.app/
 MediaWaveConverter.app/
+*.app.zip
+*.dmg
 
 # MediaWave runtime state, caches, and user library data
 app_settings.json
