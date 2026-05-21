@@ -1,0 +1,64 @@
+# macOS / editor noise
+.DS_Store
+*.swp
+*.swo
+
+# Python bytecode and local environments
+__pycache__/
+*.py[cod]
+.Python
+.venv/
+venv/
+env/
+*.cleanup-backup-*
+*~
+channelsurfer20001.py
+
+# Packaging and build outputs
+build/
+dist/
+*.egg-info/
+MediaWaveTV.app/
+MediaWaveConverter.app/
+
+# MediaWave runtime state, caches, and user library data
+app_settings.json
+catalog_cache.json
+library.json
+media_cache.json
+schedule_state.json
+resume_state.json
+tmdb_cache.json
+tmdb_config.json
+tmdb_overrides.json
+tmdb_review.json
+on_demand_catalog.json
+commercial_library_cache.json
+smart_break_cache.json
+spotify_lyrics_cache.json
+spotify_track_cache.json
+radiowave_metadata_cache.json
+youtube_playlist_cache.json
+catalog_validation.json
+vault_debug.log
+.mediawave_converter/
+thumbnails/
+metadata_artwork/
+youtube_video_cache/
+
+# Local media should never be committed
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.mp3
+*.m4a
+*.aac
+*.flac
+*.wav
+*.ogg
+*.opus
+*.wma
+
+# Keep the bundled UI sound asset tracked.
+!assets/channel_switch.wav
