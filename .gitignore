@@ -19,6 +19,7 @@ build/
 dist/
 *.egg-info/
 MediaWaveTV.app/
+MediaWave2000.app/
 MediaWaveConverter.app/
 
 # MediaWave runtime state, caches, and user library data
