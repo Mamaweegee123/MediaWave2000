@@ -821,6 +821,10 @@ def write_vault_debug_log(channel, message, fields=None):
         pass
 
 
+def bool_label(value):
+    return "On" if bool(value) else "Off"
+
+
 def metadata_cache_entry_is_current(entry, signature):
     return isinstance(entry, dict) and entry.get("signature") == signature
 
@@ -3273,7 +3277,21 @@ def draw_classic_cable_slot_box(painter, rect, theme, active=False, border_width
 
 
 def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, small_font, theme):
-    rect = QRect(0, 0, 344, 228)
+    settings_values = getattr(widget, "settings_values", {}) or {}
+    setting_rows = [
+        ("Skin", str(getattr(widget, "skin_name", "")), "value"),
+        ("Theme", str(getattr(widget, "theme_name", "")), "value"),
+        ("Display", str(getattr(widget, "profile_name", "")), "value"),
+        ("No Catalog TV", bool_label(settings_values.get("allow_empty_catalog_tv", False)), "toggle"),
+        ("Dummy Vault", bool_label(settings_values.get("allow_dummy_vault_catalog", False)), "toggle"),
+        ("Dev Menu", bool_label(settings_values.get("dev_menu_enabled", True)), "toggle"),
+        ("Close", "Close", "action"),
+    ]
+    row_height = 34
+    row_gap = 6
+    body_top = 42
+    rect_h = 66 + (len(setting_rows) * row_height) + ((len(setting_rows) - 1) * row_gap)
+    rect = QRect(0, 0, 430, rect_h)
     rect.moveCenter(panel.center())
     widget.draw_xp_panel(painter, rect, theme, radius=10, inset=2)
     title_bar = QRect(rect.left() + 4, rect.top() + 4, rect.width() - 8, 28)
@@ -3308,12 +3326,11 @@ def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, smal
         painter.setPen(theme["text"])
         painter.drawText(title_bar.adjusted(12, 0, -12, 0), Qt.AlignVCenter, f"{APP_NAME} Menu")
 
-    left_arrow_x = rect.left() + 138
-    value_x = rect.left() + 172
-    value_w = rect.width() - 182 - 34
-    row_tops = [42, 82, 122, 162]
-    labels = ["Skin", "Theme", "Display", "Close"]
-    focus_index = max(0, min(int(getattr(widget, "settings_focus_index", 0)), 3))
+    left_arrow_x = rect.left() + 166
+    value_x = rect.left() + 200
+    value_w = rect.width() - 210 - 34
+    row_tops = [body_top + idx * (row_height + row_gap) for idx in range(len(setting_rows))]
+    focus_index = max(0, min(int(getattr(widget, "settings_focus_index", 0)), len(setting_rows) - 1))
 
     widget.skin_prev_rect = QRect(left_arrow_x, rect.top() + row_tops[0], 28, 28)
     widget.skin_next_rect = QRect(rect.right() - 38, rect.top() + row_tops[0], 28, 28)
@@ -3327,20 +3344,20 @@ def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, smal
         widget.scale_next_rect = QRect()
     if hasattr(widget, "catalog_action_rect"):
         widget.catalog_action_rect = QRect()
-    widget.close_action_rect = QRect(value_x, rect.top() + row_tops[3], value_w, 28)
+    widget.close_action_rect = QRect(value_x, rect.top() + row_tops[-1], value_w, 28)
 
     skin_rect = QRect(value_x, rect.top() + row_tops[0], value_w, 28)
     theme_rect = QRect(value_x, rect.top() + row_tops[1], value_w, 28)
     profile_rect = QRect(value_x, rect.top() + row_tops[2], value_w, 28)
-    close_rect = widget.close_action_rect
+    value_rects = [QRect(value_x, rect.top() + row_top, value_w, 28) for row_top in row_tops]
 
     painter.setFont(body_font)
     if widget.skin_style() == "cable":
         for idx, row_top in enumerate(row_tops):
             widget.draw_cable_text(
                 painter,
-                QRect(rect.left() + 18, rect.top() + row_top - 8, 110, 24),
-                labels[idx].upper(),
+                QRect(rect.left() + 18, rect.top() + row_top - 8, 140, 24),
+                setting_rows[idx][0].upper(),
                 theme["settings_label_text"],
                 body_font,
                 Qt.AlignLeft | Qt.AlignVCenter,
@@ -3348,9 +3365,9 @@ def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, smal
     else:
         painter.setPen(theme["settings_label_text"])
         for idx, row_top in enumerate(row_tops):
-            painter.drawText(rect.left() + 18, rect.top() + row_top + 20, labels[idx])
+            painter.drawText(rect.left() + 18, rect.top() + row_top + 20, setting_rows[idx][0])
 
-    for idx, rect_box in ((0, skin_rect), (1, theme_rect), (2, profile_rect), (3, close_rect)):
+    for idx, rect_box in enumerate(value_rects):
         widget.draw_slot_box(painter, rect_box, theme, active=focus_index == idx)
 
     for rect_box, label in (
@@ -3366,19 +3383,19 @@ def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, smal
     painter.setFont(small_font)
     if widget.skin_style() == "cable":
         value_font = QFont(small_font.family(), small_font.pointSize(), QFont.Bold)
-        widget.draw_cable_text(painter, skin_rect, str(getattr(widget, "skin_name", "")).upper(), theme["settings_value_selected_text"] if focus_index == 0 else theme["settings_value_text"], value_font, Qt.AlignCenter)
-        widget.draw_cable_text(painter, theme_rect, str(getattr(widget, "theme_name", "")).upper(), theme["settings_value_selected_text"] if focus_index == 1 else theme["settings_value_text"], value_font, Qt.AlignCenter)
-        widget.draw_cable_text(painter, profile_rect, str(getattr(widget, "profile_name", "")).upper(), theme["settings_value_selected_text"] if focus_index == 2 else theme["settings_value_text"], value_font, Qt.AlignCenter)
-        widget.draw_cable_text(painter, close_rect, "CLOSE", theme["settings_value_selected_text"] if focus_index == 3 else theme["settings_value_text"], value_font, Qt.AlignCenter)
+        for idx, (_label, value, _kind) in enumerate(setting_rows):
+            widget.draw_cable_text(
+                painter,
+                value_rects[idx],
+                value.upper(),
+                theme["settings_value_selected_text"] if focus_index == idx else theme["settings_value_text"],
+                value_font,
+                Qt.AlignCenter,
+            )
     else:
-        painter.setPen(theme["settings_value_selected_text"] if focus_index == 0 else theme["settings_value_text"])
-        painter.drawText(skin_rect, Qt.AlignCenter, str(getattr(widget, "skin_name", "")))
-        painter.setPen(theme["settings_value_selected_text"] if focus_index == 1 else theme["settings_value_text"])
-        painter.drawText(theme_rect, Qt.AlignCenter, str(getattr(widget, "theme_name", "")))
-        painter.setPen(theme["settings_value_selected_text"] if focus_index == 2 else theme["settings_value_text"])
-        painter.drawText(profile_rect, Qt.AlignCenter, str(getattr(widget, "profile_name", "")))
-        painter.setPen(theme["settings_value_selected_text"] if focus_index == 3 else theme["settings_value_text"])
-        painter.drawText(close_rect, Qt.AlignCenter, "Close")
+        for idx, (_label, value, _kind) in enumerate(setting_rows):
+            painter.setPen(theme["settings_value_selected_text"] if focus_index == idx else theme["settings_value_text"])
+            painter.drawText(value_rects[idx], Qt.AlignCenter, value)
 
 
 # ---------------- CHANNEL ---------------- #
@@ -4251,6 +4268,7 @@ class GuideOverlay(QWidget):
         self.ui_scale = GUIDE_UI_SCALE_DEFAULT
         self.settings_open = False
         self.settings_focus_index = 0
+        self.settings_values = {}
         self.skin_prev_rect = QRect()
         self.skin_next_rect = QRect()
         self.theme_prev_rect = QRect()
@@ -5496,6 +5514,7 @@ class OnDemandOverlay(QWidget):
         self.state = {}
         self.settings_open = False
         self.settings_focus_index = 0
+        self.settings_values = {}
         self.home_row_offsets = {}
         self.home_row_targets = {}
         self.last_home_layout_debug_signature = None
@@ -5562,7 +5581,7 @@ class OnDemandOverlay(QWidget):
             self.feature_current = new_feature or {}
             self.feature_previous = {}
             self.feature_transition = 1.0
-        self.settings_focus_index = max(0, min(int(self.state.get("settings_focus_index", 0)), 3))
+        self.settings_focus_index = max(0, min(int(self.state.get("settings_focus_index", 0)), 6))
 
     def debug_vault_layout(self, message, **fields):
         write_vault_debug_log("VaultLayout", message, fields)
@@ -7209,6 +7228,7 @@ class InfoOverlay(QWidget):
         self.ui_scale = GUIDE_UI_SCALE_DEFAULT
         self.state = {}
         self.settings_open = False
+        self.settings_values = {}
         self.hide()
 
     def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT):
@@ -7224,6 +7244,7 @@ class InfoOverlay(QWidget):
 
     def show_banner(self, state):
         self.state = state or {}
+        self.settings_values = dict(self.state.get("settings_values", {}) or self.settings_values)
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
@@ -7232,6 +7253,7 @@ class InfoOverlay(QWidget):
 
     def update_banner(self, state):
         self.state = state or {}
+        self.settings_values = dict(self.state.get("settings_values", {}) or self.settings_values)
         if self.isVisible():
             self.update()
 
@@ -7738,71 +7760,69 @@ class InfoOverlay(QWidget):
             x += width + gap
         return {"left": start_x, "right": rects[-1].right() if rects else start_x}
 
-    def draw_settings_panel(self, painter, panel, body_font, small_font, theme):
-        rect = QRect(0, 0, 344, 228)
-        rect.moveCenter(self.rect().center())
-        self.draw_xp_panel(painter, rect, theme, radius=10, inset=2)
-        title_bar = QRect(rect.left() + 4, rect.top() + 4, rect.width() - 8, 28)
-        self.draw_xp_bar(painter, title_bar, theme, radius=8)
-        body_rect = rect.adjusted(6, 36, -6, -6)
+    def draw_cable_text(self, painter, rect, text, color, font, flags):
+        if not text:
+            return
+        painter.save()
+        painter.setFont(font)
+        shadow = QColor(0, 0, 0, 220)
+        for dx, dy in ((1, 0), (0, 1), (1, 1)):
+            painter.setPen(shadow)
+            painter.drawText(rect.translated(dx, dy), flags, text)
+        painter.setPen(color)
+        painter.drawText(rect, flags, text)
+        painter.restore()
+
+    def draw_xp_panel(self, painter, rect, theme, radius=12, inset=3):
         if self.skin_style() == "cable":
-            painter.save()
-            painter.setClipRect(body_rect)
-            painter.fillRect(body_rect, QColor(6, 10, 32, 232))
-            self.draw_starfield(painter, body_rect, theme)
-            painter.fillRect(body_rect, QColor(6, 10, 32, 78))
-            painter.restore()
-        painter.setFont(small_font)
-        painter.setPen(theme["text"])
-        painter.drawText(title_bar.adjusted(12, 0, -12, 0), Qt.AlignVCenter, f"{APP_NAME} Menu")
+            draw_classic_cable_panel(painter, rect, theme, self.theme_name, border_width=1, border_alpha=118, inset=inset)
+            return
+        self.draw_rounded_gradient_box(
+            painter,
+            rect,
+            theme.get("chrome_top", theme["info_overlay_bg"]),
+            theme.get("chrome_bottom", theme["info_overlay_bg"]),
+            theme.get("menu_panel_border", theme["info_overlay_border"]),
+            radius=radius,
+        )
 
-        label_color = theme["text"] if self.skin_style() == "cable" else theme["dark_text"]
-        painter.setFont(body_font)
-        painter.setPen(label_color)
+    def draw_xp_bar(self, painter, rect, theme, radius=8):
+        if self.skin_style() == "cable":
+            draw_classic_cable_bar(painter, rect, theme, border_width=1, border_alpha=122)
+            return
+        self.draw_rounded_gradient_box(
+            painter,
+            rect,
+            theme.get("chrome_mid", theme["info_progress_fill"]),
+            theme.get("header", theme["info_progress_fill"]),
+            theme.get("menu_panel_border", theme["info_overlay_border"]),
+            radius=radius,
+        )
 
-        left_arrow_x = rect.left() + 138
-        value_x = rect.left() + 172
-        value_w = rect.width() - 182 - 34
-        row_tops = [42, 82, 122, 162]
-        labels = ["Skin", "Theme", "Display", "Close"]
-        values = [self.skin_name, self.theme_name, self.profile_name]
+    def draw_slot_box(self, painter, rect, theme, active=False):
+        if self.skin_style() == "cable":
+            draw_classic_cable_slot_box(painter, rect, theme, active=active)
+            return
+        fill = theme["menu_button_selected_bg"] if active else theme["menu_button_bg"]
+        border = theme.get("focus_ring", theme["info_overlay_border"]) if active else theme["info_overlay_border"]
+        if theme.get("sleek"):
+            painter.setPen(QPen(border, 1))
+            painter.setBrush(fill)
+            painter.drawRoundedRect(rect, theme.get("cell_radius", 6), theme.get("cell_radius", 6))
+            return
+        self.draw_rounded_gradient_box(painter, rect, fill, fill, border, radius=6)
 
-        for idx, row_top in enumerate(row_tops):
-            painter.drawText(rect.left() + 18, rect.top() + row_top + 20, labels[idx])
+    def draw_arrow_button(self, painter, rect, label, theme):
+        self.draw_slot_box(painter, rect, theme, active=False)
+        if self.skin_style() == "cable":
+            self.draw_cable_text(painter, rect, label, QColor(248, 248, 240), QFont(guide_font_family("primary"), max(10, rect.height() - 12), QFont.Bold), Qt.AlignCenter)
+        else:
+            painter.setPen(theme["text"])
+            painter.drawText(rect, Qt.AlignCenter, label)
 
-        skin_prev_rect = QRect(left_arrow_x, rect.top() + row_tops[0], 28, 28)
-        skin_next_rect = QRect(rect.right() - 38, rect.top() + row_tops[0], 28, 28)
-        theme_prev_rect = QRect(left_arrow_x, rect.top() + row_tops[1], 28, 28)
-        theme_next_rect = QRect(rect.right() - 38, rect.top() + row_tops[1], 28, 28)
-        profile_prev_rect = QRect(left_arrow_x, rect.top() + row_tops[2], 28, 28)
-        profile_next_rect = QRect(rect.right() - 38, rect.top() + row_tops[2], 28, 28)
-        scale_prev_rect = QRect(left_arrow_x, rect.top() + row_tops[3], 28, 28)
-        scale_next_rect = QRect(rect.right() - 38, rect.top() + row_tops[3], 28, 28)
-        skin_rect = QRect(value_x, rect.top() + row_tops[0], value_w, 28)
-        theme_rect = QRect(value_x, rect.top() + row_tops[1], value_w, 28)
-        profile_rect = QRect(value_x, rect.top() + row_tops[2], value_w, 28)
-        close_rect = QRect(value_x, rect.top() + row_tops[3], value_w, 28)
-        focus_index = self.state.get("settings_focus_index", 0)
-
-        for idx, rect_box in ((0, skin_rect), (1, theme_rect), (2, profile_rect), (3, close_rect)):
-            self.draw_slot_box(painter, rect_box, theme, active=focus_index == idx)
-
-        for rect_box, label in (
-            (skin_prev_rect, "<"),
-            (skin_next_rect, ">"),
-            (theme_prev_rect, "<"),
-            (theme_next_rect, ">"),
-            (profile_prev_rect, "<"),
-            (profile_next_rect, ">"),
-        ):
-            self.draw_arrow_button(painter, rect_box, label, theme)
-
-        painter.setFont(small_font)
-        for idx, (rect_box, value) in enumerate(((skin_rect, values[0]), (theme_rect, values[1]), (profile_rect, values[2]))):
-            painter.setPen(theme["dark_text"] if focus_index == idx else theme["text"])
-            painter.drawText(rect_box, Qt.AlignCenter, value)
-        painter.setPen(theme["dark_text"] if focus_index == 3 else theme["text"])
-        painter.drawText(close_rect, Qt.AlignCenter, "Close")
+    def draw_settings_panel(self, painter, panel, body_font, small_font, theme):
+        self.settings_focus_index = self.state.get("settings_focus_index", 0)
+        draw_shared_mediawave_settings_panel(self, painter, panel, body_font, small_font, theme)
 
     def draw_scanlines(self, painter, rect):
         crt = CLASSIC_CABLE_TUNING["crt"]
@@ -10188,6 +10208,10 @@ class AdvancedConfigDialog(QDialog):
 
         self.allow_empty_catalog_tv = QCheckBox("Allow Watch TV without local content loaded")
         self.allow_empty_catalog_tv.setChecked(bool(settings.get("allow_empty_catalog_tv", False)))
+        self.allow_dummy_vault_catalog = QCheckBox("Allow dummy Vault listings without a catalog")
+        self.allow_dummy_vault_catalog.setChecked(bool(settings.get("allow_dummy_vault_catalog", False)))
+        self.dev_menu_enabled = QCheckBox("Enable in-app dev menu")
+        self.dev_menu_enabled.setChecked(bool(settings.get("dev_menu_enabled", True)))
 
         self.commercials_enabled = QCheckBox("Enable channel commercials")
         self.commercials_enabled.setChecked(bool(self.commercials_settings.get("enabled", False)))
@@ -10470,6 +10494,9 @@ class AdvancedConfigDialog(QDialog):
         companion_layout.addWidget(self.weatherstar_enabled)
         companion_layout.addWidget(self.radiowave_enabled)
         companion_layout.addWidget(self.youtube_enabled)
+        companion_layout.addWidget(self.allow_empty_catalog_tv)
+        companion_layout.addWidget(self.allow_dummy_vault_catalog)
+        companion_layout.addWidget(self.dev_menu_enabled)
         layout.addWidget(companion_card)
 
         diagnostics_card, diagnostics_layout = self.build_section_card(
@@ -10607,6 +10634,8 @@ class AdvancedConfigDialog(QDialog):
             "youtube_channel_number": self.youtube_channel_input.value(),
             "youtube_enabled": self.youtube_enabled.isChecked(),
             "allow_empty_catalog_tv": self.allow_empty_catalog_tv.isChecked(),
+            "allow_dummy_vault_catalog": self.allow_dummy_vault_catalog.isChecked(),
+            "dev_menu_enabled": self.dev_menu_enabled.isChecked(),
             "commercials": commercials,
         }
 
@@ -11088,6 +11117,8 @@ class ChannelSurfer(QWidget):
                 "youtube_channel_number": 1,
                 "youtube_enabled": False,
                 "allow_empty_catalog_tv": False,
+                "allow_dummy_vault_catalog": False,
+                "dev_menu_enabled": True,
                 "experimental_remote_metadata": False,
                 "commercials": commercial_settings_defaults(),
             },
@@ -11238,6 +11269,15 @@ class ChannelSurfer(QWidget):
         playback_label.setObjectName("sectionLabel")
         settings_layout.addWidget(playback_label)
         settings_layout.addLayout(settings_form)
+        self.allow_empty_catalog_tv_check = QCheckBox("Allow Watch TV without local content loaded")
+        self.allow_empty_catalog_tv_check.setChecked(bool(self.app_settings.get("allow_empty_catalog_tv", False)))
+        settings_layout.addWidget(self.allow_empty_catalog_tv_check)
+        self.allow_dummy_vault_check = QCheckBox("Allow dummy Vault listings without a catalog")
+        self.allow_dummy_vault_check.setChecked(bool(self.app_settings.get("allow_dummy_vault_catalog", False)))
+        settings_layout.addWidget(self.allow_dummy_vault_check)
+        self.dev_menu_enabled_check = QCheckBox("Enable in-app dev menu")
+        self.dev_menu_enabled_check.setChecked(bool(self.app_settings.get("dev_menu_enabled", True)))
+        settings_layout.addWidget(self.dev_menu_enabled_check)
         self.advanced_btn = QPushButton("Advanced Configuration")
         self.advanced_btn.setObjectName("advancedButton")
         settings_layout.addWidget(self.advanced_btn)
@@ -11255,6 +11295,9 @@ class ChannelSurfer(QWidget):
         self.catalog_btn.clicked.connect(self.browse_catalog)
         self.watch_btn.clicked.connect(self.watch_tv)
         self.advanced_btn.clicked.connect(self.open_advanced_configuration)
+        self.allow_empty_catalog_tv_check.toggled.connect(lambda value: self.update_qol_setting("allow_empty_catalog_tv", value))
+        self.allow_dummy_vault_check.toggled.connect(lambda value: self.update_qol_setting("allow_dummy_vault_catalog", value))
+        self.dev_menu_enabled_check.toggled.connect(lambda value: self.update_qol_setting("dev_menu_enabled", value))
 
         self.channels = []
         self.current_channel = 0
@@ -11292,6 +11335,7 @@ class ChannelSurfer(QWidget):
             self.skin_combo.currentText(),
             self.guide_ui_scale,
         )
+        self.sync_overlay_qol_settings()
         self.video_window.channelUpRequested.connect(self.up)
         self.video_window.channelDownRequested.connect(self.down)
         self.video_window.guideRequested.connect(self.toggle_guide)
@@ -11728,6 +11772,65 @@ class ChannelSurfer(QWidget):
         self.theme_combo.setCurrentText(target_theme)
         self.theme_combo.blockSignals(False)
 
+    def overlay_settings_values(self):
+        return {
+            "allow_empty_catalog_tv": bool(self.app_settings.get("allow_empty_catalog_tv", False)),
+            "allow_dummy_vault_catalog": bool(self.app_settings.get("allow_dummy_vault_catalog", False)),
+            "dev_menu_enabled": bool(self.app_settings.get("dev_menu_enabled", True)),
+        }
+
+    def sync_overlay_qol_settings(self):
+        values = self.overlay_settings_values()
+        self.video_window.guide_overlay.settings_values = dict(values)
+        self.video_window.on_demand_overlay.settings_values = dict(values)
+        self.video_window.info_overlay.settings_values = dict(values)
+
+    def update_qol_setting(self, key, value, refresh=True):
+        self.app_settings[key] = bool(value)
+        save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        if key == "allow_dummy_vault_catalog":
+            self.mark_on_demand_catalog_dirty(clear_catalog=True)
+        self.sync_overlay_qol_settings()
+        if refresh:
+            if self.video_window.guide_overlay.isVisible():
+                self.refresh_guide()
+            if self.video_window.on_demand_overlay.isVisible():
+                self.refresh_on_demand()
+            if self.video_window.info_overlay.isVisible():
+                self.refresh_info_banner()
+
+    def sync_main_qol_toggles(self):
+        for attr, key in (
+            ("allow_empty_catalog_tv_check", "allow_empty_catalog_tv"),
+            ("allow_dummy_vault_check", "allow_dummy_vault_catalog"),
+            ("dev_menu_enabled_check", "dev_menu_enabled"),
+        ):
+            checkbox = getattr(self, attr, None)
+            if checkbox is None:
+                continue
+            checkbox.blockSignals(True)
+            checkbox.setChecked(bool(self.app_settings.get(key, True if key == "dev_menu_enabled" else False)))
+            checkbox.blockSignals(False)
+
+    def in_app_menu_row_count(self):
+        return 7
+
+    def in_app_menu_close_index(self):
+        return self.in_app_menu_row_count() - 1
+
+    def handle_in_app_menu_toggle(self, focus_index):
+        key_map = {
+            3: "allow_empty_catalog_tv",
+            4: "allow_dummy_vault_catalog",
+            5: "dev_menu_enabled",
+        }
+        key = key_map.get(int(focus_index))
+        if not key:
+            return False
+        self.update_qol_setting(key, not bool(self.app_settings.get(key, False)), refresh=False)
+        self.sync_main_qol_toggles()
+        return True
+
     def preload_weather_if_configured(self):
         weather = self.configured_weather_channel()
         widescreen = self.profile_combo.currentText() != "CRT 4:3"
@@ -11756,8 +11859,12 @@ class ChannelSurfer(QWidget):
         self.app_settings["youtube_channel_number"] = values["youtube_channel_number"]
         self.app_settings["youtube_enabled"] = values["youtube_enabled"]
         self.app_settings["allow_empty_catalog_tv"] = values["allow_empty_catalog_tv"]
+        self.app_settings["allow_dummy_vault_catalog"] = values["allow_dummy_vault_catalog"]
+        self.app_settings["dev_menu_enabled"] = values["dev_menu_enabled"]
         self.app_settings["commercials"] = normalize_commercials_config(values.get("commercials", {}))
         save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        self.sync_main_qol_toggles()
+        self.sync_overlay_qol_settings()
         self.status.setText("Advanced configuration saved.")
         self.ensure_nettv_playlist_cache_with_progress(force=True)
         self.stop_background_commercial_warmup()
@@ -13478,9 +13585,114 @@ class ChannelSurfer(QWidget):
             if self.video_window.on_demand_overlay.isVisible():
                 self.refresh_on_demand()
 
+    def build_dummy_on_demand_catalog(self):
+        summary = "This is only a test, this is not even real dude get a clue!"
+
+        def episode(show_name, season, number):
+            path = f"dummy://{normalize_title(show_name)}/s{season:02d}e{number:02d}"
+            return {
+                "path": path,
+                "label": "Dummy Episode",
+                "meta": f"S{season:02d}E{number:02d}",
+                "summary": summary,
+                "detail_title": f"Dummy Episode - S{season:02d}E{number:02d}",
+                "show_name": show_name,
+                "season_number": season,
+                "season_label": f"Season {season}",
+                "section_label": f"Season {season}",
+                "episode_number": number,
+                "media_type": "tv",
+                "runtime_minutes": 22,
+                "year": "2000",
+                "artwork_path": "",
+                "hero_artwork_path": "",
+                "clearlogo_path": "",
+                "metadata_status": "dummy",
+                "needs_attention": False,
+                "attention_reason": "",
+                "added_at": time.time(),
+            }
+
+        def show_group(show_name, season_counts):
+            items = []
+            for season, count in season_counts:
+                for number in range(1, count + 1):
+                    items.append(episode(show_name, season, number))
+            return {
+                "label": show_name,
+                "meta": f"{len(items)} dummy episodes",
+                "summary": summary,
+                "artwork_path": "",
+                "hero_artwork_path": "",
+                "clearlogo_path": "",
+                "year": "2000",
+                "media_type": "tv",
+                "needs_attention": False,
+                "attention_reason": "",
+                "added_at": time.time(),
+                "items": items,
+            }
+
+        def movie_group(title, index):
+            path = f"dummy://movie/{normalize_title(title) or index}"
+            item = {
+                "path": path,
+                "label": title,
+                "meta": "Movie",
+                "summary": summary,
+                "detail_title": title,
+                "show_name": title,
+                "season_number": None,
+                "season_label": "",
+                "section_label": "",
+                "episode_number": None,
+                "media_type": "movie",
+                "runtime_minutes": 88 + index,
+                "year": "2000",
+                "artwork_path": "",
+                "hero_artwork_path": "",
+                "clearlogo_path": "",
+                "metadata_status": "dummy",
+                "needs_attention": False,
+                "attention_reason": "",
+                "added_at": time.time(),
+            }
+            return {
+                "label": title,
+                "meta": "Dummy feature",
+                "summary": summary,
+                "artwork_path": "",
+                "hero_artwork_path": "",
+                "clearlogo_path": "",
+                "year": "2000",
+                "media_type": "movie",
+                "needs_attention": False,
+                "attention_reason": "",
+                "added_at": time.time(),
+                "items": [item],
+            }
+
+        return [
+            {
+                "number": 1,
+                "label": "Dummy Vault",
+                "meta": "4 dummy collections",
+                "groups": [
+                    show_group("Dummy Show", [(1, 28)]),
+                    show_group("Dummy Show: Live", [(season, 12) for season in range(1, 5)]),
+                    movie_group("Dummy Movie", 1),
+                    movie_group("Dummy Movie 2: Electic Boogaloo", 2),
+                ],
+            }
+        ]
+
     def build_on_demand_catalog(self, use_remote=False, progress_callback=None):
         catalog = []
         media_channels = [channel for channel in self.channels if getattr(channel, "channel_type", "media") == "media"]
+        if not media_channels and self.app_settings.get("allow_dummy_vault_catalog", False):
+            self.on_demand_catalog = self.build_dummy_on_demand_catalog()
+            self.on_demand_catalog_dirty = False
+            return
         total_media_channels = max(1, len(media_channels))
         for media_index, channel in enumerate(media_channels, start=1):
             if progress_callback:
@@ -15637,6 +15849,7 @@ class ChannelSurfer(QWidget):
             self.video_window.guide_overlay.set_preview_frame(pixmap, mode=mode)
 
     def refresh_guide(self, show=False):
+        self.video_window.guide_overlay.settings_values = self.overlay_settings_values()
         rows = self.build_guide_rows(self.video_window.guide_overlay.timeline_start)
         if not rows:
             return
@@ -15669,7 +15882,7 @@ class ChannelSurfer(QWidget):
         if not self.channels or not self.video_window.guide_overlay.isVisible():
             return
         if self.video_window.guide_overlay.settings_open:
-            self.video_window.guide_overlay.settings_focus_index = (self.video_window.guide_overlay.settings_focus_index - 1) % 4
+            self.video_window.guide_overlay.settings_focus_index = (self.video_window.guide_overlay.settings_focus_index - 1) % self.in_app_menu_row_count()
             self.refresh_guide()
             return
         if self.video_window.guide_overlay.nav_focus:
@@ -15687,7 +15900,7 @@ class ChannelSurfer(QWidget):
         if not self.channels or not self.video_window.guide_overlay.isVisible():
             return
         if self.video_window.guide_overlay.settings_open:
-            self.video_window.guide_overlay.settings_focus_index = (self.video_window.guide_overlay.settings_focus_index + 1) % 4
+            self.video_window.guide_overlay.settings_focus_index = (self.video_window.guide_overlay.settings_focus_index + 1) % self.in_app_menu_row_count()
             self.refresh_guide()
             return
         if self.video_window.guide_overlay.nav_focus:
@@ -15754,8 +15967,11 @@ class ChannelSurfer(QWidget):
         if not self.channels or not self.video_window.guide_overlay.isVisible():
             return
         if self.video_window.guide_overlay.settings_open:
-            if self.video_window.guide_overlay.settings_focus_index == 3:
+            if self.video_window.guide_overlay.settings_focus_index == self.in_app_menu_close_index():
                 self.video_window.guide_overlay.settings_open = False
+                self.refresh_guide()
+                return
+            if self.handle_in_app_menu_toggle(self.video_window.guide_overlay.settings_focus_index):
                 self.refresh_guide()
                 return
             self.video_window.guide_overlay.settings_open = False
@@ -15775,6 +15991,9 @@ class ChannelSurfer(QWidget):
     def toggle_guide_settings(self):
         if not self.video_window.guide_overlay.isVisible():
             return
+        if not self.app_settings.get("dev_menu_enabled", True):
+            self.status.setText("The in-app dev menu is disabled on the main screen.")
+            return
         self.video_window.guide_overlay.settings_open = not self.video_window.guide_overlay.settings_open
         self.refresh_guide()
 
@@ -15782,10 +16001,13 @@ class ChannelSurfer(QWidget):
     def toggle_on_demand_settings(self):
         if not self.video_window.on_demand_overlay.isVisible():
             return
+        if not self.app_settings.get("dev_menu_enabled", True):
+            self.status.setText("The in-app dev menu is disabled on the main screen.")
+            return
         self.on_demand_settings_open = not self.on_demand_settings_open
         self.on_demand_nav_focused = False
         if self.on_demand_settings_open:
-            self.on_demand_settings_focus_index = max(0, min(self.on_demand_settings_focus_index, 3))
+            self.on_demand_settings_focus_index = max(0, min(self.on_demand_settings_focus_index, self.in_app_menu_close_index()))
         self.refresh_on_demand()
 
     @Slot()
@@ -15914,7 +16136,7 @@ class ChannelSurfer(QWidget):
 
     def ensure_on_demand_focus_state(self):
         self.on_demand_nav_index = max(0, min(int(self.on_demand_nav_index), 3))
-        self.on_demand_settings_focus_index = max(0, min(int(self.on_demand_settings_focus_index), 3))
+        self.on_demand_settings_focus_index = max(0, min(int(self.on_demand_settings_focus_index), self.in_app_menu_close_index()))
         sections = self.build_on_demand_home_sections()
         if not sections:
             self.on_demand_section_index = 0
@@ -16456,6 +16678,7 @@ class ChannelSurfer(QWidget):
             "nav_focused": self.live_info_nav_focused,
             "nav_index": self.live_info_nav_index,
             "settings_focus_index": self.live_info_settings_focus_index,
+            "settings_values": self.overlay_settings_values(),
         }
 
     def build_on_demand_info_state(self):
@@ -16479,6 +16702,7 @@ class ChannelSurfer(QWidget):
             "nav_focused": self.live_info_nav_focused,
             "nav_index": self.live_info_nav_index,
             "settings_focus_index": self.live_info_settings_focus_index,
+            "settings_values": self.overlay_settings_values(),
         }
 
     def build_info_state(self):
@@ -16517,6 +16741,9 @@ class ChannelSurfer(QWidget):
                 return
             index -= 1
         if index == 0:
+            if not self.app_settings.get("dev_menu_enabled", True):
+                self.status.setText("The in-app dev menu is disabled on the main screen.")
+                return
             if source == "vault":
                 self.on_demand_settings_open = True
                 self.on_demand_nav_focused = False
@@ -16579,6 +16806,7 @@ class ChannelSurfer(QWidget):
     def refresh_info_banner(self):
         if self.video_window.info_overlay.isVisible():
             self.video_window.info_overlay.settings_open = self.live_info_settings_open
+            self.video_window.info_overlay.settings_values = self.overlay_settings_values()
             state = self.build_info_state()
             if state:
                 self.video_window.info_overlay.update_banner(state)
@@ -16635,7 +16863,7 @@ class ChannelSurfer(QWidget):
         if not self.video_window.info_overlay.isVisible():
             return
         if self.live_info_settings_open:
-            self.live_info_settings_focus_index = (self.live_info_settings_focus_index - 1) % 4
+            self.live_info_settings_focus_index = (self.live_info_settings_focus_index - 1) % self.in_app_menu_row_count()
             self.refresh_info_banner()
             return
         if self.live_info_nav_focused:
@@ -16651,7 +16879,7 @@ class ChannelSurfer(QWidget):
         if not self.video_window.info_overlay.isVisible():
             return
         if self.live_info_settings_open:
-            self.live_info_settings_focus_index = (self.live_info_settings_focus_index + 1) % 4
+            self.live_info_settings_focus_index = (self.live_info_settings_focus_index + 1) % self.in_app_menu_row_count()
             self.refresh_info_banner()
             return
         if self.live_info_nav_focused:
@@ -16666,8 +16894,10 @@ class ChannelSurfer(QWidget):
         if not self.video_window.info_overlay.isVisible():
             return
         if self.live_info_settings_open:
-            if self.live_info_settings_focus_index == 3:
+            if self.live_info_settings_focus_index == self.in_app_menu_close_index():
                 self.live_info_settings_open = False
+                self.refresh_info_banner()
+            elif self.handle_in_app_menu_toggle(self.live_info_settings_focus_index):
                 self.refresh_info_banner()
             else:
                 self.live_info_settings_open = False
@@ -16807,7 +17037,7 @@ class ChannelSurfer(QWidget):
         selected_path = selected_episode.get("path") if selected_episode else (items[0]["path"] if items else "")
         resume_entry = self.resume_state.get("entries", {}).get(selected_path, {})
         resume_ms = int(resume_entry.get("position_ms", 0) or 0)
-        episode_thumbnail = self.get_media_thumbnail(selected_path) if selected_path else QPixmap()
+        episode_thumbnail = QPixmap() if str(selected_path).startswith("dummy://") else (self.get_media_thumbnail(selected_path) if selected_path else QPixmap())
         action_label = "Resume" if resume_ms > 0 else "Play"
         actions = [
             {"label": action_label, "meta": "Continue from where you left off" if resume_ms > 0 else "Start playback"},
@@ -16990,7 +17220,17 @@ class ChannelSurfer(QWidget):
         self.hide_info_banner()
         self.hide_guide()
         if not self.video_window.isVisible():
-            self.watch_tv()
+            if self.on_demand_catalog and self.app_settings.get("allow_dummy_vault_catalog", False) and not self.channels:
+                screen = self.screen() or QApplication.primaryScreen()
+                if screen is not None:
+                    self.video_window.setGeometry(screen.geometry())
+                self.video_window.show()
+                self.video_window.showFullScreen()
+                self.video_window.raise_()
+                self.video_window.activateWindow()
+                self.video_window.setFocus(Qt.ActiveWindowFocusReason)
+            else:
+                self.watch_tv()
             if not self.video_window.isVisible():
                 return
         self.on_demand_view = "home"
@@ -17068,6 +17308,7 @@ class ChannelSurfer(QWidget):
         )
         self.video_window.on_demand_overlay.settings_open = self.on_demand_settings_open
         self.video_window.on_demand_overlay.settings_focus_index = self.on_demand_settings_focus_index
+        self.video_window.on_demand_overlay.settings_values = self.overlay_settings_values()
         if show:
             self.video_window.on_demand_overlay.show_browser(state)
         else:
@@ -17080,7 +17321,7 @@ class ChannelSurfer(QWidget):
         if not self.video_window.on_demand_overlay.isVisible():
             return
         if self.on_demand_settings_open:
-            self.on_demand_settings_focus_index = (self.on_demand_settings_focus_index - 1) % 4
+            self.on_demand_settings_focus_index = (self.on_demand_settings_focus_index - 1) % self.in_app_menu_row_count()
             self.refresh_on_demand()
             return
         if self.on_demand_nav_focused:
@@ -17116,7 +17357,7 @@ class ChannelSurfer(QWidget):
         if not self.video_window.on_demand_overlay.isVisible():
             return
         if self.on_demand_settings_open:
-            self.on_demand_settings_focus_index = (self.on_demand_settings_focus_index + 1) % 4
+            self.on_demand_settings_focus_index = (self.on_demand_settings_focus_index + 1) % self.in_app_menu_row_count()
             self.refresh_on_demand()
             return
         if self.on_demand_nav_focused:
@@ -17253,7 +17494,10 @@ class ChannelSurfer(QWidget):
             if self.on_demand_settings_focus_index == 2:
                 self.step_profile(1)
                 return
-            self.on_demand_settings_open = False
+            if self.on_demand_settings_focus_index == self.in_app_menu_close_index():
+                self.on_demand_settings_open = False
+            elif not self.handle_in_app_menu_toggle(self.on_demand_settings_focus_index):
+                self.on_demand_settings_open = False
             self.refresh_on_demand()
             return
         if self.on_demand_nav_focused:
@@ -17324,6 +17568,10 @@ class ChannelSurfer(QWidget):
 
     def play_on_demand(self, path, position_ms=0):
         if not path:
+            return
+        if str(path).startswith("dummy://"):
+            self.status.setText("Dummy Vault listings are for navigation testing only.")
+            self.refresh_on_demand()
             return
         self.hide_info_banner()
         self.hide_guide()
