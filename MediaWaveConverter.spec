@@ -13,6 +13,10 @@ binary_files = []
 if __import__("os").path.exists("bin"):
     binary_files.append(("bin", "bin"))
 
+icon_file = "build/MediaWaveConverter.icns"
+if not __import__("os").path.exists(icon_file):
+    icon_file = None
+
 
 a = Analysis(
     ["mediawave_converter.py"],
@@ -58,6 +62,6 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name="MediaWaveConverter.app",
-    icon=None,
+    icon=icon_file,
     bundle_identifier=None,
 )

@@ -10,13 +10,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal
-from PySide6.QtGui import QDesktopServices, QFont, QFontDatabase, QPixmap
+from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, QPointF, QRectF
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
-    QDialog,
-    QDialogButtonBox,
     QFileDialog,
     QFormLayout,
     QFrame,
@@ -31,6 +29,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -47,6 +46,24 @@ PIPELINE_VERSION = "2026.04.11"
 TARGET_LUFS = -16
 TARGET_TP = -1.5
 TARGET_LRA = 7
+
+_SW_BG = QColor(13, 16, 38)
+_SW_HERO_TOP = QColor(9, 11, 27)
+_SW_HERO_BOT = QColor(15, 18, 44)
+_SW_CARD_BG = QColor(22, 26, 58)
+_SW_CARD_BORDER = QColor(68, 108, 235)
+_SW_ACCENT = QColor(96, 144, 255)
+_SW_CTA_BG = QColor(255, 188, 10)
+_SW_CTA_TEXT = QColor(13, 16, 38)
+_SW_TEXT = QColor(210, 222, 252)
+_SW_TEXT_DIM = QColor(138, 158, 212)
+_SW_HEADER = QColor(118, 162, 255)
+_SW_INPUT_BG = QColor(16, 20, 50)
+_SW_INPUT_TEXT = QColor(188, 205, 248)
+_SW_FOOTER_BG = QColor(9, 11, 27)
+_SW_FOOTER_BORD = QColor(42, 54, 128)
+_SW_STAR_WARM = QColor(255, 218, 96)
+_SW_STAR_COOL = QColor(148, 196, 255)
 SUPPORTED_VIDEO_EXTENSIONS = {
     ".3gp",
     ".asf",
@@ -136,6 +153,7 @@ ENCODER_CHOICES = {
 AUDIO_PREFERENCES = ["Auto", "Prefer English", "Prefer Japanese"]
 _ENGLISH_LANG_TAGS = {"eng", "en"}
 _JAPANESE_LANG_TAGS = {"jpn", "ja", "jp"}
+TEXT_SUBTITLE_CODECS = {"subrip", "ass", "ssa", "webvtt", "mov_text"}
 
 
 def resource_base_dir() -> Path:
@@ -211,6 +229,22 @@ def resolve_executable(name: str) -> str | None:
     return None
 
 
+def ffmpeg_supports_subtitles_filter(ffmpeg_path: str | None) -> bool:
+    if not ffmpeg_path:
+        return False
+    try:
+        completed = subprocess.run(
+            [ffmpeg_path, "-hide_banner", "-filters"],
+            capture_output=True,
+            text=True,
+            timeout=4,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    output = f"{completed.stdout}\n{completed.stderr}".lower()
+    return bool(re.search(r"\bsubtitles\b", output))
+
+
 def available_encoders() -> set[str]:
     if not FFMPEG_PATH:
         return set()
@@ -234,11 +268,29 @@ def available_encoders() -> set[str]:
 
 FFMPEG_PATH = resolve_executable("ffmpeg")
 FFPROBE_PATH = resolve_executable("ffprobe")
+FFMPEG_HAS_SUBTITLES_FILTER = ffmpeg_supports_subtitles_filter(FFMPEG_PATH)
+SUBTITLE_BURN_LABEL = (
+    "Burn English Subtitles (experimental)"
+    if FFMPEG_HAS_SUBTITLES_FILTER
+    else "Burn English Subtitles (unavailable with current FFmpeg)"
+)
+SUBTITLE_PREFERENCES = [
+    "No Subtitles",
+    "Copy English Subtitles",
+    SUBTITLE_BURN_LABEL,
+    "Copy First Subtitle Track",
+]
+LEGACY_SUBTITLE_PREFERENCES = {
+    "Burn English Subtitles": SUBTITLE_BURN_LABEL,
+    "Burn English Subtitles (experimental)": SUBTITLE_BURN_LABEL,
+    "Burn English Subtitles (unavailable with current FFmpeg)": SUBTITLE_BURN_LABEL,
+}
 AVAILABLE_ENCODERS = available_encoders()
 LOGO_PATH = resolve_resource_path(
     "logos/MediaWave2000.png",
     "logos/MediaWave-2000-2000-2000-MediaWave-2000.png",
 )
+CONVERTER_LOGO_PATH = resolve_resource_path("logos/MWConverter.png")
 PRIMARY_FONT_PATH = resolve_resource_path("Fonts/ArchivoNarrow-Bold.ttf")
 SECONDARY_FONT_PATH = resolve_resource_path("Fonts/ArchivoNarrow-SemiBold.ttf")
 
@@ -388,6 +440,23 @@ def load_brand_fonts() -> tuple[str | None, str | None]:
     return primary_family, secondary_family
 
 
+def _make_startup_stars(n: int = 46) -> list[tuple[float, float, float]]:
+    stars: list[tuple[float, float, float]] = []
+    seed = 0xA5F3C1
+    for _ in range(n):
+        seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+        x = (seed & 0xFFFF) / 0xFFFF
+        seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+        y = (seed & 0xFFFF) / 0xFFFF
+        seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+        v = (seed & 0xFFFF) / 0xFFFF
+        stars.append((x, y, v))
+    return stars
+
+
+_STARTUP_STARS = _make_startup_stars()
+
+
 def default_encoder_mode() -> str:
     if sys.platform == "darwin" and "h264_videotoolbox" in AVAILABLE_ENCODERS:
         return "Automatic"
@@ -467,76 +536,189 @@ class DropZone(QFrame):
             event.ignore()
 
 
-class AdvancedSettingsDialog(QDialog):
-    def __init__(self, parent: QWidget | None = None):
+class StarfieldHeader(QWidget):
+    _STARS = [
+        (0.04, 0.18, 1.4), (0.09, 0.62, 1.0), (0.14, 0.35, 1.8),
+        (0.19, 0.80, 1.2), (0.23, 0.15, 2.2), (0.28, 0.52, 1.0),
+        (0.33, 0.72, 1.5), (0.37, 0.28, 1.1), (0.42, 0.88, 1.8),
+        (0.47, 0.45, 1.3), (0.51, 0.12, 2.0), (0.55, 0.65, 1.0),
+        (0.59, 0.38, 1.6), (0.63, 0.82, 1.2), (0.68, 0.22, 1.9),
+        (0.72, 0.58, 1.1), (0.76, 0.42, 2.1), (0.80, 0.75, 1.0),
+        (0.84, 0.30, 1.4), (0.88, 0.55, 1.7), (0.92, 0.18, 1.2),
+        (0.96, 0.70, 1.5), (0.07, 0.90, 1.0), (0.16, 0.05, 1.3),
+        (0.31, 0.95, 1.1), (0.44, 0.08, 1.8), (0.57, 0.92, 1.0),
+        (0.70, 0.05, 1.6), (0.83, 0.88, 1.2), (0.95, 0.40, 1.4),
+        (0.11, 0.48, 1.0), (0.26, 0.68, 1.3), (0.40, 0.22, 1.5),
+        (0.53, 0.78, 1.0), (0.66, 0.12, 1.7), (0.78, 0.60, 1.1),
+        (0.90, 0.85, 1.4), (0.02, 0.55, 1.2), (0.50, 0.30, 1.9),
+        (0.75, 0.92, 1.0),
+    ]
+
+    def __init__(self, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("For Real Smart Alecks")
-        self.resize(540, 420)
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(22, 22, 22, 22)
-        layout.setSpacing(14)
+        self.setObjectName("starfieldHeader")
+        self.setMinimumHeight(140)
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
 
-        form = QFormLayout()
-        form.setLabelAlignment(Qt.AlignLeft)
-        form.setFormAlignment(Qt.AlignTop)
-        form.setHorizontalSpacing(14)
-        form.setVerticalSpacing(14)
-        layout.addLayout(form)
+    def paintEvent(self, event):
+        from PySide6.QtGui import QPainter, QLinearGradient, QColor, QRadialGradient
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        grad = QLinearGradient(0, 0, 0, h)
+        grad.setColorAt(0.0, QColor("#0d1f3a"))
+        grad.setColorAt(1.0, QColor("#0c1829"))
+        painter.fillRect(0, 0, w, h, grad)
+        for x_frac, y_frac, r in self._STARS:
+            cx = int(x_frac * w)
+            cy = int(y_frac * h)
+            alpha = 160 if r > 1.5 else 100
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(255, 255, 200, alpha))
+            painter.drawEllipse(int(cx - r), int(cy - r), int(r * 2), int(r * 2))
+        painter.end()
 
-        self.size_combo = QComboBox()
-        form.addRow("Final size", self.size_combo)
 
-        self.framing_combo = QComboBox()
-        self.framing_combo.addItems(list(FRAMING_CHOICES.keys()))
-        form.addRow("Shape match", self.framing_combo)
+class CoaxieWidget(QWidget):
+    def __init__(self, size: int = 96, parent=None):
+        super().__init__(parent)
+        sz = max(50, int(size))
+        self.setFixedSize(sz, int(sz * 1.38))
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._blink = False
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._start_blink)
+        self._blink_timer.start(3800)
 
-        self.quality_combo = QComboBox()
-        self.quality_combo.addItems(list(QUALITY_PRESETS.keys()))
-        form.addRow("Picture style", self.quality_combo)
+    def _start_blink(self) -> None:
+        self._blink = True
+        self.update()
+        QTimer.singleShot(115, self._end_blink)
 
-        self.encoder_combo = QComboBox()
-        self.encoder_combo.addItems(list(ENCODER_CHOICES.keys()))
-        form.addRow("Speed mode", self.encoder_combo)
+    def _end_blink(self) -> None:
+        self._blink = False
+        self.update()
 
-        crop_wrap = QWidget()
-        crop_layout = QVBoxLayout(crop_wrap)
-        crop_layout.setContentsMargins(0, 0, 0, 0)
-        crop_layout.setSpacing(8)
-        self.crop_slider = QSlider(Qt.Horizontal)
-        self.crop_slider.setRange(0, 100)
-        self.crop_label = QLabel()
-        self.crop_label.setObjectName("hintText")
-        self.crop_slider.valueChanged.connect(self.update_crop_label)
-        crop_layout.addWidget(self.crop_slider)
-        crop_layout.addWidget(self.crop_label)
-        form.addRow("Black-bar trimming", crop_wrap)
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        scale = w / 96.0
 
-        self.recursive_checkbox = QCheckBox("Look through subfolders too")
-        form.addRow("Folder scan", self.recursive_checkbox)
+        def s(value: float) -> float:
+            return value * scale
 
-        self.skip_checkbox = QCheckBox("Skip files that already match these settings")
-        form.addRow("Repeat runs", self.skip_checkbox)
+        dy = s(9)
 
-        self.encoder_hint = QLabel()
-        self.encoder_hint.setObjectName("hintText")
-        self.encoder_hint.setWordWrap(True)
-        self.encoder_combo.currentTextChanged.connect(self.update_encoder_hint)
-        layout.addWidget(self.encoder_hint)
+        def y(value: float) -> float:
+            return s(value) + dy
 
-        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
-        buttons.accepted.connect(self.accept)
-        buttons.rejected.connect(self.reject)
-        layout.addWidget(buttons)
-        self.update_crop_label()
-        self.update_encoder_hint(self.encoder_combo.currentText())
+        def outline(width: float = 2.5) -> QPen:
+            return QPen(QColor(14, 16, 40), max(1, s(width)))
 
-    def update_crop_label(self) -> None:
-        self.crop_label.setText(
-            f"{slider_text(self.crop_slider.value())}. Lower is safer. Higher trims harder."
+        ant_pen = QPen(QColor(28, 20, 60), max(1, s(3)))
+        ant_pen.setCapStyle(Qt.RoundCap)
+        p.setPen(ant_pen)
+        p.drawLine(QPointF(s(33), y(17)), QPointF(s(26), y(2)))
+        p.drawLine(QPointF(s(63), y(17)), QPointF(s(75), y(1)))
+
+        p.setPen(outline(1.5))
+        p.setBrush(QColor(255, 212, 32))
+        p.drawEllipse(QPointF(s(23), y(1)), s(5), s(5))
+        p.setBrush(QColor(255, 180, 20))
+        p.drawEllipse(QPointF(s(77), y(0)), s(4.5), s(5.5))
+
+        body = QRectF(s(2), y(13), s(92), s(82))
+        body_grad = QLinearGradient(body.topLeft(), body.bottomLeft())
+        body_grad.setColorAt(0.0, QColor(72, 92, 195))
+        body_grad.setColorAt(0.45, QColor(52, 68, 162))
+        body_grad.setColorAt(1.0, QColor(28, 36, 110))
+        p.setBrush(body_grad)
+        p.setPen(outline(2.8))
+        p.drawRoundedRect(body, s(7), s(7))
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 22))
+        p.drawRoundedRect(
+            QRectF(body.x() + s(38), body.y() + s(4), s(48), body.height() * 0.45),
+            s(5),
+            s(5),
         )
 
-    def update_encoder_hint(self, label: str) -> None:
-        self.encoder_hint.setText(ENCODER_CHOICES.get(label, ""))
+        screen = QRectF(s(10), y(21), s(68), s(54))
+        p.setPen(outline(2))
+        p.setBrush(QColor(6, 8, 28))
+        p.drawRoundedRect(screen, s(4), s(4))
+
+        cx, cy = screen.center().x(), screen.center().y()
+        glow = QRadialGradient(cx - s(4), cy - s(3), s(28))
+        glow.setColorAt(0.0, QColor(60, 108, 240, 45))
+        glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(glow)
+        p.drawEllipse(screen.adjusted(s(3), s(3), -s(3), -s(3)))
+
+        brow_pen = QPen(QColor(28, 20, 60), max(1, s(3)))
+        brow_pen.setCapStyle(Qt.RoundCap)
+        p.setPen(brow_pen)
+        eye_y = cy - s(5)
+        p.drawLine(QPointF(cx - s(19), eye_y - s(10)), QPointF(cx - s(5), eye_y - s(13)))
+        p.drawLine(QPointF(cx + s(4), eye_y - s(12)), QPointF(cx + s(18), eye_y - s(10)))
+
+        if self._blink:
+            blink_pen = QPen(QColor(14, 16, 40), max(1, s(3)))
+            blink_pen.setCapStyle(Qt.RoundCap)
+            p.setPen(blink_pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawLine(QPointF(cx - s(18), eye_y), QPointF(cx - s(6), eye_y))
+            p.drawLine(QPointF(cx + s(5), eye_y), QPointF(cx + s(17), eye_y))
+        else:
+            p.setPen(outline(2))
+            p.setBrush(QColor(230, 240, 255))
+            p.drawEllipse(QPointF(cx - s(12), eye_y), s(7.5), s(8.5))
+            p.drawEllipse(QPointF(cx + s(11), eye_y), s(6.5), s(7.5))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(40, 170, 255))
+            p.drawEllipse(QPointF(cx - s(12), eye_y + s(1)), s(5), s(5.5))
+            p.drawEllipse(QPointF(cx + s(11), eye_y + s(0.5)), s(4.2), s(4.8))
+            p.setBrush(QColor(14, 16, 40))
+            p.drawEllipse(QPointF(cx - s(11.5), eye_y + s(1)), s(2.8), s(3))
+            p.drawEllipse(QPointF(cx + s(11.5), eye_y + s(0.5)), s(2.2), s(2.5))
+            p.setBrush(QColor(255, 255, 255, 230))
+            p.drawEllipse(QPointF(cx - s(13.5), eye_y - s(1.5)), s(1.5), s(1.5))
+            p.drawEllipse(QPointF(cx + s(9.8), eye_y - s(1.2)), s(1.2), s(1.2))
+
+        p.setPen(outline(1.2))
+        p.setBrush(QColor(40, 56, 140))
+        p.drawEllipse(QPointF(cx - s(1), eye_y + s(7)), s(1.8), s(1.8))
+
+        smile_pen = QPen(QColor(96, 200, 255), max(2, s(2.6)))
+        smile_pen.setCapStyle(Qt.RoundCap)
+        p.setPen(smile_pen)
+        p.setBrush(Qt.NoBrush)
+        smile_rect = QRectF(cx - s(11), eye_y + s(7), s(22), s(14))
+        p.drawArc(smile_rect, 0, -180 * 16)
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(240, 100, 140, 70))
+        p.drawEllipse(QPointF(cx - s(22), eye_y + s(4)), s(6), s(4))
+        p.drawEllipse(QPointF(cx + s(21), eye_y + s(4)), s(6), s(4))
+
+        grill_pen = QPen(QColor(38, 50, 130), max(1, s(1.2)))
+        p.setPen(grill_pen)
+        gx = screen.right() + s(5)
+        for grill_index in range(4):
+            gy = screen.top() + s(10) + grill_index * s(8)
+            p.drawLine(QPointF(gx, gy), QPointF(gx + s(8), gy))
+
+        knob_y = body.bottom() - s(12)
+        p.setPen(outline(1.8))
+        p.setBrush(QColor(212, 168, 48))
+        p.drawEllipse(QPointF(s(26), knob_y), s(5.5), s(5.5))
+        p.drawRoundedRect(QRectF(s(58), knob_y - s(5.5), s(11), s(11)), s(2.5), s(2.5))
+        p.setPen(QPen(QColor(140, 100, 20), max(1, s(1.2))))
+        p.drawLine(QPointF(s(26), knob_y - s(3.5)), QPointF(s(26), knob_y - s(1)))
+        p.end()
 
 
 @dataclass
@@ -553,6 +735,7 @@ class ConversionOptions:
     recursive: bool
     skip_completed: bool
     audio_preference: str = "Auto"
+    subtitle_preference: str = "No Subtitles"
     explicit_files: "list[Path] | None" = None
 
     @property
@@ -578,6 +761,7 @@ class ConversionOptions:
             "quality_label": self.quality_label,
             "recursive": self.recursive,
             "audio_preference": self.audio_preference,
+            "subtitle_preference": self.subtitle_preference,
             "audio_target_lufs": TARGET_LUFS,
             "audio_target_tp": TARGET_TP,
             "audio_target_lra": TARGET_LRA,
@@ -595,6 +779,15 @@ class AudioStreamInfo:
 
 
 @dataclass
+class SubtitleStreamInfo:
+    ffmpeg_index: int
+    subtitle_index: int
+    codec: str
+    language: str
+    title: str
+
+
+@dataclass
 class ProbeInfo:
     duration: float
     width: int
@@ -603,6 +796,7 @@ class ProbeInfo:
     video_codec: str
     audio_codec: str
     audio_streams: list  # list[AudioStreamInfo]
+    subtitle_streams: list  # list[SubtitleStreamInfo]
 
 
 def select_audio_stream(
@@ -620,6 +814,45 @@ def select_audio_stream(
             if s.language in _JAPANESE_LANG_TAGS:
                 return s
     return streams[0]
+
+
+def is_text_subtitle(codec: str) -> bool:
+    return codec.lower().strip() in TEXT_SUBTITLE_CODECS
+
+
+def select_subtitle_stream(
+    streams: list,  # list[SubtitleStreamInfo]
+    preference: str,
+) -> "SubtitleStreamInfo | None":
+    if not streams or preference == "No Subtitles":
+        return None
+    if preference == "Copy First Subtitle Track":
+        return streams[0]
+    if preference in {"Copy English Subtitles", SUBTITLE_BURN_LABEL}:
+        for stream in streams:
+            if stream.language in _ENGLISH_LANG_TAGS:
+                return stream
+        return None
+    return None
+
+
+def subtitle_mode(preference: str) -> str:
+    if preference == SUBTITLE_BURN_LABEL:
+        return "burn"
+    if preference in {"Copy English Subtitles", "Copy First Subtitle Track"}:
+        return "copy"
+    return "none"
+
+
+def escape_subtitle_filter_path(source_path: Path) -> str:
+    value = str(source_path)
+    value = value.replace("\\", "\\\\")
+    value = value.replace(":", "\\:")
+    value = value.replace("'", "\\'")
+    value = value.replace("[", "\\[")
+    value = value.replace("]", "\\]")
+    value = value.replace(",", "\\,")
+    return value
 
 
 class BatchWorker(QThread):
@@ -731,8 +964,16 @@ class BatchWorker(QThread):
                     self.log_message.emit(f"Audio for {source_path.name}: selected {track_desc}.")
                 elif probe.has_audio:
                     self.log_message.emit(f"Audio for {source_path.name}: no audio streams found, encoding without audio.")
+                chosen_subtitle = select_subtitle_stream(probe.subtitle_streams, self.options.subtitle_preference)
+                subtitle_msg = self.describe_subtitle_selection(
+                    source_path.name,
+                    probe.subtitle_streams,
+                    chosen_subtitle,
+                    self.options.subtitle_preference,
+                )
+                self.log_message.emit(subtitle_msg)
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                self.transcode(source_path, output_path, probe, crop, chosen_audio)
+                self.transcode(source_path, output_path, probe, crop, chosen_audio, chosen_subtitle)
                 self.file_progress.emit(100)
                 processed += 1
                 self.row_update.emit(
@@ -822,6 +1063,7 @@ class BatchWorker(QThread):
             raise RuntimeError("This file does not contain a video stream.")
 
         raw_audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+        raw_subtitle_streams = [s for s in streams if s.get("codec_type") == "subtitle"]
         audio_stream_infos: list[AudioStreamInfo] = []
         for audio_idx, s in enumerate(raw_audio_streams):
             tags = s.get("tags", {}) or {}
@@ -832,6 +1074,16 @@ class BatchWorker(QThread):
                 language=str(tags.get("language") or "und").lower().strip(),
                 title=str(tags.get("title") or ""),
                 channels=int(s.get("channels") or 0),
+            ))
+        subtitle_stream_infos: list[SubtitleStreamInfo] = []
+        for subtitle_idx, s in enumerate(raw_subtitle_streams):
+            tags = s.get("tags", {}) or {}
+            subtitle_stream_infos.append(SubtitleStreamInfo(
+                ffmpeg_index=int(s.get("index", 0)),
+                subtitle_index=subtitle_idx,
+                codec=str(s.get("codec_name") or "unknown"),
+                language=str(tags.get("language") or "und").lower().strip(),
+                title=str(tags.get("title") or ""),
             ))
 
         first_audio = audio_stream_infos[0] if audio_stream_infos else None
@@ -859,6 +1111,7 @@ class BatchWorker(QThread):
             video_codec=str(video_stream.get("codec_name") or "unknown"),
             audio_codec=str(first_audio.codec if first_audio else "none"),
             audio_streams=audio_stream_infos,
+            subtitle_streams=subtitle_stream_infos,
         )
 
     def detect_crop(self, source_path: Path, probe: ProbeInfo) -> tuple[int, int, int, int]:
@@ -964,6 +1217,31 @@ class BatchWorker(QThread):
         height = min(height, even_floor(source_height - y))
         return (max(0, x), max(0, y), even_floor(width), even_floor(height))
 
+    def describe_subtitle_selection(
+        self,
+        file_name: str,
+        subtitle_streams: list[SubtitleStreamInfo],
+        chosen_subtitle: "SubtitleStreamInfo | None",
+        preference: str,
+    ) -> str:
+        if preference == "No Subtitles":
+            return f"Subtitles for {file_name}: none selected."
+        if not subtitle_streams:
+            return f"Subtitles for {file_name}: skipped; no subtitle tracks found."
+        if chosen_subtitle is None:
+            if preference in {"Copy English Subtitles", SUBTITLE_BURN_LABEL}:
+                return f"Subtitles for {file_name}: skipped; no English text subtitle track found."
+            return f"Subtitles for {file_name}: skipped; no usable subtitle track found."
+        if not is_text_subtitle(chosen_subtitle.codec):
+            return f"Subtitles for {file_name}: skipped; image-based subtitles are not supported yet."
+        action = "burned" if subtitle_mode(preference) == "burn" else "copied"
+        track_label = "English track" if preference in {"Copy English Subtitles", SUBTITLE_BURN_LABEL} else "track"
+        lang = chosen_subtitle.language or "und"
+        return (
+            f"Subtitles for {file_name}: {action} {track_label} "
+            f"{chosen_subtitle.subtitle_index} ({lang}, {chosen_subtitle.codec})."
+        )
+
     def transcode(
         self,
         source_path: Path,
@@ -971,6 +1249,7 @@ class BatchWorker(QThread):
         probe: ProbeInfo,
         crop: tuple[int, int, int, int],
         chosen_audio: "AudioStreamInfo | None",
+        chosen_subtitle: "SubtitleStreamInfo | None",
     ) -> None:
         primary_encoder = resolve_video_encoder(self.options.encoder_mode)
         encoder_order = [primary_encoder]
@@ -978,9 +1257,19 @@ class BatchWorker(QThread):
             encoder_order.append("libx264")
 
         last_error = "FFmpeg reported an error while transcoding."
+        allow_burn_retry = self.options.subtitle_preference == SUBTITLE_BURN_LABEL
         for encoder_name in encoder_order:
             try:
-                self.transcode_with_encoder(source_path, output_path, probe, crop, encoder_name, chosen_audio)
+                self.transcode_with_encoder(
+                    source_path,
+                    output_path,
+                    probe,
+                    crop,
+                    encoder_name,
+                    chosen_audio,
+                    chosen_subtitle,
+                    self.options.subtitle_preference,
+                )
                 if encoder_name != primary_encoder:
                     self.log_message.emit(
                         f"{source_path.name}: switched to compatibility mode after the fast encoder said no."
@@ -988,6 +1277,24 @@ class BatchWorker(QThread):
                 return
             except RuntimeError as exc:
                 last_error = str(exc)
+                if allow_burn_retry and self.is_subtitle_burn_failure(last_error):
+                    allow_burn_retry = False
+                    if output_path.exists():
+                        output_path.unlink(missing_ok=True)
+                    self.log_message.emit(
+                        f"Subtitle burn-in failed for {source_path.name}; retrying without subtitles."
+                    )
+                    self.transcode_with_encoder(
+                        source_path,
+                        output_path,
+                        probe,
+                        crop,
+                        encoder_name,
+                        chosen_audio,
+                        None,
+                        "No Subtitles",
+                    )
+                    return
                 if encoder_name == encoder_order[-1]:
                     break
                 if output_path.exists():
@@ -1005,11 +1312,20 @@ class BatchWorker(QThread):
         crop: tuple[int, int, int, int],
         video_encoder: str,
         chosen_audio: "AudioStreamInfo | None",
+        chosen_subtitle: "SubtitleStreamInfo | None",
+        subtitle_preference: str,
     ) -> None:
         x, y, width, height = crop
         audio_filters = [f"loudnorm=I={TARGET_LUFS}:LRA={TARGET_LRA}:TP={TARGET_TP}"]
         quality = self.options.quality_profile
-        video_filter, use_filter_complex = self.build_video_filter(x, y, width, height)
+        video_filter, use_filter_complex = self.build_video_filter(
+            source_path,
+            x,
+            y,
+            width,
+            height,
+            chosen_subtitle if subtitle_mode(subtitle_preference) == "burn" else None,
+        )
 
         command = [
             FFMPEG_PATH,
@@ -1031,9 +1347,17 @@ class BatchWorker(QThread):
         if chosen_audio is not None:
             command.extend(["-map", f"0:{chosen_audio.ffmpeg_index}"])
 
+        subtitle_copy = (
+            subtitle_mode(subtitle_preference) == "copy"
+            and chosen_subtitle is not None
+            and is_text_subtitle(chosen_subtitle.codec)
+        )
+        if subtitle_copy:
+            command.extend(["-map", f"0:{chosen_subtitle.ffmpeg_index}"])
+
         command.extend(
             [
-                "-sn",
+                *(["-sn"] if not subtitle_copy else []),
                 "-dn",
                 "-pix_fmt",
                 "yuv420p",
@@ -1091,6 +1415,9 @@ class BatchWorker(QThread):
         else:
             command.append("-an")
 
+        if subtitle_copy:
+            command.extend(["-c:s", "mov_text"])
+
         command.append(str(output_path))
 
         self._active_process = subprocess.Popen(
@@ -1140,10 +1467,28 @@ class BatchWorker(QThread):
                 output_path.unlink(missing_ok=True)
             raise RuntimeError(stderr_output or "FFmpeg reported an error while transcoding.")
 
-    def build_video_filter(self, x: int, y: int, width: int, height: int) -> tuple[str, bool]:
+    def is_subtitle_burn_failure(self, error_text: str) -> bool:
+        lowered = error_text.lower()
+        hints = ["subtitles", "subtitle", "libass", "filter", "unable to open", "error initializing"]
+        return any(hint in lowered for hint in hints)
+
+    def build_video_filter(
+        self,
+        source_path: Path,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        burned_subtitle: "SubtitleStreamInfo | None" = None,
+    ) -> tuple[str, bool]:
         crop_filter = f"crop={width}:{height}:{x}:{y}"
         target_w = self.options.target_width
         target_h = self.options.target_height
+        subtitle_filter = ""
+        if burned_subtitle is not None and is_text_subtitle(burned_subtitle.codec):
+            subtitle_filter = (
+                f",subtitles=filename='{escape_subtitle_filter_path(source_path)}':si={burned_subtitle.subtitle_index}"
+            )
         if self.options.framing_mode == "Keep More Picture":
             return (
                 "[0:v]"
@@ -1151,13 +1496,51 @@ class BatchWorker(QThread):
                 f"[bg]scale={target_w}:{target_h}:force_original_aspect_ratio=increase,gblur=sigma=28,"
                 f"crop={target_w}:{target_h}[bgfill];"
                 f"[fg]scale={target_w}:{target_h}:force_original_aspect_ratio=decrease[fgfit];"
-                "[bgfill][fgfit]overlay=(W-w)/2:(H-h)/2,setsar=1[vout]",
+                f"[bgfill][fgfit]overlay=(W-w)/2:(H-h)/2,setsar=1{subtitle_filter}[vout]",
                 True,
             )
         return (
-            f"{crop_filter},scale={target_w}:{target_h}:flags=lanczos,setsar=1",
+            f"{crop_filter},scale={target_w}:{target_h}:flags=lanczos,setsar=1{subtitle_filter}",
             False,
         )
+
+
+class SidebarWidget(QWidget):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("sidebar")
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        grad = QLinearGradient(0, 0, 0, h)
+        grad.setColorAt(0.0, QColor(8, 10, 26))
+        grad.setColorAt(1.0, QColor(13, 16, 38))
+        painter.fillRect(0, 0, w, h, grad)
+        painter.setPen(Qt.NoPen)
+        for sx, sy, sv in _STARTUP_STARS[:28]:
+            px = int(sx * w)
+            py = int(sy * h)
+            alpha_boost = 0.55
+            if sv > 0.75:
+                painter.setBrush(QColor(255, 218, 96, int((150 + sv * 90) * alpha_boost)))
+                painter.drawEllipse(QPointF(px, py), 1.3, 1.3)
+            elif sv > 0.4:
+                painter.setBrush(QColor(148, 196, 255, int((110 + sv * 100) * alpha_boost)))
+                painter.drawEllipse(QPointF(px, py), 0.9, 0.9)
+            else:
+                painter.setBrush(QColor(200, 212, 252, int((70 + sv * 110) * alpha_boost)))
+                painter.drawEllipse(QPointF(px, py), 0.6, 0.6)
+
+        glow = QLinearGradient(w - 24, 0, w, 0)
+        glow.setColorAt(0.0, QColor(68, 108, 235, 0))
+        glow.setColorAt(1.0, QColor(68, 108, 235, 32))
+        painter.fillRect(w - 24, 0, 24, h, glow)
+
+        painter.setPen(QPen(QColor(40, 56, 150, 180), 1))
+        painter.drawLine(w - 1, 0, w - 1, h)
+        painter.end()
 
 
 class MediaWaveConverterWindow(QMainWindow):
@@ -1167,8 +1550,8 @@ class MediaWaveConverterWindow(QMainWindow):
         self.worker: BatchWorker | None = None
         self.last_options: ConversionOptions | None = None
         self.source_rows: dict[str, int] = {}
-        self.advanced_dialog: AdvancedSettingsDialog | None = None
         self._source_paths: list[Path] = []
+        self._nav_buttons: dict[str, QPushButton] = {}
         self.setup_window()
         self.build_ui()
         self.apply_styles()
@@ -1179,134 +1562,287 @@ class MediaWaveConverterWindow(QMainWindow):
 
     def setup_window(self) -> None:
         self.setWindowTitle(WINDOW_TITLE)
-        self.resize(1180, 880)
-        self.setMinimumSize(920, 760)
+        self.resize(1180, 840)
+        self.setMinimumSize(980, 720)
 
     def build_ui(self) -> None:
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        self.setCentralWidget(scroll)
-
         central = QWidget()
-        scroll.setWidget(central)
+        central.setObjectName("centralWidget")
+        self.setCentralWidget(central)
 
-        root_layout = QVBoxLayout(central)
-        root_layout.setContentsMargins(24, 24, 24, 24)
-        root_layout.setSpacing(18)
+        root = QHBoxLayout(central)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        hero_card = QFrame()
-        hero_card.setObjectName("heroCard")
-        hero_layout = QHBoxLayout(hero_card)
-        hero_layout.setContentsMargins(28, 28, 28, 28)
-        hero_layout.setSpacing(22)
+        sidebar = SidebarWidget()
+        sidebar.setFixedWidth(210)
+        sidebar_layout = QVBoxLayout(sidebar)
+        sidebar_layout.setContentsMargins(0, 0, 0, 0)
+        sidebar_layout.setSpacing(0)
 
-        logo_label = QLabel()
-        logo_label.setObjectName("logoLabel")
-        logo_label.setFixedSize(120, 120)
-        if LOGO_PATH and LOGO_PATH.exists():
-            pixmap = QPixmap(str(LOGO_PATH))
-            logo_label.setPixmap(pixmap.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
+        nav_header = QWidget()
+        nav_header.setObjectName("advNavHeader")
+        nav_header_layout = QVBoxLayout(nav_header)
+        nav_header_layout.setContentsMargins(20, 22, 16, 16)
+        nav_header_layout.setSpacing(6)
+
+        logo_lbl = QLabel()
+        logo_lbl.setObjectName("sidebarLogo")
+        logo_lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        logo_source = CONVERTER_LOGO_PATH if (CONVERTER_LOGO_PATH and CONVERTER_LOGO_PATH.exists()) else LOGO_PATH
+        if logo_source and logo_source.exists():
+            px = QPixmap(str(logo_source))
+            logo_lbl.setPixmap(px.scaled(154, 62, Qt.KeepAspectRatio, Qt.SmoothTransformation))
         else:
-            logo_label.setText("MW")
-            logo_label.setAlignment(Qt.AlignCenter)
-        hero_layout.addWidget(logo_label, 0, Qt.AlignTop)
+            logo_lbl.setText("MW")
+        nav_header_layout.addWidget(logo_lbl)
 
-        hero_text_layout = QVBoxLayout()
-        hero_text_layout.setSpacing(10)
-        title = QLabel("Make Your Videos MediaWave-Ready")
-        title.setObjectName("heroTitle")
-        title.setWordWrap(True)
-        if self.primary_font_family:
-            title.setFont(QFont(self.primary_font_family, 28))
-        subtitle = QLabel("Choose your folders, pick the screen shape, and start.")
-        subtitle.setObjectName("heroSubtitle")
-        subtitle.setWordWrap(True)
-        hero_text_layout.addWidget(title)
-        hero_text_layout.addWidget(subtitle)
+        app_sub = QLabel("A Great Place to Fix your Files!")
+        app_sub.setObjectName("advNavTagline")
+        subtitle_font = QFont(self.secondary_font_family or self.font().family(), 13)
+        subtitle_font.setItalic(True)
+        subtitle_font.setBold(True)
+        app_sub.setFont(subtitle_font)
+        app_sub.setWordWrap(True)
+        app_sub.setAlignment(Qt.AlignLeft)
+        nav_header_layout.addWidget(app_sub)
+        sidebar_layout.addWidget(nav_header)
+
+        nav_sep = QWidget()
+        nav_sep.setObjectName("advNavSep")
+        nav_sep.setFixedHeight(1)
+        sidebar_layout.addWidget(nav_sep)
+
+        self.converter_nav = self.make_nav_button("converter", "📼  Converter")
+        self.queue_nav = self.make_nav_button("queue", "📋  Queue")
+        self.advanced_nav = self.make_nav_button("advanced", "⚙  Advanced Settings")
+        sidebar_layout.addWidget(self.converter_nav)
+        sidebar_layout.addWidget(self.queue_nav)
+        sidebar_layout.addWidget(self.advanced_nav)
+
+        sidebar_layout.addStretch()
 
         self.ffmpeg_status = QLabel()
         self.ffmpeg_status.setObjectName("ffmpegStatus")
         self.ffmpeg_status.setWordWrap(True)
-        hero_text_layout.addWidget(self.ffmpeg_status)
-        hero_layout.addLayout(hero_text_layout, 1)
-        root_layout.addWidget(hero_card)
+        self.ffmpeg_status.setAlignment(Qt.AlignCenter)
+        sidebar_layout.addWidget(self.ffmpeg_status)
+        sidebar_layout.addSpacing(8)
 
-        settings_card = QFrame()
-        settings_card.setObjectName("card")
-        settings_layout = QVBoxLayout(settings_card)
-        settings_layout.setContentsMargins(24, 24, 24, 24)
-        settings_layout.setSpacing(16)
-        root_layout.addWidget(settings_card)
+        coaxie = CoaxieWidget(size=82)
+        sidebar_layout.addWidget(coaxie, 0, Qt.AlignHCenter)
+        sidebar_layout.addSpacing(6)
+
+        ver_lbl = QLabel(f"v{PIPELINE_VERSION}\n© MediaWave")
+        ver_lbl.setObjectName("advNavFooter")
+        ver_lbl.setAlignment(Qt.AlignLeft)
+        ver_lbl.setContentsMargins(20, 0, 0, 14)
+        sidebar_layout.addWidget(ver_lbl)
+
+        root.addWidget(sidebar)
+
+        content = QWidget()
+        content.setObjectName("contentArea")
+        content_layout = QVBoxLayout(content)
+        content_layout.setContentsMargins(18, 18, 18, 18)
+        content_layout.setSpacing(0)
+        root.addWidget(content, 1)
+
+        self.page_stack = QStackedWidget()
+        self.page_stack.setObjectName("advContentStack")
+        content_layout.addWidget(self.page_stack, 1)
+
+        self.converter_page = self.build_converter_page()
+        self.queue_page = self.build_queue_page()
+        self.advanced_page = self.build_advanced_page()
+        self.page_stack.addWidget(self.converter_page)
+        self.page_stack.addWidget(self.queue_page)
+        self.page_stack.addWidget(self.advanced_page)
+        self.switch_page("converter")
+
+    def make_nav_button(self, page_key: str, label: str) -> QPushButton:
+        button = QPushButton(label)
+        button.setObjectName("advNavItem")
+        button.setCheckable(True)
+        button.setFlat(True)
+        button.setCursor(Qt.PointingHandCursor)
+        button.clicked.connect(lambda checked=False, key=page_key: self.switch_page(key))
+        self._nav_buttons[page_key] = button
+        return button
+
+    def panel_heading(self, text: str) -> QLabel:
+        heading = QLabel(text)
+        heading.setObjectName("sectionHeader")
+        return heading
+
+    def form_row(self, label_text: str, widget: QWidget, button: QWidget | None = None) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setSpacing(8)
+        label = QLabel(label_text)
+        label.setObjectName("configLabel")
+        label.setFixedWidth(118)
+        row.addWidget(label)
+        row.addWidget(widget, 1)
+        if button is not None:
+            row.addWidget(button)
+        return row
+
+    def make_summary_value(self, key: str, layout: QHBoxLayout) -> QLabel:
+        wrap = QWidget()
+        wrap.setObjectName("summaryCell")
+        chip_layout = QVBoxLayout(wrap)
+        chip_layout.setContentsMargins(10, 8, 10, 8)
+        chip_layout.setSpacing(2)
+        key_label = QLabel(key)
+        key_label.setObjectName("summaryKey")
+        value_label = QLabel("—")
+        value_label.setObjectName("summaryValue")
+        value_label.setWordWrap(True)
+        wrap.setMinimumHeight(56)
+        chip_layout.addWidget(key_label)
+        chip_layout.addWidget(value_label)
+        layout.addWidget(wrap, 1)
+        return value_label
+
+    def make_scroll_page(self) -> tuple[QScrollArea, QVBoxLayout]:
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        body = QWidget()
+        body.setObjectName("pageBody")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(4, 4, 4, 4)
+        body_layout.setSpacing(16)
+        scroll.setWidget(body)
+        return scroll, body_layout
+
+    def build_converter_page(self) -> QWidget:
+        page, layout = self.make_scroll_page()
+
+        source_panel = QFrame()
+        source_panel.setObjectName("panel")
+        source_layout = QVBoxLayout(source_panel)
+        source_layout.setContentsMargins(18, 16, 18, 16)
+        source_layout.setSpacing(10)
+        source_layout.addWidget(self.panel_heading("Source"))
 
         drop_zone = DropZone()
         drop_zone.sources_dropped.connect(self._apply_sources)
-        settings_layout.addWidget(drop_zone)
+        drop_zone.setMinimumHeight(84)
+        source_layout.addWidget(drop_zone)
 
-        source_label = QLabel("Or choose manually:")
-        source_label.setObjectName("hintText")
-        self.source_edit = QLineEdit()
-        self.source_edit.setPlaceholderText("Folder to scan for video files.")
-        files_button = QPushButton("Choose File(s)")
-        files_button.clicked.connect(self._pick_files)
-        source_button = QPushButton("Choose Folder")
-        source_button.clicked.connect(self.pick_source_folder)
-        self.source_summary_label = QLabel()
-        self.source_summary_label.setObjectName("hintText")
-        self.source_summary_label.hide()
         source_row = QHBoxLayout()
-        source_row.setSpacing(10)
+        source_row.setSpacing(8)
+        self.source_edit = QLineEdit()
+        self.source_edit.setPlaceholderText("Source folder")
+        choose_files = QPushButton("Choose File(s)")
+        choose_files.clicked.connect(self._pick_files)
+        choose_folder = QPushButton("Choose Folder")
+        choose_folder.clicked.connect(self.pick_source_folder)
         source_row.addWidget(self.source_edit, 1)
-        source_row.addWidget(files_button)
-        source_row.addWidget(source_button)
-        settings_layout.addWidget(source_label)
-        settings_layout.addLayout(source_row)
-        settings_layout.addWidget(self.source_summary_label)
+        source_row.addWidget(choose_files)
+        source_row.addWidget(choose_folder)
+        source_layout.addLayout(source_row)
 
-        output_label = QLabel("Where should the finished files go?")
+        self.source_summary_label = QLabel()
+        self.source_summary_label.setObjectName("fieldHelp")
+        self.source_summary_label.hide()
+        source_layout.addWidget(self.source_summary_label)
+        layout.addWidget(source_panel)
+
+        setup_panel = QFrame()
+        setup_panel.setObjectName("panel")
+        setup_layout = QVBoxLayout(setup_panel)
+        setup_layout.setContentsMargins(18, 16, 18, 16)
+        setup_layout.setSpacing(10)
+        setup_layout.addWidget(self.panel_heading("Converter"))
+
         self.output_edit = QLineEdit()
-        self.output_edit.setPlaceholderText("A matching folder layout will be created here.")
-        output_button = QPushButton("Choose Folder")
-        output_button.clicked.connect(self.pick_output_folder)
-        settings_layout.addWidget(output_label)
-        settings_layout.addLayout(self.path_row(self.output_edit, output_button))
+        self.output_edit.setPlaceholderText("Output folder")
+        output_browse = QPushButton("Browse")
+        output_browse.clicked.connect(self.pick_output_folder)
+        setup_layout.addLayout(self.form_row("Output folder", self.output_edit, output_browse))
 
-        screen_row = QHBoxLayout()
-        screen_row.setSpacing(12)
-        screen_prompt = QLabel("How should it fill the screen?")
-        screen_prompt.setObjectName("sectionLabel")
         self.aspect_combo = QComboBox()
         self.aspect_combo.addItems(list(ASPECT_CHOICES.keys()))
         self.aspect_combo.currentTextChanged.connect(self.refresh_main_summary)
-        screen_row.addWidget(screen_prompt, 0)
-        screen_row.addWidget(self.aspect_combo, 1)
-        settings_layout.addLayout(screen_row)
+        self.aspect_combo.currentTextChanged.connect(self.sync_advanced_size_options)
+        setup_layout.addLayout(self.form_row("Screen shape", self.aspect_combo))
 
         self.framing_mode_combo = QComboBox()
         self.framing_mode_combo.addItems(list(FRAMING_CHOICES.keys()))
         self.framing_mode_combo.currentTextChanged.connect(self.sync_framing_to_advanced)
-        framing_row = QHBoxLayout()
-        framing_row.setSpacing(12)
-        framing_prompt = QLabel("How tightly should it fit?")
-        framing_prompt.setObjectName("sectionLabel")
-        framing_row.addWidget(framing_prompt, 0)
-        framing_row.addWidget(self.framing_mode_combo, 1)
-        settings_layout.addLayout(framing_row)
+        setup_layout.addLayout(self.form_row("Framing", self.framing_mode_combo))
 
-        audio_row = QHBoxLayout()
-        audio_row.setSpacing(12)
-        audio_prompt = QLabel("Audio track preference")
-        audio_prompt.setObjectName("sectionLabel")
         self.audio_pref_combo = QComboBox()
         self.audio_pref_combo.addItems(AUDIO_PREFERENCES)
-        audio_row.addWidget(audio_prompt, 0)
-        audio_row.addWidget(self.audio_pref_combo, 1)
-        settings_layout.addLayout(audio_row)
+        self.audio_pref_combo.currentTextChanged.connect(self.refresh_main_summary)
+        setup_layout.addLayout(self.form_row("Audio", self.audio_pref_combo))
+
+        self.subtitle_pref_combo = QComboBox()
+        self.subtitle_pref_combo.addItems(SUBTITLE_PREFERENCES)
+        self.subtitle_pref_combo.currentTextChanged.connect(self.refresh_main_summary)
+        setup_layout.addLayout(self.form_row("Subtitles", self.subtitle_pref_combo))
+
+        advanced_row = QHBoxLayout()
+        advanced_row.addStretch()
+        self.advanced_button = QPushButton("Advanced Settings")
+        self.advanced_button.clicked.connect(self.open_advanced_settings)
+        advanced_row.addWidget(self.advanced_button)
+        setup_layout.addLayout(advanced_row)
+        layout.addWidget(setup_panel)
+
+        ready_panel = QFrame()
+        ready_panel.setObjectName("panel")
+        ready_layout = QVBoxLayout(ready_panel)
+        ready_layout.setContentsMargins(18, 16, 18, 16)
+        ready_layout.setSpacing(10)
+        ready_layout.addWidget(self.panel_heading("Ready"))
+
+        chips_row_one = QHBoxLayout()
+        chips_row_one.setSpacing(10)
+        chips_row_two = QHBoxLayout()
+        chips_row_two.setSpacing(10)
+        chips_row_three = QHBoxLayout()
+        chips_row_three.setSpacing(10)
+        self._pf_source = self.make_summary_value("Source", chips_row_one)
+        self._pf_output = self.make_summary_value("Output", chips_row_one)
+        self._pf_size = self.make_summary_value("Size", chips_row_two)
+        self._pf_framing = self.make_summary_value("Framing", chips_row_two)
+        self._pf_audio = self.make_summary_value("Audio", chips_row_three)
+        self._pf_subtitles = self.make_summary_value("Subtitles", chips_row_three)
+        ready_layout.addLayout(chips_row_one)
+        ready_layout.addLayout(chips_row_two)
+        ready_layout.addLayout(chips_row_three)
+
+        self.batch_note = QLabel()
+        self.batch_note.setObjectName("fieldHelp")
+        self.batch_note.setWordWrap(True)
+        ready_layout.addWidget(self.batch_note)
+
+        self.phase_label = QLabel("Pick your source and press Start when you're ready.")
+        self.phase_label.setObjectName("dialogNote")
+        self.phase_label.setWordWrap(True)
+        ready_layout.addWidget(self.phase_label)
+
+        batch_lbl = QLabel("Batch")
+        batch_lbl.setObjectName("metaLabel")
+        self.overall_progress = QProgressBar()
+        self.overall_progress.setRange(0, 100)
+        ready_layout.addWidget(batch_lbl)
+        ready_layout.addWidget(self.overall_progress)
+        file_lbl = QLabel("File")
+        file_lbl.setObjectName("metaLabel")
+        self.file_progress = QProgressBar()
+        self.file_progress.setRange(0, 100)
+        ready_layout.addWidget(file_lbl)
+        ready_layout.addWidget(self.file_progress)
 
         action_row = QHBoxLayout()
-        action_row.setSpacing(10)
-        self.start_button = QPushButton("Start Making MediaWave Files")
-        self.start_button.setObjectName("primaryButton")
+        action_row.setSpacing(8)
+        self.start_button = QPushButton("Start")
+        self.start_button.setObjectName("saveButton")
         self.start_button.clicked.connect(self.start_batch)
         self.pause_button = QPushButton("Pause")
         self.pause_button.clicked.connect(self.pause_batch)
@@ -1317,71 +1853,80 @@ class MediaWaveConverterWindow(QMainWindow):
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(self.cancel_batch)
         self.cancel_button.setEnabled(False)
-        self.advanced_button = QPushButton("For Real Smart Alecks")
-        self.advanced_button.clicked.connect(self.open_advanced_settings)
-        open_output_button = QPushButton("Open Finished Folder")
-        open_output_button.clicked.connect(self.open_output_folder)
-        action_row.addWidget(self.start_button, 1)
+        action_row.addWidget(self.start_button, 2)
         action_row.addWidget(self.pause_button)
         action_row.addWidget(self.resume_button)
-        action_row.addWidget(self.advanced_button)
         action_row.addWidget(self.cancel_button)
-        action_row.addWidget(open_output_button)
-        settings_layout.addLayout(action_row)
+        ready_layout.addLayout(action_row)
+        open_row = QHBoxLayout()
+        open_row.addStretch()
+        self.open_output_button = QPushButton("Open Finished Folder")
+        self.open_output_button.clicked.connect(self.open_output_folder)
+        open_row.addWidget(self.open_output_button)
+        ready_layout.addLayout(open_row)
+        layout.addWidget(ready_panel, 1)
+        layout.addStretch()
+        return page
 
-        progress_card = QFrame()
-        progress_card.setObjectName("card")
-        progress_layout = QVBoxLayout(progress_card)
-        progress_layout.setContentsMargins(22, 22, 22, 22)
-        progress_layout.setSpacing(12)
-        root_layout.addWidget(progress_card)
+    def build_queue_page(self) -> QWidget:
+        page = QWidget()
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(16)
 
-        progress_title = QLabel("Progress")
-        progress_title.setObjectName("cardTitle")
-        progress_layout.addWidget(progress_title)
+        status_panel = QFrame()
+        status_panel.setObjectName("panel")
+        status_layout = QVBoxLayout(status_panel)
+        status_layout.setContentsMargins(18, 16, 18, 16)
+        status_layout.setSpacing(10)
+        status_layout.addWidget(self.panel_heading("Status"))
 
-        self.phase_label = QLabel("Pick your folders and press start when you’re ready.")
-        self.phase_label.setObjectName("phaseLabel")
-        self.phase_label.setWordWrap(True)
-        progress_layout.addWidget(self.phase_label)
+        self.queue_phase_label = QLabel("No batch running right now.")
+        self.queue_phase_label.setObjectName("dialogNote")
+        self.queue_phase_label.setWordWrap(True)
+        status_layout.addWidget(self.queue_phase_label)
+
+        queue_progress_row = QHBoxLayout()
+        queue_progress_row.setSpacing(14)
+        overall_box = QVBoxLayout()
+        overall_box.setSpacing(4)
+        overall_title = QLabel("Batch progress")
+        overall_title.setObjectName("metaLabel")
+        self.queue_overall_progress = QProgressBar()
+        self.queue_overall_progress.setRange(0, 100)
+        overall_box.addWidget(overall_title)
+        overall_box.addWidget(self.queue_overall_progress)
+        file_box = QVBoxLayout()
+        file_box.setSpacing(4)
+        file_title = QLabel("File progress")
+        file_title.setObjectName("metaLabel")
+        self.queue_file_progress = QProgressBar()
+        self.queue_file_progress.setRange(0, 100)
+        file_box.addWidget(file_title)
+        file_box.addWidget(self.queue_file_progress)
+        queue_progress_row.addLayout(overall_box, 1)
+        queue_progress_row.addLayout(file_box, 1)
+        status_layout.addLayout(queue_progress_row)
 
         counter_row = QHBoxLayout()
-        counter_row.setSpacing(12)
-        self.total_counter = self.stat_chip("Found", "0")
-        self.done_counter = self.stat_chip("Done", "0")
-        self.skip_counter = self.stat_chip("Skipped", "0")
-        self.fail_counter = self.stat_chip("Oops", "0")
+        counter_row.setSpacing(8)
+        self.total_counter = self.stat_chip("FOUND", "0")
+        self.done_counter = self.stat_chip("DONE", "0")
+        self.skip_counter = self.stat_chip("SKIPPED", "0")
+        self.fail_counter = self.stat_chip("OOPS", "0")
         counter_row.addWidget(self.total_counter["card"])
         counter_row.addWidget(self.done_counter["card"])
         counter_row.addWidget(self.skip_counter["card"])
         counter_row.addWidget(self.fail_counter["card"])
-        progress_layout.addLayout(counter_row)
+        status_layout.addLayout(counter_row)
+        layout.addWidget(status_panel)
 
-        progress_layout.addWidget(QLabel("Whole batch"))
-        self.overall_progress = QProgressBar()
-        self.overall_progress.setRange(0, 100)
-        progress_layout.addWidget(self.overall_progress)
-
-        progress_layout.addWidget(QLabel("File in front of the line"))
-        self.file_progress = QProgressBar()
-        self.file_progress.setRange(0, 100)
-        progress_layout.addWidget(self.file_progress)
-
-        self.batch_note = QLabel()
-        self.batch_note.setObjectName("hintText")
-        self.batch_note.setWordWrap(True)
-        progress_layout.addWidget(self.batch_note)
-
-        queue_card = QFrame()
-        queue_card.setObjectName("card")
-        queue_layout = QVBoxLayout(queue_card)
-        queue_layout.setContentsMargins(22, 22, 22, 22)
-        queue_layout.setSpacing(12)
-        root_layout.addWidget(queue_card, 1)
-
-        queue_title = QLabel("Queue")
-        queue_title.setObjectName("cardTitle")
-        queue_layout.addWidget(queue_title)
+        queue_panel = QFrame()
+        queue_panel.setObjectName("panel")
+        queue_layout = QVBoxLayout(queue_panel)
+        queue_layout.setContentsMargins(18, 16, 18, 16)
+        queue_layout.setSpacing(10)
+        queue_layout.addWidget(self.panel_heading("Queue"))
 
         self.queue_table = QTableWidget(0, 3)
         self.queue_table.setHorizontalHeaderLabels(["File", "Status", "Where It Went"])
@@ -1390,35 +1935,131 @@ class MediaWaveConverterWindow(QMainWindow):
         self.queue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.queue_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.queue_table.setAlternatingRowColors(True)
-        self.queue_table.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
-        self.queue_table.setMinimumHeight(240)
-        self.queue_table.setColumnWidth(0, 300)
-        self.queue_table.setColumnWidth(1, 160)
+        self.queue_table.setColumnWidth(0, 320)
+        self.queue_table.setColumnWidth(1, 120)
+        self.queue_table.setMinimumHeight(300)
         queue_layout.addWidget(self.queue_table, 1)
+        layout.addWidget(queue_panel, 2)
 
-        log_card = QFrame()
-        log_card.setObjectName("card")
-        log_layout = QVBoxLayout(log_card)
-        log_layout.setContentsMargins(22, 22, 22, 22)
-        log_layout.setSpacing(12)
-        root_layout.addWidget(log_card, 1)
+        log_panel = QFrame()
+        log_panel.setObjectName("panel")
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(18, 16, 18, 16)
+        log_layout.setSpacing(10)
 
-        log_title = QLabel("Log")
-        log_title.setObjectName("cardTitle")
-        log_layout.addWidget(log_title)
+        log_top = QHBoxLayout()
+        log_top.setSpacing(10)
+        log_top.addWidget(self.panel_heading("Log"))
+        log_top.addStretch()
+        clear_log_button = QPushButton("Clear Log")
+        clear_log_button.clicked.connect(self.clear_log)
+        log_top.addWidget(clear_log_button)
+        log_layout.addLayout(log_top)
 
         self.log_output = QPlainTextEdit()
         self.log_output.setReadOnly(True)
         self.log_output.setMaximumBlockCount(1200)
-        self.log_output.setMinimumHeight(220)
+        self.log_output.setMinimumHeight(190)
         log_layout.addWidget(self.log_output, 1)
+        layout.addWidget(log_panel, 2)
+        return page
 
-    def path_row(self, field: QLineEdit, button: QPushButton) -> QHBoxLayout:
-        layout = QHBoxLayout()
-        layout.setSpacing(10)
-        layout.addWidget(field, 1)
-        layout.addWidget(button)
-        return layout
+    def build_advanced_page(self) -> QWidget:
+        page, layout = self.make_scroll_page()
+
+        picture_panel = QFrame()
+        picture_panel.setObjectName("panel")
+        picture_layout = QVBoxLayout(picture_panel)
+        picture_layout.setContentsMargins(18, 16, 18, 16)
+        picture_layout.setSpacing(10)
+        picture_layout.addWidget(self.panel_heading("Picture"))
+
+        self.size_combo = QComboBox()
+        picture_layout.addLayout(self.form_row("Final size", self.size_combo))
+
+        self.aspect_match_combo = QComboBox()
+        self.aspect_match_combo.addItems(["Keep chosen shape", "Match source shape more closely"])
+        picture_layout.addLayout(self.form_row("Shape match", self.aspect_match_combo))
+
+        self.framing_combo = QComboBox()
+        self.framing_combo.addItems(list(FRAMING_CHOICES.keys()))
+        self.framing_combo.currentTextChanged.connect(self.sync_framing_from_advanced)
+        picture_layout.addLayout(self.form_row("Picture style", self.framing_combo))
+
+        self.crop_slider = QSlider(Qt.Horizontal)
+        self.crop_slider.setRange(0, 100)
+        self.crop_slider.setSingleStep(5)
+        self.crop_slider.valueChanged.connect(self.update_crop_label)
+        crop_wrap = QWidget()
+        crop_wrap_layout = QVBoxLayout(crop_wrap)
+        crop_wrap_layout.setContentsMargins(0, 0, 0, 0)
+        crop_wrap_layout.setSpacing(4)
+        crop_wrap_layout.addWidget(self.crop_slider)
+        self.crop_label = QLabel()
+        self.crop_label.setObjectName("fieldHelp")
+        crop_wrap_layout.addWidget(self.crop_label)
+        picture_layout.addLayout(self.form_row("Black-bar trim", crop_wrap))
+        layout.addWidget(picture_panel)
+
+        batch_panel = QFrame()
+        batch_panel.setObjectName("panel")
+        batch_layout = QVBoxLayout(batch_panel)
+        batch_layout.setContentsMargins(18, 16, 18, 16)
+        batch_layout.setSpacing(10)
+        batch_layout.addWidget(self.panel_heading("Batch"))
+
+        self.quality_combo = QComboBox()
+        self.quality_combo.addItems(list(QUALITY_PRESETS.keys()))
+        self.quality_combo.currentTextChanged.connect(self.refresh_main_summary)
+        batch_layout.addLayout(self.form_row("Speed mode", self.quality_combo))
+
+        self.encoder_combo = QComboBox()
+        self.encoder_combo.addItems(list(ENCODER_CHOICES.keys()))
+        self.encoder_combo.currentTextChanged.connect(self.refresh_main_summary)
+        batch_layout.addLayout(self.form_row("Engine", self.encoder_combo))
+
+        self.recursive_checkbox = QCheckBox("Look through subfolders too")
+        self.recursive_checkbox.toggled.connect(self.refresh_main_summary)
+        batch_layout.addLayout(self.form_row("Folder scan", self.recursive_checkbox))
+
+        self.skip_checkbox = QCheckBox("Skip files that were already finished with these settings")
+        self.skip_checkbox.toggled.connect(self.refresh_main_summary)
+        batch_layout.addLayout(self.form_row("Repeat runs", self.skip_checkbox))
+        layout.addWidget(batch_panel)
+
+        save_row = QHBoxLayout()
+        save_row.addStretch()
+        self.apply_settings_button = QPushButton("Apply Settings")
+        self.apply_settings_button.setObjectName("saveButton")
+        self.apply_settings_button.clicked.connect(self.apply_advanced_settings)
+        save_row.addWidget(self.apply_settings_button)
+        layout.addLayout(save_row)
+        layout.addStretch()
+
+        self.size_combo.currentTextChanged.connect(self.refresh_main_summary)
+        return page
+
+    def clear_log(self) -> None:
+        self.log_output.clear()
+
+    def update_crop_label(self, value: int) -> None:
+        self.crop_label.setText(slider_text(value))
+        self.refresh_main_summary()
+
+    def apply_advanced_settings(self) -> None:
+        self.save_settings()
+        self.refresh_main_summary()
+
+    def switch_page(self, page_key: str) -> None:
+        page_map = {
+            "converter": self.converter_page,
+            "queue": self.queue_page,
+            "advanced": self.advanced_page,
+        }
+        target = page_map.get(page_key, self.converter_page)
+        self.page_stack.setCurrentWidget(target)
+        for key, button in self._nav_buttons.items():
+            button.setChecked(key == page_key)
 
     def stat_chip(self, label: str, value: str) -> dict[str, QWidget | QLabel]:
         card = QFrame()
@@ -1437,175 +2078,298 @@ class MediaWaveConverterWindow(QMainWindow):
     def apply_styles(self) -> None:
         self.setStyleSheet(
             """
-            QMainWindow, QWidget {
-                background: #7f9199;
-                color: #edf4f5;
-                font-size: 14px;
+            QMainWindow {
+                background: rgba(13,16,38,255);
             }
-            QFrame#heroCard {
+            QWidget#centralWidget {
+                background: rgba(13,16,38,255);
+            }
+            QWidget#contentArea {
+                background: rgba(13,16,38,255);
+            }
+            QStackedWidget#advContentStack {
+                background: rgba(13,16,38,255);
+            }
+            QWidget#sidebar {
                 background: transparent;
-                border: none;
             }
-            QFrame#card {
+            QWidget#advNavHeader {
                 background: transparent;
-                border: none;
             }
-            QFrame#statCard {
-                background: rgba(92, 112, 121, 0.55);
-                border: none;
-                border-radius: 16px;
-            }
-            QLabel#heroTitle {
-                color: #fff8ee;
-                font-size: 34px;
+            QLabel#advNavTagline {
+                color: rgba(255,218,96,235);
+                font-size: 13px;
                 font-weight: 700;
+                background: transparent;
             }
-            QLabel#heroSubtitle {
-                color: rgba(245, 250, 251, 0.9);
-                font-size: 17px;
+            QWidget#advNavSep {
+                background: rgba(68,108,235,90);
+            }
+            QPushButton#advNavItem {
+                text-align: left;
+                padding: 11px 16px 11px 22px;
+                border: none;
+                border-left: 3px solid transparent;
+                border-radius: 0px;
+                background: transparent;
+                color: rgba(138,158,212,255);
+                font-size: 13px;
+                font-weight: 600;
+                min-height: 38px;
+            }
+            QPushButton#advNavItem:checked {
+                border-left: 3px solid rgba(96,144,255,255);
+                background: rgba(68,108,235,38);
+                color: white;
+            }
+            QPushButton#advNavItem:hover:!checked {
+                background: rgba(68,108,235,18);
+                color: rgba(210,222,252,255);
+            }
+            QLabel#advNavFooter {
+                color: rgba(138,158,212,255);
+                font-size: 10px;
+                background: transparent;
             }
             QLabel#ffmpegStatus {
-                color: #ffd899;
-                font-size: 13px;
-                margin-top: 6px;
-            }
-            QLabel#cardTitle {
-                color: #fff4dd;
-                font-size: 20px;
-                font-weight: 700;
-            }
-            QLabel#phaseLabel {
-                color: #f7fafb;
-                font-size: 16px;
+                color: rgba(255,218,96,220);
+                font-size: 11px;
                 font-weight: 600;
+                background: transparent;
             }
-            QLabel#hintText {
-                color: rgba(236, 244, 245, 0.7);
-                font-size: 13px;
-            }
-            QLabel#sectionLabel {
-                color: #fff4dd;
-                font-size: 16px;
-                font-weight: 700;
-            }
-            QLabel#statLabel {
-                color: rgba(235, 244, 245, 0.74);
-                font-size: 12px;
-                text-transform: uppercase;
-            }
-            QLabel#statValue {
-                color: #ffcc8a;
-                font-size: 24px;
-                font-weight: 700;
-            }
-            QLabel#logoLabel {
-                background: rgba(255, 255, 255, 0.10);
-                border-radius: 18px;
-                color: #ffe4b6;
-                font-size: 38px;
-                font-weight: 800;
-            }
-            QLineEdit, QComboBox, QPlainTextEdit, QTableWidget {
-                background: rgba(72, 88, 96, 0.72);
-                border: 1px solid rgba(255, 255, 255, 0.10);
-                border-radius: 14px;
-                padding: 10px 12px;
-                selection-background-color: #e77d37;
-                selection-color: #fffaf4;
-            }
-            QComboBox::drop-down {
-                border: none;
-                width: 24px;
-            }
-            QComboBox QAbstractItemView {
-                background: #5c7079;
-                color: #f0f5f6;
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                selection-background-color: #db6e29;
-            }
-            QPushButton {
-                background: rgba(72, 88, 96, 0.84);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 14px;
-                color: #f4f8f9;
-                padding: 11px 16px;
+            QLabel#coaxieLabel {
+                color: rgba(96,200,255,255);
+                font-size: 11px;
                 font-weight: 600;
+                background: transparent;
             }
-            QPushButton:hover {
-                background: rgba(84, 102, 111, 0.92);
-            }
-            QPushButton#primaryButton {
-                background: #e77d37;
-                color: #fff9f2;
-                border: 1px solid rgba(255, 255, 255, 0.1);
-            }
-            QPushButton#primaryButton:hover {
-                background: #f08c47;
-            }
-            QPushButton:disabled {
-                background: #1c282d;
-                color: rgba(240, 245, 246, 0.4);
-            }
-            QCheckBox {
-                spacing: 10px;
-                color: #f2f7f8;
-            }
-            QCheckBox::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 6px;
-                border: 1px solid rgba(255, 255, 255, 0.18);
-                background: #0f1b20;
-            }
-            QCheckBox::indicator:checked {
-                background: #e77d37;
-            }
-            QSlider::groove:horizontal {
+            QScrollArea {
                 border: none;
-                height: 8px;
-                border-radius: 4px;
-                background: rgba(255, 255, 255, 0.12);
+                background: transparent;
             }
-            QSlider::handle:horizontal {
-                background: #ffcc8a;
-                border: none;
-                width: 20px;
-                margin: -7px 0;
+            QFrame#panel {
+                background: rgba(22,26,58,255);
+                border: 1px solid rgba(68,108,235,110);
                 border-radius: 10px;
             }
-            QProgressBar {
-                background: rgba(72, 88, 96, 0.72);
-                border: 1px solid rgba(255, 255, 255, 0.08);
-                border-radius: 12px;
-                padding: 2px;
-                text-align: center;
-                color: #f8fafb;
-                min-height: 22px;
-            }
-            QProgressBar::chunk {
-                border-radius: 9px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
-                    stop:0 #ef7d34, stop:1 #ffd28c);
-            }
-            QTableWidget {
-                gridline-color: rgba(255, 255, 255, 0.05);
-                alternate-background-color: rgba(255, 255, 255, 0.025);
-            }
-            QHeaderView::section {
-                background: rgba(92, 112, 121, 0.75);
-                color: #f4f8f9;
-                border: none;
-                padding: 10px;
+            QLabel#sectionHeader {
+                color: rgba(118,162,255,255);
+                font-size: 14px;
                 font-weight: 700;
+                background: transparent;
+            }
+            QLabel#configLabel {
+                color: rgba(210,222,252,255);
+                font-size: 13px;
+                font-weight: 600;
+                background: transparent;
+            }
+            QLabel#fieldHelp, QLabel#dialogNote, QLabel#metaLabel {
+                color: rgba(138,158,212,255);
+                font-size: 12px;
+                background: transparent;
+            }
+            QWidget#summaryCell {
+                background: rgba(16,20,50,220);
+                border: 1px solid rgba(68,108,235,110);
+                border-radius: 6px;
+            }
+            QLabel#summaryKey {
+                color: rgba(118,162,255,255);
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                background: transparent;
+            }
+            QLabel#summaryValue {
+                color: rgba(188,205,248,255);
+                font-size: 12px;
+                font-weight: 600;
+                background: transparent;
+            }
+            QFrame#statCard {
+                background: rgba(16,20,50,220);
+                border: 1px solid rgba(68,108,235,110);
+                border-radius: 8px;
             }
             QFrame#dropZone {
-                background: rgba(55, 72, 80, 0.50);
-                border: 2px dashed rgba(255, 255, 255, 0.22);
-                border-radius: 14px;
+                background: rgba(16,20,50,220);
+                border: 2px dashed rgba(68,108,235,180);
+                border-radius: 10px;
+            }
+            QFrame#dropZone:hover {
+                background: rgba(20,25,60,230);
+                border-color: rgba(96,144,255,220);
             }
             QLabel#dropZoneLabel {
-                color: rgba(235, 244, 245, 0.60);
-                font-size: 15px;
+                color: rgba(138,158,212,255);
+                font-size: 14px;
+                font-weight: 600;
+                background: transparent;
+            }
+            QLabel#statLabel {
+                color: rgba(138,158,212,255);
+                font-size: 10px;
+                font-weight: 700;
+                letter-spacing: 1px;
+                background: transparent;
+            }
+            QLabel#statValue {
+                color: rgba(210,222,252,255);
+                font-size: 18px;
+                font-weight: 700;
+                background: transparent;
+            }
+            QLineEdit, QComboBox, QPlainTextEdit {
+                min-height: 30px;
+                padding: 4px 9px;
+                border-radius: 6px;
+                border: 1px solid rgba(68,108,235,160);
+                background: rgba(16,20,50,255);
+                color: rgba(188,205,248,255);
+                font-size: 13px;
+            }
+            QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {
+                border: 1px solid rgba(68,108,235,220);
+            }
+            QComboBox::drop-down {
+                width: 24px;
+                border-left: 1px solid rgba(68,108,235,110);
+                background: rgba(30,38,90,220);
+                border-top-right-radius: 6px;
+                border-bottom-right-radius: 6px;
+            }
+            QComboBox QAbstractItemView {
+                border: 1px solid rgba(68,108,235,160);
+                background: rgba(18,22,52,255);
+                color: rgba(188,205,248,255);
+                selection-background-color: rgba(96,144,255,255);
+                selection-color: white;
+                outline: none;
+            }
+            QPlainTextEdit {
+                font-size: 12px;
+                font-family: Menlo, Monaco, monospace;
+            }
+            QPushButton {
+                min-height: 32px;
+                padding: 5px 16px;
+                border-radius: 7px;
+                border: 1px solid rgba(68,108,235,160);
+                color: rgba(210,222,252,255);
+                background: rgba(30,38,90,220);
+                font-size: 12px;
+            }
+            QPushButton:hover {
+                border: 1px solid rgba(68,108,235,220);
+                background: rgba(50,70,160,240);
+                color: white;
+            }
+            QPushButton#saveButton {
+                color: rgba(13,16,38,255);
+                font-weight: 700;
+                font-size: 13px;
+                border: 2px solid rgba(200,148,0,200);
+                background: rgba(255,188,10,255);
+            }
+            QPushButton#saveButton:hover {
+                background: rgba(255,205,40,255);
+                color: rgba(13,16,38,255);
+            }
+            QPushButton:disabled {
+                background: rgba(30,38,90,120);
+                color: rgba(138,158,212,140);
+                border-color: rgba(68,108,235,90);
+            }
+            QProgressBar {
+                min-height: 18px;
+                padding: 2px;
+                border-radius: 6px;
+                border: 1px solid rgba(68,108,235,110);
+                background: rgba(16,20,50,255);
+                text-align: center;
+                color: rgba(188,205,248,255);
+                font-size: 11px;
+            }
+            QProgressBar::chunk {
+                border-radius: 5px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 rgba(52,86,210,255), stop:1 rgba(255,188,10,255));
+            }
+            QTableWidget {
+                background: rgba(16,20,50,255);
+                border: 1px solid rgba(68,108,235,110);
+                border-radius: 8px;
+                gridline-color: rgba(68,108,235,50);
+                alternate-background-color: rgba(30,38,90,150);
+                color: rgba(188,205,248,255);
+                font-size: 12px;
+            }
+            QHeaderView::section {
+                background: rgba(22,26,58,255);
+                color: rgba(210,222,252,255);
+                border: none;
+                border-bottom: 1px solid rgba(68,108,235,110);
+                padding: 6px 8px;
+                font-size: 11px;
+                font-weight: 700;
+            }
+            QScrollBar:vertical {
+                background: rgba(22,26,58,120);
+                width: 10px;
+                margin: 2px;
+                border-radius: 5px;
+            }
+            QScrollBar::handle:vertical {
+                background: rgba(96,144,255,160);
+                min-height: 24px;
+                border-radius: 5px;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                height: 0px;
+            }
+            QScrollBar:horizontal {
+                background: rgba(22,26,58,120);
+                height: 8px;
+                margin: 2px;
+                border-radius: 4px;
+            }
+            QScrollBar::handle:horizontal {
+                background: rgba(96,144,255,160);
+                min-width: 24px;
+                border-radius: 4px;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                width: 0px;
+            }
+            QCheckBox {
+                color: rgba(138,158,212,255);
+                font-size: 13px;
+                spacing: 8px;
+                background: transparent;
+            }
+            QCheckBox::indicator {
+                width: 14px;
+                height: 14px;
+                border: 1px solid rgba(68,108,235,160);
+                border-radius: 3px;
+                background: rgba(16,20,50,255);
+            }
+            QCheckBox::indicator:checked {
+                background: rgba(96,144,255,255);
+                border: 1px solid rgba(68,108,235,160);
+            }
+            QSlider::groove:horizontal {
+                height: 7px;
+                border-radius: 3px;
+                background: rgba(68,108,235,90);
+            }
+            QSlider::handle:horizontal {
+                background: rgba(255,188,10,255);
+                border: none;
+                width: 18px;
+                margin: -6px 0;
+                border-radius: 9px;
             }
             """
         )
@@ -1617,47 +2381,52 @@ class MediaWaveConverterWindow(QMainWindow):
         aspect = LEGACY_ASPECT_LABELS.get(settings.get("aspect_label", ""), settings.get("aspect_label", "Classic TV"))
         if aspect in ASPECT_CHOICES:
             self.aspect_combo.setCurrentText(aspect)
-        dialog = self.ensure_advanced_dialog()
         self.sync_advanced_size_options()
         stored_size = settings.get("size_label") or ASPECT_CHOICES[self.aspect_combo.currentText()]["sizes"][0][0]
-        index = dialog.size_combo.findText(stored_size)
+        index = self.size_combo.findText(stored_size)
         if index >= 0:
-            dialog.size_combo.setCurrentIndex(index)
+            self.size_combo.setCurrentIndex(index)
         quality = LEGACY_QUALITY_LABELS.get(
             settings.get("quality_label", ""),
             settings.get("quality_label", "Best Picture"),
         )
         if quality in QUALITY_PRESETS:
-            dialog.quality_combo.setCurrentText(quality)
+            self.quality_combo.setCurrentText(quality)
         framing_mode = settings.get("framing_mode", "Keep More Picture")
         if framing_mode in FRAMING_CHOICES:
-            dialog.framing_combo.setCurrentText(framing_mode)
+            self.framing_combo.setCurrentText(framing_mode)
             self.framing_mode_combo.setCurrentText(framing_mode)
-        dialog.crop_slider.setValue(int(settings.get("crop_aggressiveness", 45)))
-        dialog.recursive_checkbox.setChecked(bool(settings.get("recursive", True)))
-        dialog.skip_checkbox.setChecked(bool(settings.get("skip_completed", True)))
+        self.crop_slider.setValue(int(settings.get("crop_aggressiveness", 45)))
+        self.recursive_checkbox.setChecked(bool(settings.get("recursive", True)))
+        self.skip_checkbox.setChecked(bool(settings.get("skip_completed", True)))
         encoder_mode = settings.get("encoder_mode", default_encoder_mode())
         if encoder_mode in ENCODER_CHOICES:
-            dialog.encoder_combo.setCurrentText(encoder_mode)
+            self.encoder_combo.setCurrentText(encoder_mode)
         audio_pref = settings.get("audio_preference", "Auto")
         if audio_pref in AUDIO_PREFERENCES:
             self.audio_pref_combo.setCurrentText(audio_pref)
+        subtitle_pref = LEGACY_SUBTITLE_PREFERENCES.get(
+            settings.get("subtitle_preference", "No Subtitles"),
+            settings.get("subtitle_preference", "No Subtitles"),
+        )
+        if subtitle_pref in SUBTITLE_PREFERENCES:
+            self.subtitle_pref_combo.setCurrentText(subtitle_pref)
         self.refresh_main_summary()
 
     def save_settings(self) -> None:
-        dialog = self.ensure_advanced_dialog()
         payload = {
             "source_root": self.source_edit.text().strip(),
             "output_root": self.output_edit.text().strip(),
             "aspect_label": self.aspect_combo.currentText(),
-            "size_label": dialog.size_combo.currentText(),
-            "framing_mode": dialog.framing_combo.currentText(),
-            "quality_label": dialog.quality_combo.currentText(),
-            "crop_aggressiveness": dialog.crop_slider.value(),
-            "encoder_mode": dialog.encoder_combo.currentText(),
-            "recursive": dialog.recursive_checkbox.isChecked(),
-            "skip_completed": dialog.skip_checkbox.isChecked(),
+            "size_label": self.size_combo.currentText(),
+            "framing_mode": self.framing_combo.currentText(),
+            "quality_label": self.quality_combo.currentText(),
+            "crop_aggressiveness": self.crop_slider.value(),
+            "encoder_mode": self.encoder_combo.currentText(),
+            "recursive": self.recursive_checkbox.isChecked(),
+            "skip_completed": self.skip_checkbox.isChecked(),
             "audio_preference": self.audio_pref_combo.currentText(),
+            "subtitle_preference": self.subtitle_pref_combo.currentText(),
         }
         save_json(SETTINGS_FILE, payload)
 
@@ -1684,86 +2453,77 @@ class MediaWaveConverterWindow(QMainWindow):
         else:
             self.ffmpeg_status.setText("The video tools are missing, so conversion can't start yet.")
 
-    def ensure_advanced_dialog(self) -> AdvancedSettingsDialog:
-        if self.advanced_dialog is None:
-            self.advanced_dialog = AdvancedSettingsDialog(self)
-            self.advanced_dialog.framing_combo.currentTextChanged.connect(self.sync_framing_from_advanced)
-            self.advanced_dialog.quality_combo.currentTextChanged.connect(self.refresh_main_summary)
-            self.advanced_dialog.encoder_combo.currentTextChanged.connect(self.refresh_main_summary)
-            self.advanced_dialog.size_combo.currentTextChanged.connect(self.refresh_main_summary)
-            self.advanced_dialog.crop_slider.valueChanged.connect(self.refresh_main_summary)
-            self.advanced_dialog.recursive_checkbox.toggled.connect(self.refresh_main_summary)
-            self.advanced_dialog.skip_checkbox.toggled.connect(self.refresh_main_summary)
-        return self.advanced_dialog
-
-    def advanced_snapshot(self) -> dict[str, Any]:
-        dialog = self.ensure_advanced_dialog()
-        return {
-            "size_label": dialog.size_combo.currentText(),
-            "framing_mode": dialog.framing_combo.currentText(),
-            "quality_label": dialog.quality_combo.currentText(),
-            "crop_aggressiveness": dialog.crop_slider.value(),
-            "encoder_mode": dialog.encoder_combo.currentText(),
-            "recursive": dialog.recursive_checkbox.isChecked(),
-            "skip_completed": dialog.skip_checkbox.isChecked(),
-        }
-
-    def restore_advanced_snapshot(self, snapshot: dict[str, Any]) -> None:
-        dialog = self.ensure_advanced_dialog()
-        index = dialog.size_combo.findText(snapshot.get("size_label", ""))
-        if index >= 0:
-            dialog.size_combo.setCurrentIndex(index)
-        if snapshot.get("framing_mode") in FRAMING_CHOICES:
-            dialog.framing_combo.setCurrentText(snapshot["framing_mode"])
-            self.framing_mode_combo.setCurrentText(snapshot["framing_mode"])
-        if snapshot.get("quality_label") in QUALITY_PRESETS:
-            dialog.quality_combo.setCurrentText(snapshot["quality_label"])
-        if snapshot.get("encoder_mode") in ENCODER_CHOICES:
-            dialog.encoder_combo.setCurrentText(snapshot["encoder_mode"])
-        dialog.crop_slider.setValue(int(snapshot.get("crop_aggressiveness", dialog.crop_slider.value())))
-        dialog.recursive_checkbox.setChecked(bool(snapshot.get("recursive", dialog.recursive_checkbox.isChecked())))
-        dialog.skip_checkbox.setChecked(bool(snapshot.get("skip_completed", dialog.skip_checkbox.isChecked())))
-
     def sync_advanced_size_options(self) -> None:
-        dialog = self.ensure_advanced_dialog()
-        current_label = dialog.size_combo.currentText()
+        if not hasattr(self, "size_combo"):
+            return
+        current_label = self.size_combo.currentText()
         current_aspect = self.aspect_combo.currentText()
-        dialog.size_combo.blockSignals(True)
-        dialog.size_combo.clear()
+        self.size_combo.blockSignals(True)
+        self.size_combo.clear()
         for label, _size in ASPECT_CHOICES[current_aspect]["sizes"]:
-            dialog.size_combo.addItem(label)
-        restored = dialog.size_combo.findText(current_label)
-        dialog.size_combo.setCurrentIndex(restored if restored >= 0 else 0)
-        dialog.size_combo.blockSignals(False)
+            self.size_combo.addItem(label)
+        restored = self.size_combo.findText(current_label)
+        self.size_combo.setCurrentIndex(restored if restored >= 0 else 0)
+        self.size_combo.blockSignals(False)
 
     def refresh_main_summary(self) -> None:
-        self.sync_advanced_size_options()
-        dialog = self.ensure_advanced_dialog()
+        required = [
+            "size_combo",
+            "_pf_source",
+            "_pf_output",
+            "_pf_size",
+            "_pf_framing",
+            "_pf_audio",
+            "_pf_subtitles",
+            "batch_note",
+            "crop_slider",
+        ]
+        if not all(hasattr(self, name) for name in required):
+            return
+        size_label = self.size_combo.currentText() or ASPECT_CHOICES[self.aspect_combo.currentText()]["sizes"][0][0]
+        framing_label = self.framing_mode_combo.currentText()
+        quality_label = self.quality_combo.currentText()
         self.batch_note.setText(
-            f"{dialog.size_combo.currentText()} • {dialog.framing_combo.currentText()} • {dialog.quality_combo.currentText()}"
+            f"{size_label} • {framing_label} • {quality_label} • {slider_text(self.crop_slider.value())}"
         )
+        if self._source_paths:
+            files = [p for p in self._source_paths if p.is_file()]
+            dirs = [p for p in self._source_paths if p.is_dir()]
+            parts = []
+            if files:
+                parts.append(f"{len(files)} file{'s' if len(files) != 1 else ''}")
+            if dirs:
+                parts.append(f"{len(dirs)} folder{'s' if len(dirs) != 1 else ''}")
+            source_text = " + ".join(parts) if parts else "—"
+        else:
+            src = self.source_edit.text().strip()
+            source_text = Path(src).name if src else "—"
+        self._pf_source.setText(source_text)
+        out = self.output_edit.text().strip()
+        self._pf_output.setText(Path(out).name if out else "—")
+        aspect = self.aspect_combo.currentText()
+        self._pf_size.setText(f"{size_label}\n{aspect}")
+        self._pf_framing.setText(framing_label)
+        self._pf_audio.setText(self.audio_pref_combo.currentText())
+        self._pf_subtitles.setText(self.subtitle_pref_combo.currentText())
 
     def sync_framing_to_advanced(self, label: str) -> None:
-        dialog = self.ensure_advanced_dialog()
-        if dialog.framing_combo.currentText() != label:
-            dialog.framing_combo.setCurrentText(label)
+        if not hasattr(self, "framing_combo"):
+            return
+        if self.framing_combo.currentText() != label:
+            self.framing_combo.setCurrentText(label)
         self.refresh_main_summary()
 
     def sync_framing_from_advanced(self, label: str) -> None:
+        if not hasattr(self, "framing_mode_combo"):
+            return
         if self.framing_mode_combo.currentText() != label:
             self.framing_mode_combo.setCurrentText(label)
         self.refresh_main_summary()
 
     def open_advanced_settings(self) -> None:
-        dialog = self.ensure_advanced_dialog()
         self.sync_advanced_size_options()
-        snapshot = self.advanced_snapshot()
-        if dialog.exec() == QDialog.Accepted:
-            self.save_settings()
-            self.refresh_main_summary()
-        else:
-            self.restore_advanced_snapshot(snapshot)
-            self.refresh_main_summary()
+        self.switch_page("advanced")
 
     def save_session(self, options: ConversionOptions) -> None:
         save_json(
@@ -1781,6 +2541,7 @@ class MediaWaveConverterWindow(QMainWindow):
                 "recursive": options.recursive,
                 "skip_completed": options.skip_completed,
                 "audio_preference": options.audio_preference,
+                "subtitle_preference": options.subtitle_preference,
                 "explicit_files": [str(f) for f in (options.explicit_files or [])],
             },
         )
@@ -1807,6 +2568,10 @@ class MediaWaveConverterWindow(QMainWindow):
                 recursive=bool(payload["recursive"]),
                 skip_completed=bool(payload["skip_completed"]),
                 audio_preference=payload.get("audio_preference", "Auto"),
+                subtitle_preference=LEGACY_SUBTITLE_PREFERENCES.get(
+                    payload.get("subtitle_preference", "No Subtitles"),
+                    payload.get("subtitle_preference", "No Subtitles"),
+                ),
                 explicit_files=[Path(p) for p in payload["explicit_files"]] if payload.get("explicit_files") else None,
             )
         except (KeyError, TypeError, ValueError):
@@ -1831,6 +2596,7 @@ class MediaWaveConverterWindow(QMainWindow):
         if not folder:
             return
         self.output_edit.setText(folder)
+        self.refresh_main_summary()
         self.save_settings()
 
     def open_output_folder(self) -> None:
@@ -1870,8 +2636,7 @@ class MediaWaveConverterWindow(QMainWindow):
 
     def _resolve_explicit_files(self) -> list:
         """Expand self._source_paths into a flat, deduplicated list of video file Paths."""
-        dialog = self.ensure_advanced_dialog()
-        recursive = dialog.recursive_checkbox.isChecked()
+        recursive = self.recursive_checkbox.isChecked()
         pattern = "**/*" if recursive else "*"
         files: list[Path] = []
         seen: set[Path] = set()
@@ -1900,6 +2665,7 @@ class MediaWaveConverterWindow(QMainWindow):
     def _refresh_source_display(self) -> None:
         if not self._source_paths:
             self.source_summary_label.hide()
+            self.refresh_main_summary()
             return
         video_files = [p for p in self._source_paths if p.is_file()]
         dirs = [p for p in self._source_paths if p.is_dir()]
@@ -1917,18 +2683,17 @@ class MediaWaveConverterWindow(QMainWindow):
             text = " + ".join(parts) + " ready to convert"
         self.source_summary_label.setText(text)
         self.source_summary_label.show()
+        self.refresh_main_summary()
 
     def current_target_size(self) -> tuple[int, int]:
-        dialog = self.ensure_advanced_dialog()
         current_aspect = self.aspect_combo.currentText()
-        selected_label = dialog.size_combo.currentText()
+        selected_label = self.size_combo.currentText()
         for label, size in ASPECT_CHOICES[current_aspect]["sizes"]:
             if label == selected_label:
                 return size
         return ASPECT_CHOICES[current_aspect]["sizes"][0][1]
 
     def gather_options(self) -> ConversionOptions | None:
-        dialog = self.ensure_advanced_dialog()
         output_text = self.output_edit.text().strip()
 
         if self._source_paths:
@@ -1965,12 +2730,13 @@ class MediaWaveConverterWindow(QMainWindow):
             target_width=width,
             target_height=height,
             framing_mode=self.framing_mode_combo.currentText(),
-            crop_aggressiveness=dialog.crop_slider.value(),
-            quality_label=dialog.quality_combo.currentText(),
-            encoder_mode=dialog.encoder_combo.currentText(),
-            recursive=dialog.recursive_checkbox.isChecked(),
-            skip_completed=dialog.skip_checkbox.isChecked(),
+            crop_aggressiveness=self.crop_slider.value(),
+            quality_label=self.quality_combo.currentText(),
+            encoder_mode=self.encoder_combo.currentText(),
+            recursive=self.recursive_checkbox.isChecked(),
+            skip_completed=self.skip_checkbox.isChecked(),
             audio_preference=self.audio_pref_combo.currentText(),
+            subtitle_preference=self.subtitle_pref_combo.currentText(),
             explicit_files=explicit_files,
         )
 
@@ -1994,15 +2760,15 @@ class MediaWaveConverterWindow(QMainWindow):
         self.save_settings()
         self.reset_queue()
         self.log_output.clear()
-        self.overall_progress.setValue(0)
-        self.file_progress.setValue(0)
-        self.phase_label.setText("Looking through your folder now...")
+        self.update_overall_progress(0)
+        self.update_file_progress(0)
+        self.update_phase_status("Looking through your folder now...")
         self.worker = BatchWorker(options)
         self.worker.queue_initialized.connect(self.initialize_queue)
         self.worker.row_update.connect(self.update_row)
-        self.worker.overall_progress.connect(self.overall_progress.setValue)
-        self.worker.file_progress.connect(self.file_progress.setValue)
-        self.worker.phase_changed.connect(self.phase_label.setText)
+        self.worker.overall_progress.connect(self.update_overall_progress)
+        self.worker.file_progress.connect(self.update_file_progress)
+        self.worker.phase_changed.connect(self.update_phase_status)
         self.worker.counters_changed.connect(self.update_counters)
         self.worker.log_message.connect(self.append_log)
         self.worker.ffmpeg_missing.connect(self.show_ffmpeg_warning)
@@ -2016,7 +2782,7 @@ class MediaWaveConverterWindow(QMainWindow):
     def pause_batch(self) -> None:
         if self.worker and self.worker.isRunning():
             self.worker.request_pause()
-            self.phase_label.setText("Pausing after the current file...")
+            self.update_phase_status("Pausing after the current file...")
             self.pause_button.setEnabled(False)
 
     def resume_batch(self) -> None:
@@ -2029,29 +2795,30 @@ class MediaWaveConverterWindow(QMainWindow):
         self.output_edit.setText(str(options.output_root))
         self.aspect_combo.setCurrentText(options.aspect_label)
         self.framing_mode_combo.setCurrentText(options.framing_mode)
-        dialog = self.ensure_advanced_dialog()
         self.sync_advanced_size_options()
-        dialog.framing_combo.setCurrentText(options.framing_mode)
-        dialog.quality_combo.setCurrentText(options.quality_label)
-        dialog.encoder_combo.setCurrentText(options.encoder_mode)
-        dialog.crop_slider.setValue(options.crop_aggressiveness)
-        dialog.recursive_checkbox.setChecked(options.recursive)
-        dialog.skip_checkbox.setChecked(options.skip_completed)
+        self.framing_combo.setCurrentText(options.framing_mode)
+        self.quality_combo.setCurrentText(options.quality_label)
+        self.encoder_combo.setCurrentText(options.encoder_mode)
+        self.crop_slider.setValue(options.crop_aggressiveness)
+        self.recursive_checkbox.setChecked(options.recursive)
+        self.skip_checkbox.setChecked(options.skip_completed)
         if options.audio_preference in AUDIO_PREFERENCES:
             self.audio_pref_combo.setCurrentText(options.audio_preference)
+        if options.subtitle_preference in SUBTITLE_PREFERENCES:
+            self.subtitle_pref_combo.setCurrentText(options.subtitle_preference)
         self._source_paths = list(options.explicit_files) if options.explicit_files else []
         self._refresh_source_display()
         size_label = f"{options.target_width} x {options.target_height}"
-        index = dialog.size_combo.findText(size_label)
+        index = self.size_combo.findText(size_label)
         if index >= 0:
-            dialog.size_combo.setCurrentIndex(index)
+            self.size_combo.setCurrentIndex(index)
         self.refresh_main_summary()
         self.start_batch()
 
     def cancel_batch(self) -> None:
         if self.worker and self.worker.isRunning():
             self.worker.request_cancel()
-            self.phase_label.setText("Stopping after the current step...")
+            self.update_phase_status("Stopping after the current step...")
         self.cancel_button.setEnabled(False)
         self.pause_button.setEnabled(False)
         self.clear_session()
@@ -2093,6 +2860,18 @@ class MediaWaveConverterWindow(QMainWindow):
         self.skip_counter["value"].setText(str(skipped))
         self.fail_counter["value"].setText(str(failed))
 
+    def update_phase_status(self, message: str) -> None:
+        self.phase_label.setText(message)
+        self.queue_phase_label.setText(message)
+
+    def update_overall_progress(self, value: int) -> None:
+        self.overall_progress.setValue(value)
+        self.queue_overall_progress.setValue(value)
+
+    def update_file_progress(self, value: int) -> None:
+        self.file_progress.setValue(value)
+        self.queue_file_progress.setValue(value)
+
     def append_log(self, message: str) -> None:
         stamp = time.strftime("%H:%M:%S")
         self.log_output.appendPlainText(f"[{stamp}] {message}")
@@ -2100,6 +2879,8 @@ class MediaWaveConverterWindow(QMainWindow):
     def show_ffmpeg_warning(self, message: str) -> None:
         QMessageBox.warning(self, "Video Tools Missing", message)
         self.start_button.setEnabled(True)
+        self.pause_button.setEnabled(False)
+        self.resume_button.setEnabled(bool(self.load_session()))
         self.cancel_button.setEnabled(False)
 
     def handle_finished_summary(self, summary: dict[str, Any]) -> None:
@@ -2109,11 +2890,13 @@ class MediaWaveConverterWindow(QMainWindow):
         if summary.get("paused"):
             self.resume_button.setEnabled(True)
             self.append_log("Batch paused safely.")
+            self.switch_page("queue")
             return
         self.resume_button.setEnabled(False)
         if summary.get("canceled"):
             self.append_log("Batch stopped by user.")
             self.clear_session()
+            self.switch_page("queue")
             return
 
         processed = summary.get("processed", 0)
@@ -2124,6 +2907,7 @@ class MediaWaveConverterWindow(QMainWindow):
             f"Batch finished. {processed} converted, {skipped} skipped, {failed} failed, {total} total."
         )
         self.clear_session()
+        self.switch_page("queue")
         QMessageBox.information(
             self,
             "Batch Complete",
