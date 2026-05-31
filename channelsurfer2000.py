@@ -437,23 +437,23 @@ def build_guide_metrics(profile_name, ui_scale, skin_style):
 
 
 def safe_isdir(path):
-    """os.path.isdir but won't hang on sleeping/unmounted network volumes.
-    On macOS, stat-ing a path under /Volumes/<vol>/ will block indefinitely
-    if the volume is sleeping. We check the mount point first with a non-blocking
-    os.path.ismount so we only stat when the parent mount is already active."""
+    """Best-effort directory check that avoids waking/stalling macOS volumes."""
     if not path:
         return False
     try:
         parts = path.replace("\\", "/").split("/")
-        # If path is under /Volumes/<vol>/..., guard on the volume itself
-        if sys.platform == "darwin" and len(parts) >= 3 and parts[1] == "Volumes":
-            mount = "/" + "/".join(parts[1:3])
-            # ismount is a lstat call on the parent — fast and won't hang
-            if not os.path.ismount(mount):
-                return False
+        if is_macos_volumes_path(path):
+            return True
         return os.path.isdir(path)
     except OSError:
         return False
+
+
+def is_macos_volumes_path(path):
+    if sys.platform != "darwin" or not path:
+        return False
+    parts = os.path.abspath(os.path.expanduser(path)).replace("\\", "/").split("/")
+    return len(parts) >= 3 and parts[1] == "Volumes" and bool(parts[2])
 
 
 def load_json_file(path, default):
@@ -15605,7 +15605,7 @@ class ChannelSurfer(QWidget):
         self.ensure_nettv_playlist_cache_with_progress(force=False)
         if not self.channels:
             saved = (self.app_settings.get("catalog_path") or "").strip()
-            if saved and os.path.isdir(saved):
+            if saved and safe_isdir(saved):
                 self.load_catalog(saved, autoplay=False)
             if not self.channels and self.app_settings.get("allow_empty_catalog_tv"):
                 self.channels = []
@@ -15809,9 +15809,15 @@ class ChannelSurfer(QWidget):
 
     def auto_load_catalog_if_available(self):
         saved_catalog = self.app_settings.get("catalog_path", "").strip()
-        if saved_catalog and safe_isdir(saved_catalog):
+        if not saved_catalog:
+            return
+        self.catalog_path_label.setText(saved_catalog)
+        if is_macos_volumes_path(saved_catalog):
+            self.status.setText("Saved catalog is on an external volume. Press Watch TV after the drive is awake.")
+            self.refresh_controls()
+            return
+        if safe_isdir(saved_catalog):
             self.catalog_root = saved_catalog
-            self.catalog_path_label.setText(saved_catalog)
             self.status.setText("Saved catalog ready. Press Watch TV to load it, or Choose Catalog to switch libraries.")
             if self.app_settings.get("auto_launch", False):
                 QTimer.singleShot(150, self.watch_tv)
@@ -19565,7 +19571,10 @@ class ChannelSurfer(QWidget):
 
         if not has_channels:
             if self.app_settings.get("catalog_path"):
-                self.status.setText("Saved catalog ready. Press Watch TV to load it, or Choose Catalog to switch libraries.")
+                if is_macos_volumes_path(self.app_settings.get("catalog_path", "")):
+                    self.status.setText("Saved catalog is on an external volume. Press Watch TV after the drive is awake.")
+                else:
+                    self.status.setText("Saved catalog ready. Press Watch TV to load it, or Choose Catalog to switch libraries.")
             elif special_only_ready:
                 self.status.setText("Companion-only TV is ready. Press Watch TV to test the cable system without local content.")
             else:
