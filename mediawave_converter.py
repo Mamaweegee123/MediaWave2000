@@ -133,6 +133,9 @@ ENCODER_CHOICES = {
     "Mac Speed Boost": "Use Apple's video engine when available for faster batches.",
     "Compatibility Mode": "Use classic software encoding for the most predictable results.",
 }
+AUDIO_PREFERENCES = ["Auto", "Prefer English", "Prefer Japanese"]
+_ENGLISH_LANG_TAGS = {"eng", "en"}
+_JAPANESE_LANG_TAGS = {"jpn", "ja", "jp"}
 
 
 def resource_base_dir() -> Path:
@@ -493,6 +496,7 @@ class ConversionOptions:
     encoder_mode: str
     recursive: bool
     skip_completed: bool
+    audio_preference: str = "Auto"
 
     @property
     def aspect_ratio(self) -> float:
@@ -516,10 +520,21 @@ class ConversionOptions:
             "crop_aggressiveness": self.crop_aggressiveness,
             "quality_label": self.quality_label,
             "recursive": self.recursive,
+            "audio_preference": self.audio_preference,
             "audio_target_lufs": TARGET_LUFS,
             "audio_target_tp": TARGET_TP,
             "audio_target_lra": TARGET_LRA,
         }
+
+
+@dataclass
+class AudioStreamInfo:
+    ffmpeg_index: int
+    audio_index: int
+    codec: str
+    language: str
+    title: str
+    channels: int
 
 
 @dataclass
@@ -530,6 +545,24 @@ class ProbeInfo:
     has_audio: bool
     video_codec: str
     audio_codec: str
+    audio_streams: list  # list[AudioStreamInfo]
+
+
+def select_audio_stream(
+    streams: list,  # list[AudioStreamInfo]
+    preference: str,
+) -> "AudioStreamInfo | None":
+    if not streams:
+        return None
+    if preference == "Prefer English":
+        for s in streams:
+            if s.language in _ENGLISH_LANG_TAGS:
+                return s
+    elif preference == "Prefer Japanese":
+        for s in streams:
+            if s.language in _JAPANESE_LANG_TAGS:
+                return s
+    return streams[0]
 
 
 class BatchWorker(QThread):
@@ -629,8 +662,17 @@ class BatchWorker(QThread):
                 crop = self.apply_target_aspect(crop, probe.width, probe.height)
                 self.phase_changed.emit(f"Making {source_path.name} MediaWave-ready ({index}/{total})")
                 self.row_update.emit(row_key, "Working", "Making the new MP4 file.", str(output_path))
+                chosen_audio = select_audio_stream(probe.audio_streams, self.options.audio_preference)
+                if chosen_audio is not None:
+                    track_desc = f"track {chosen_audio.audio_index} (lang={chosen_audio.language}, codec={chosen_audio.codec}"
+                    if chosen_audio.title:
+                        track_desc += f", title={chosen_audio.title!r}"
+                    track_desc += ")"
+                    self.log_message.emit(f"Audio for {source_path.name}: selected {track_desc}.")
+                elif probe.has_audio:
+                    self.log_message.emit(f"Audio for {source_path.name}: no audio streams found, encoding without audio.")
                 output_path.parent.mkdir(parents=True, exist_ok=True)
-                self.transcode(source_path, output_path, probe, crop)
+                self.transcode(source_path, output_path, probe, crop, chosen_audio)
                 self.file_progress.emit(100)
                 processed += 1
                 self.row_update.emit(
@@ -713,14 +755,27 @@ class BatchWorker(QThread):
         payload = json.loads(completed.stdout or "{}")
         streams = payload.get("streams", [])
         video_stream = next((stream for stream in streams if stream.get("codec_type") == "video"), None)
-        audio_stream = next((stream for stream in streams if stream.get("codec_type") == "audio"), None)
         if not video_stream:
             raise RuntimeError("This file does not contain a video stream.")
 
+        raw_audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+        audio_stream_infos: list[AudioStreamInfo] = []
+        for audio_idx, s in enumerate(raw_audio_streams):
+            tags = s.get("tags", {}) or {}
+            audio_stream_infos.append(AudioStreamInfo(
+                ffmpeg_index=int(s.get("index", 0)),
+                audio_index=audio_idx,
+                codec=str(s.get("codec_name") or "unknown"),
+                language=str(tags.get("language") or "und").lower().strip(),
+                title=str(tags.get("title") or ""),
+                channels=int(s.get("channels") or 0),
+            ))
+
+        first_audio = audio_stream_infos[0] if audio_stream_infos else None
         duration_raw = (
             payload.get("format", {}).get("duration")
             or video_stream.get("duration")
-            or (audio_stream or {}).get("duration")
+            or (first_audio and raw_audio_streams[0].get("duration"))
             or 0
         )
         try:
@@ -737,9 +792,10 @@ class BatchWorker(QThread):
             duration=duration,
             width=width,
             height=height,
-            has_audio=audio_stream is not None,
+            has_audio=bool(audio_stream_infos),
             video_codec=str(video_stream.get("codec_name") or "unknown"),
-            audio_codec=str((audio_stream or {}).get("codec_name") or "none"),
+            audio_codec=str(first_audio.codec if first_audio else "none"),
+            audio_streams=audio_stream_infos,
         )
 
     def detect_crop(self, source_path: Path, probe: ProbeInfo) -> tuple[int, int, int, int]:
@@ -851,6 +907,7 @@ class BatchWorker(QThread):
         output_path: Path,
         probe: ProbeInfo,
         crop: tuple[int, int, int, int],
+        chosen_audio: "AudioStreamInfo | None",
     ) -> None:
         primary_encoder = resolve_video_encoder(self.options.encoder_mode)
         encoder_order = [primary_encoder]
@@ -860,7 +917,7 @@ class BatchWorker(QThread):
         last_error = "FFmpeg reported an error while transcoding."
         for encoder_name in encoder_order:
             try:
-                self.transcode_with_encoder(source_path, output_path, probe, crop, encoder_name)
+                self.transcode_with_encoder(source_path, output_path, probe, crop, encoder_name, chosen_audio)
                 if encoder_name != primary_encoder:
                     self.log_message.emit(
                         f"{source_path.name}: switched to compatibility mode after the fast encoder said no."
@@ -884,6 +941,7 @@ class BatchWorker(QThread):
         probe: ProbeInfo,
         crop: tuple[int, int, int, int],
         video_encoder: str,
+        chosen_audio: "AudioStreamInfo | None",
     ) -> None:
         x, y, width, height = crop
         audio_filters = [f"loudnorm=I={TARGET_LUFS}:LRA={TARGET_LRA}:TP={TARGET_TP}"]
@@ -907,8 +965,8 @@ class BatchWorker(QThread):
             "0",
         ]
 
-        if probe.has_audio:
-            command.extend(["-map", "0:a:0?"])
+        if chosen_audio is not None:
+            command.extend(["-map", f"0:{chosen_audio.ffmpeg_index}"])
 
         command.extend(
             [
@@ -954,7 +1012,7 @@ class BatchWorker(QThread):
                 ]
             )
 
-        if probe.has_audio:
+        if chosen_audio is not None:
             command.extend(
                 [
                     "-af",
@@ -1154,6 +1212,16 @@ class MediaWaveConverterWindow(QMainWindow):
         framing_row.addWidget(framing_prompt, 0)
         framing_row.addWidget(self.framing_mode_combo, 1)
         settings_layout.addLayout(framing_row)
+
+        audio_row = QHBoxLayout()
+        audio_row.setSpacing(12)
+        audio_prompt = QLabel("Audio track preference")
+        audio_prompt.setObjectName("sectionLabel")
+        self.audio_pref_combo = QComboBox()
+        self.audio_pref_combo.addItems(AUDIO_PREFERENCES)
+        audio_row.addWidget(audio_prompt, 0)
+        audio_row.addWidget(self.audio_pref_combo, 1)
+        settings_layout.addLayout(audio_row)
 
         action_row = QHBoxLayout()
         action_row.setSpacing(10)
@@ -1482,6 +1550,9 @@ class MediaWaveConverterWindow(QMainWindow):
         encoder_mode = settings.get("encoder_mode", default_encoder_mode())
         if encoder_mode in ENCODER_CHOICES:
             dialog.encoder_combo.setCurrentText(encoder_mode)
+        audio_pref = settings.get("audio_preference", "Auto")
+        if audio_pref in AUDIO_PREFERENCES:
+            self.audio_pref_combo.setCurrentText(audio_pref)
         self.refresh_main_summary()
 
     def save_settings(self) -> None:
@@ -1497,6 +1568,7 @@ class MediaWaveConverterWindow(QMainWindow):
             "encoder_mode": dialog.encoder_combo.currentText(),
             "recursive": dialog.recursive_checkbox.isChecked(),
             "skip_completed": dialog.skip_checkbox.isChecked(),
+            "audio_preference": self.audio_pref_combo.currentText(),
         }
         save_json(SETTINGS_FILE, payload)
 
@@ -1619,6 +1691,7 @@ class MediaWaveConverterWindow(QMainWindow):
                 "encoder_mode": options.encoder_mode,
                 "recursive": options.recursive,
                 "skip_completed": options.skip_completed,
+                "audio_preference": options.audio_preference,
             },
         )
 
@@ -1643,6 +1716,7 @@ class MediaWaveConverterWindow(QMainWindow):
                 encoder_mode=payload.get("encoder_mode", default_encoder_mode()),
                 recursive=bool(payload["recursive"]),
                 skip_completed=bool(payload["skip_completed"]),
+                audio_preference=payload.get("audio_preference", "Auto"),
             )
         except (KeyError, TypeError, ValueError):
             self.clear_session()
@@ -1710,6 +1784,7 @@ class MediaWaveConverterWindow(QMainWindow):
             encoder_mode=dialog.encoder_combo.currentText(),
             recursive=dialog.recursive_checkbox.isChecked(),
             skip_completed=dialog.skip_checkbox.isChecked(),
+            audio_preference=self.audio_pref_combo.currentText(),
         )
 
     def start_batch(self) -> None:
@@ -1775,6 +1850,8 @@ class MediaWaveConverterWindow(QMainWindow):
         dialog.crop_slider.setValue(options.crop_aggressiveness)
         dialog.recursive_checkbox.setChecked(options.recursive)
         dialog.skip_checkbox.setChecked(options.skip_completed)
+        if options.audio_preference in AUDIO_PREFERENCES:
+            self.audio_pref_combo.setCurrentText(options.audio_preference)
         size_label = f"{options.target_width} x {options.target_height}"
         index = dialog.size_combo.findText(size_label)
         if index >= 0:
