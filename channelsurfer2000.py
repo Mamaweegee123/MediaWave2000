@@ -3605,10 +3605,39 @@ def build_app_theme_tokens(theme_name, legacy, skin_name=DEFAULT_SKIN_NAME, mode
             "startup_card_bg": with_alpha(legacy["row_b"] if sleek else legacy["row_a"], 184 if sleek else 214),
             "startup_button_bg": with_alpha(legacy["row_b"], 210 if sleek else 238),
             "vault_bg": legacy["bg"],
-            "vault_card_bg": with_alpha(legacy["row_b"], 196 if sleek else legacy["row_b"].alpha()),
+            "vault_surface_bg": with_alpha(legacy["panel"], 142 if sleek else (246 if set_top_box else 238)),
+            "vault_panel_bg": with_alpha(legacy["panel"], 188 if sleek else (248 if set_top_box else 244)),
+            "vault_header_bg": with_alpha(legacy["bg"] if sleek else (legacy["header"] if set_top_box else pf_header_bottom), 0 if sleek else (246 if set_top_box else 238)),
+            "vault_hero_background": with_alpha(legacy["panel"] if sleek else (legacy["row_b"] if set_top_box else pf_info_top), 180 if sleek else (242 if set_top_box else 248)),
+            "vault_card_bg": with_alpha(legacy["row_b"], 196 if sleek else (242 if set_top_box else 238)),
             "vault_selected_bg": guide_selected_bg,
-            "vault_card_background": with_alpha(legacy["row_b"], 196 if sleek else legacy["row_b"].alpha()),
-            "vault_hero_background": with_alpha(legacy["panel"], 180 if sleek else legacy["panel"].alpha()),
+            "vault_card_background": with_alpha(legacy["row_b"], 196 if sleek else (242 if set_top_box else 238)),
+            "vault_card_border": selected_border if sleek else (with_alpha(legacy.get("stb_bevel_dark", normal_border), 220) if set_top_box else pf_grid_line),
+            "vault_card_selected_bg": guide_selected_bg,
+            "vault_card_selected_border": selected_border,
+            "vault_primary_text": primary_text if sleek or set_top_box else pf_panel_text,
+            "vault_secondary_text": with_alpha(legacy["muted"] if sleek or set_top_box else pf_panel_text, 220),
+            "vault_muted_text": with_alpha(legacy["muted"] if sleek or set_top_box else pf_panel_text, 176),
+            "vault_selected_text": selected_text if sleek or set_top_box else pf_selected_text,
+            "vault_header_text": pf_header_text if promised_future else (primary_text if sleek else with_alpha(primary_text, 232)),
+            "vault_button_bg": with_alpha(legacy["row_b"], 206 if sleek else (242 if set_top_box else 248)),
+            "vault_button_border": subtle_border if sleek else (with_alpha(legacy.get("stb_bevel_dark", normal_border), 214) if set_top_box else pf_grid_line),
+            "vault_button_text": primary_text if sleek or set_top_box else pf_panel_text,
+            "vault_button_focused_bg": guide_selected_bg,
+            "vault_button_focused_border": selected_border if sleek else (QColor(255, 230, 96, 245) if set_top_box or promised_future else selected_border),
+            "vault_button_focused_text": selected_text if sleek or set_top_box else pf_selected_text,
+            "vault_chip_bg": with_alpha(legacy["row_a"], 188 if sleek else (234 if set_top_box else 230)),
+            "vault_chip_text": with_alpha(primary_text if sleek or set_top_box else pf_panel_text, 224),
+            "vault_chip_selected_bg": guide_selected_bg,
+            "vault_chip_selected_text": selected_text if sleek or set_top_box else pf_selected_text,
+            "vault_clock_top": QColor(34, 8, 8, 252) if set_top_box else (pf_time_top if promised_future else with_alpha(legacy["row_b"], 150)),
+            "vault_clock_bottom": QColor(8, 0, 0, 252) if set_top_box else (pf_time_bottom if promised_future else with_alpha(legacy["row_b"], 190)),
+            "vault_clock_text": QColor(255, 86, 76, 255) if set_top_box else (pf_header_text if promised_future else primary_text),
+            "vault_focus_ring": selected_border if sleek else (QColor(255, 230, 96, 245) if set_top_box or promised_future else selected_border),
+            "vault_focus_glow": with_alpha(legacy["selected"], 88 if set_top_box or promised_future else (70 if sleek else 74)),
+            "vault_radius": 8 if sleek else (2 if set_top_box else 14),
+            "vault_card_radius": 8 if sleek else (2 if set_top_box else 12),
+            "vault_texture_alpha": 0 if sleek else (34 if set_top_box else 12),
             "dialog_background": dialog_bg,
             "dialog_panel": with_alpha(legacy["panel"], 198 if sleek else 250),
             "dialog_text": panel_text,
@@ -7836,19 +7865,10 @@ class OnDemandOverlay(QWidget):
         painter.restore()
 
     def draw_vault_scene(self, painter, panel, title_font, body_font, small_font, theme):
-        if theme.get("sleek"):
-            self.draw_sleek_vault_scene(painter, panel, theme)
-            return
-        self.draw_panel(painter, panel, theme, radius=16, inset=3)
-        self.draw_header(painter, panel, title_font, small_font, theme)
-
-        footer_rect = QRect(panel.left() + scaled_metric(18, self.ui_scale, 12), panel.bottom() - scaled_metric(42, self.ui_scale, 30), panel.width() - scaled_metric(36, self.ui_scale, 24), scaled_metric(28, self.ui_scale, 22))
-        view = self.state.get("view", "menu")
-        if view == "home":
-            self.draw_streaming_home_view(painter, panel, footer_rect, title_font, body_font, small_font, theme)
-        else:
-            self.draw_streaming_detail_view(painter, panel, footer_rect, title_font, body_font, small_font, theme)
-        self.draw_footer(painter, footer_rect, small_font, theme)
+        # The Vault now uses one shared layout skeleton for every skin. The
+        # renderer name is kept for compatibility with the earlier Sleek Freak
+        # implementation, but all visual personality comes from theme tokens.
+        self.draw_sleek_vault_scene(painter, panel, theme)
 
     def sleek_profile(self):
         return GUIDE_PROFILES.get(self.profile_name, GUIDE_PROFILES["Auto"])
@@ -7872,12 +7892,12 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_vault_chip(self, painter, rect, text, theme, active=False):
         painter.save()
-        painter.setPen(QPen(theme["guide_card_selected_border"] if active else theme["guide_divider"], 1))
-        painter.setBrush(theme["guide_chip_selected_bg"] if active else theme["guide_chip_bg"])
-        radius = min(max(6, rect.height() // 2), theme.get("cell_radius", 8))
+        painter.setPen(QPen(theme.get("vault_button_focused_border", theme["guide_card_selected_border"]) if active else theme.get("vault_card_border", theme["guide_divider"]), 1))
+        painter.setBrush(theme.get("vault_chip_selected_bg", theme["guide_chip_selected_bg"]) if active else theme.get("vault_chip_bg", theme["guide_chip_bg"]))
+        radius = min(max(4, rect.height() // 2), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
         painter.drawRoundedRect(rect, radius, radius)
         painter.setFont(self.sleek_font(theme, 9, QFont.Bold, 7, 11))
-        painter.setPen(theme["guide_chip_selected_text"] if active else theme["guide_chip_text"])
+        painter.setPen(theme.get("vault_chip_selected_text", theme["guide_chip_selected_text"]) if active else theme.get("vault_chip_text", theme["guide_chip_text"]))
         painter.drawText(rect.adjusted(8, 0, -8, 0), Qt.AlignCenter, str(text or "").upper())
         painter.restore()
 
@@ -7889,9 +7909,12 @@ class OnDemandOverlay(QWidget):
             inner = panel.adjusted(12, 12, -12, -12)
 
         painter.save()
-        painter.setPen(QPen(theme["guide_divider"], 1))
-        painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(inner.adjusted(0, 0, -1, -1), theme.get("border_radius", 8), theme.get("border_radius", 8))
+        if theme.get("sleek"):
+            painter.setPen(QPen(theme.get("vault_card_border", theme["guide_divider"]), 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(inner.adjusted(0, 0, -1, -1), theme.get("vault_radius", theme.get("border_radius", 8)), theme.get("vault_radius", theme.get("border_radius", 8)))
+        else:
+            self.draw_panel(painter, inner, theme, radius=theme.get("vault_radius", theme.get("border_radius", 12)), inset=3)
         painter.restore()
 
         header_h = self.sleek_metric(64, 48, 84)
@@ -7907,41 +7930,44 @@ class OnDemandOverlay(QWidget):
         else:
             self.draw_sleek_vault_detail(painter, inner, header_rect, footer_rect, theme)
 
-        vault_nav_active_index = int(self.state.get("nav_index", 2)) if self.state.get("nav_focused", False) else -1
-        previous_nav_index, nav_transition_progress = sleek_focus_transition(self, "vault_nav_focus", vault_nav_active_index)
-        self.footer_button_rects = [
-            self.map_interactive_rect(rect)
-            for rect in draw_sleek_bottom_nav_bar(
-                painter,
-                footer_rect,
-                theme,
-                self.sleek_mode,
-                self.state.get("nav_focused", False),
-                self.state.get("nav_index", 2),
-                2,
-                scale,
-                previous_index=previous_nav_index,
-                transition_progress=nav_transition_progress,
-            )
-        ]
+        self.draw_footer(painter, footer_rect, self.sleek_font(theme, 11, QFont.Bold, 9, 14), theme)
 
     def draw_sleek_vault_header(self, painter, rect, theme):
         painter.save()
-        painter.fillRect(rect, theme["guide_header_background"])
+        header_bg = theme.get("vault_header_bg", theme["guide_header_background"])
+        if header_bg.alpha() > 0:
+            if self.skin_style() == "cable":
+                self.draw_bar(painter, rect.adjusted(0, 3, 0, -3), theme, radius=theme.get("vault_radius", 2))
+            elif theme.get("promised_future"):
+                grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+                grad.setColorAt(0.0, theme.get("pf_header_top", header_bg).lighter(112))
+                grad.setColorAt(0.46, theme.get("pf_header_top", header_bg))
+                grad.setColorAt(1.0, theme.get("pf_header_bottom", header_bg))
+                painter.setPen(QPen(theme.get("vault_card_border", theme["guide_divider"]), 1))
+                painter.setBrush(grad)
+                painter.drawRoundedRect(rect.adjusted(0, 4, 0, -4), theme.get("vault_radius", 14), theme.get("vault_radius", 14))
+            else:
+                painter.fillRect(rect, header_bg)
+
         brand_x = rect.left() + self.sleek_metric(10, 6, 18)
         brand_rect = QRect(brand_x, rect.top() + self.sleek_metric(9, 6, 14), self.sleek_metric(180, 142, 240), rect.height() - self.sleek_metric(18, 12, 24))
-        painter.setFont(self.sleek_font(theme, 19, QFont.Bold, 15, 24))
-        painter.setPen(theme["guide_primary_text"])
-        painter.drawText(brand_rect.adjusted(0, 0, 0, -self.sleek_metric(13, 10, 18)), Qt.AlignLeft | Qt.AlignVCenter, "MediaWave")
-        painter.setFont(self.sleek_font(theme, 9, QFont.DemiBold, 8, 12))
-        painter.setPen(theme["accent"])
-        painter.drawText(brand_rect.adjusted(2, self.sleek_metric(22, 16, 28), 0, 0), Qt.AlignLeft | Qt.AlignVCenter, "2000")
+        logo = load_brand_logo(brand_rect.width(), brand_rect.height())
+        if not logo.isNull():
+            painter.drawPixmap(brand_rect.left(), brand_rect.top() + ((brand_rect.height() - logo.height()) // 2), logo)
+        else:
+            painter.setFont(self.sleek_font(theme, 19, QFont.Bold, 15, 24))
+            painter.setPen(theme.get("vault_primary_text", theme["guide_primary_text"]))
+            painter.drawText(brand_rect.adjusted(0, 0, 0, -self.sleek_metric(13, 10, 18)), Qt.AlignLeft | Qt.AlignVCenter, "MediaWave")
+            painter.setFont(self.sleek_font(theme, 9, QFont.DemiBold, 8, 12))
+            painter.setPen(theme["accent"])
+            painter.drawText(brand_rect.adjusted(2, self.sleek_metric(22, 16, 28), 0, 0), Qt.AlignLeft | Qt.AlignVCenter, "2000")
 
         section_x = brand_rect.right() + self.sleek_metric(34, 24, 46)
-        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.setPen(QPen(theme.get("vault_card_border", theme["guide_divider"]), 1))
         painter.drawLine(section_x - self.sleek_metric(18, 12, 24), rect.top() + self.sleek_metric(14, 10, 20), section_x - self.sleek_metric(18, 12, 24), rect.bottom() - self.sleek_metric(14, 10, 20))
+        header_text = theme.get("vault_header_text", theme.get("vault_secondary_text", theme["guide_secondary_text"]))
         painter.setFont(self.sleek_font(theme, 16, QFont.Bold, 12, 21))
-        painter.setPen(theme["guide_secondary_text"])
+        painter.setPen(header_text)
         painter.drawText(QRect(section_x, rect.top(), self.sleek_metric(150, 108, 190), rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "VAULT")
 
         time_w = self.sleek_metric(120, 92, 150)
@@ -7949,11 +7975,26 @@ class OnDemandOverlay(QWidget):
         clock_rect = QRect(rect.right() - time_w - self.sleek_metric(10, 6, 16), rect.top(), time_w, rect.height())
         date_rect = QRect(clock_rect.left() - date_w - self.sleek_metric(14, 8, 18), rect.top(), date_w, rect.height())
         painter.setFont(self.sleek_font(theme, 12, QFont.DemiBold, 9, 16))
-        painter.setPen(theme["guide_secondary_text"])
+        painter.setPen(header_text)
         painter.drawText(date_rect, Qt.AlignRight | Qt.AlignVCenter, time.strftime("%a, %b %d").upper())
-        painter.setFont(self.sleek_font(theme, 17, QFont.Bold, 13, 23))
-        painter.setPen(theme["guide_primary_text"])
-        painter.drawText(clock_rect, Qt.AlignRight | Qt.AlignVCenter, time.strftime("%I:%M %p").lstrip("0"))
+        clock_shell = clock_rect.adjusted(0, self.sleek_metric(10, 6, 14), 0, -self.sleek_metric(10, 6, 14))
+        if self.skin_style() == "cable":
+            self.draw_digital_clock_box(painter, clock_shell, time.strftime("%I:%M%p").lstrip("0").upper())
+        elif theme.get("promised_future"):
+            grad = QLinearGradient(clock_shell.topLeft(), clock_shell.bottomLeft())
+            grad.setColorAt(0.0, theme.get("vault_clock_top", theme["pf_time_top"]).lighter(118))
+            grad.setColorAt(0.48, theme.get("vault_clock_top", theme["pf_time_top"]))
+            grad.setColorAt(1.0, theme.get("vault_clock_bottom", theme["pf_time_bottom"]))
+            painter.setPen(QPen(theme.get("pf_bevel_highlight", QColor(255, 255, 255, 92)), 1))
+            painter.setBrush(grad)
+            painter.drawRoundedRect(clock_shell, theme.get("vault_radius", 14), theme.get("vault_radius", 14))
+            painter.setFont(self.sleek_font(theme, 13, QFont.Bold, 10, 18))
+            painter.setPen(theme.get("vault_clock_text", theme["pf_time_text"]))
+            painter.drawText(clock_shell, Qt.AlignCenter, time.strftime("%I:%M %p").lstrip("0"))
+        else:
+            painter.setFont(self.sleek_font(theme, 17, QFont.Bold, 13, 23))
+            painter.setPen(theme.get("vault_clock_text", theme["guide_primary_text"]))
+            painter.drawText(clock_rect, Qt.AlignRight | Qt.AlignVCenter, time.strftime("%I:%M %p").lstrip("0"))
         painter.restore()
 
     def draw_sleek_vault_home(self, painter, inner, header_rect, footer_rect, theme):
@@ -7984,9 +8025,18 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_vault_hero(self, painter, rect, detail, theme, compact=False):
         painter.save()
-        painter.setPen(QPen(theme["guide_card_border"], 1))
-        painter.setBrush(theme["guide_hero_panel_bg"])
-        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+        radius = theme.get("vault_radius", theme.get("border_radius", 8))
+        hero_bg = theme.get("vault_hero_background", theme["guide_hero_panel_bg"])
+        painter.setPen(QPen(theme.get("vault_card_border", theme["guide_card_border"]), 1))
+        if theme.get("promised_future"):
+            grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+            grad.setColorAt(0.0, hero_bg.lighter(118))
+            grad.setColorAt(0.5, hero_bg)
+            grad.setColorAt(1.0, theme.get("vault_panel_bg", hero_bg).darker(106))
+            painter.setBrush(grad)
+        else:
+            painter.setBrush(hero_bg)
+        painter.drawRoundedRect(rect, radius, radius)
 
         pad = self.sleek_metric(24, 16, 36)
         if compact:
@@ -8004,18 +8054,18 @@ class OnDemandOverlay(QWidget):
                 fit_mode="cover",
                 show_badge=False,
             )
-            painter.setPen(QPen(theme["guide_card_selected_border"], 1))
+            painter.setPen(QPen(theme.get("vault_card_selected_border", theme["guide_card_selected_border"]), 1))
             painter.setBrush(Qt.NoBrush)
-            painter.drawRoundedRect(art_rect.adjusted(1, 1, -1, -1), theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+            painter.drawRoundedRect(art_rect.adjusted(1, 1, -1, -1), theme.get("vault_card_radius", theme.get("cell_radius", 8)), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
 
             painter.setFont(self.sleek_font(theme, 9, QFont.Bold, 7, 11))
             painter.setPen(theme["accent"])
             label_rect = QRect(copy_rect.left(), copy_rect.top(), min(copy_rect.width(), self.sleek_metric(190, 130, 260)), self.sleek_metric(18, 14, 22))
             painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, "CONTINUE WATCHING")
             title_rect = QRect(copy_rect.left(), label_rect.bottom() + self.sleek_metric(3, 2, 6), copy_rect.width(), self.sleek_metric(32, 24, 40))
-            self.draw_sleek_elided(painter, title_rect, detail.get("title", f"{APP_NAME} Vault"), self.sleek_font(theme, 20, QFont.Bold, 16, 28), theme["guide_primary_text"])
+            self.draw_sleek_elided(painter, title_rect, detail.get("title", f"{APP_NAME} Vault"), self.sleek_font(theme, 20, QFont.Bold, 16, 28), theme.get("vault_primary_text", theme["guide_primary_text"]))
             subtitle_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(2, 1, 5), copy_rect.width(), self.sleek_metric(20, 16, 24))
-            self.draw_sleek_elided(painter, subtitle_rect, detail.get("subtitle", ""), self.sleek_font(theme, 11, QFont.DemiBold, 9, 14), theme["guide_secondary_text"])
+            self.draw_sleek_elided(painter, subtitle_rect, detail.get("subtitle", ""), self.sleek_font(theme, 11, QFont.DemiBold, 9, 14), theme.get("vault_secondary_text", theme["guide_secondary_text"]))
 
             actions = detail.get("actions", [])
             if actions:
@@ -8044,14 +8094,14 @@ class OnDemandOverlay(QWidget):
         art_rect = QRect(rect.left() + pad, rect.top() + pad, art_w, rect.height() - pad * 2)
         copy_rect = QRect(art_rect.right() + self.sleek_metric(26, 18, 38), art_rect.top(), rect.right() - art_rect.right() - self.sleek_metric(26, 18, 38) - pad, art_rect.height())
 
-        accent = theme["selected_background"]
+        accent = theme.get("vault_focus_ring", theme["selected_background"])
         glow = QRadialGradient(art_rect.center(), max(rect.width(), rect.height()) * 0.62)
         glow.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 58 if self.sleek_mode == "dark" else 42))
         glow.setColorAt(0.42, QColor(accent.red(), accent.green(), accent.blue(), 16 if self.sleek_mode == "dark" else 12))
         glow.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
         painter.setPen(Qt.NoPen)
         painter.setBrush(glow)
-        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), theme.get("border_radius", 8), theme.get("border_radius", 8))
+        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
 
         self.draw_streaming_art_placeholder(
             painter,
@@ -8063,9 +8113,9 @@ class OnDemandOverlay(QWidget):
             fit_mode="cover",
             show_badge=False,
         )
-        painter.setPen(QPen(theme["guide_glow"], self.sleek_metric(5, 3, 7)))
+        painter.setPen(QPen(theme.get("vault_focus_glow", theme["guide_glow"]), self.sleek_metric(5, 3, 7)))
         painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(art_rect.adjusted(2, 2, -2, -2), theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+        painter.drawRoundedRect(art_rect.adjusted(2, 2, -2, -2), theme.get("vault_card_radius", theme.get("cell_radius", 8)), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
 
         chip_y = copy_rect.top() + self.sleek_metric(4, 2, 8)
         x = copy_rect.left()
@@ -8087,18 +8137,18 @@ class OnDemandOverlay(QWidget):
         title_font = self.sleek_font(theme, 36, QFont.Bold, 26, 48)
         title_rect = QRect(copy_rect.left(), title_top, copy_rect.width(), min(self.sleek_metric(96, 70, 116), copy_rect.height() // 3))
         painter.setFont(title_font)
-        painter.setPen(theme["guide_primary_text"])
+        painter.setPen(theme.get("vault_primary_text", theme["guide_primary_text"]))
         painter.setClipRect(title_rect)
         painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, str(detail.get("title", f"{APP_NAME} Vault") or ""))
         painter.setClipping(False)
 
         subtitle_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(6, 4, 10), copy_rect.width(), self.sleek_metric(24, 18, 30))
-        self.draw_sleek_elided(painter, subtitle_rect, detail.get("subtitle", ""), self.sleek_font(theme, 13, QFont.DemiBold, 10, 16), theme["guide_secondary_text"])
+        self.draw_sleek_elided(painter, subtitle_rect, detail.get("subtitle", ""), self.sleek_font(theme, 13, QFont.DemiBold, 10, 16), theme.get("vault_secondary_text", theme["guide_secondary_text"]))
         summary_rect = QRect(copy_rect.left(), subtitle_rect.bottom() + self.sleek_metric(10, 7, 14), copy_rect.width(), max(0, copy_rect.bottom() - subtitle_rect.bottom() - self.sleek_metric(72, 58, 86)))
         if summary_rect.height() >= self.sleek_metric(30, 22, 42):
             painter.setClipRect(summary_rect)
             painter.setFont(self.sleek_font(theme, 13, QFont.Normal, 10, 17))
-            painter.setPen(theme["guide_secondary_text"])
+            painter.setPen(theme.get("vault_secondary_text", theme["guide_secondary_text"]))
             painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, detail.get("summary", ""))
             painter.setClipping(False)
 
@@ -8193,15 +8243,15 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_vault_button(self, painter, rect, label, theme, active=False, focused=False, meta="", icon=""):
         painter.save()
-        radius = min(theme.get("cell_radius", 8), max(6, rect.height() // 4))
+        radius = min(theme.get("vault_card_radius", theme.get("cell_radius", 8)), max(4, rect.height() // 4))
         if focused:
-            painter.setPen(QPen(theme["guide_glow"], self.sleek_metric(5, 3, 7)))
+            painter.setPen(QPen(theme.get("vault_focus_glow", theme["guide_glow"]), self.sleek_metric(5, 3, 7)))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), radius, radius)
-        painter.setPen(QPen(theme["guide_card_selected_border"] if active or focused else theme["guide_card_border"], 1 if not focused else 2))
-        painter.setBrush(theme["guide_bottom_nav_selected_bg"] if active or focused else with_alpha(theme["guide_card_bg"], 210))
+        painter.setPen(QPen(theme.get("vault_button_focused_border", theme["guide_card_selected_border"]) if active or focused else theme.get("vault_button_border", theme["guide_card_border"]), 1 if not focused else 2))
+        painter.setBrush(theme.get("vault_button_focused_bg", theme["guide_bottom_nav_selected_bg"]) if active or focused else theme.get("vault_button_bg", with_alpha(theme["guide_card_bg"], 210)))
         painter.drawRoundedRect(rect, radius, radius)
-        text_color = theme["guide_card_selected_text"] if active or focused else theme["guide_primary_text"]
+        text_color = theme.get("vault_button_focused_text", theme["guide_card_selected_text"]) if active or focused else theme.get("vault_button_text", theme["guide_primary_text"])
         painter.setFont(self.sleek_font(theme, 11, QFont.Bold, 9, 14))
         left_pad = self.sleek_metric(14, 10, 18)
         icon_w = 0
@@ -8216,7 +8266,7 @@ class OnDemandOverlay(QWidget):
             painter.setPen(text_color)
             painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignBottom | Qt.TextSingleLine, QFontMetrics(painter.font()).elidedText(label, Qt.ElideRight, label_rect.width()))
             painter.setFont(self.sleek_font(theme, 8, QFont.DemiBold, 7, 10))
-            painter.setPen(theme["guide_secondary_text"])
+            painter.setPen(theme.get("vault_muted_text", theme["guide_secondary_text"]))
             meta_rect = QRect(label_rect.left(), label_rect.bottom(), label_rect.width(), rect.bottom() - label_rect.bottom())
             painter.drawText(meta_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextSingleLine, QFontMetrics(painter.font()).elidedText(meta, Qt.ElideRight, meta_rect.width()))
         else:
@@ -8229,6 +8279,7 @@ class OnDemandOverlay(QWidget):
             {"key": "featured", "label": "Featured"},
             {"key": "movies", "label": "Movies"},
             {"key": "series", "label": "Series"},
+            {"key": "recently-added", "label": "Recently Added"},
             {"key": "my-vault", "label": "My Vault"},
             {"key": "random", "label": "Random"},
         ]
@@ -8253,11 +8304,11 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_empty_vault(self, painter, rect, theme):
         painter.save()
-        painter.setPen(QPen(theme["guide_card_border"], 1))
-        painter.setBrush(theme["guide_card_bg"])
-        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+        painter.setPen(QPen(theme.get("vault_card_border", theme["guide_card_border"]), 1))
+        painter.setBrush(theme.get("vault_card_bg", theme["guide_card_bg"]))
+        painter.drawRoundedRect(rect, theme.get("vault_card_radius", theme.get("border_radius", 8)), theme.get("vault_card_radius", theme.get("border_radius", 8)))
         painter.setFont(self.sleek_font(theme, 18, QFont.Bold, 14, 24))
-        painter.setPen(theme["guide_primary_text"])
+        painter.setPen(theme.get("vault_primary_text", theme["guide_primary_text"]))
         painter.drawText(rect.adjusted(20, 0, -20, 0), Qt.AlignCenter, "Load a catalog to build your Vault.")
         painter.restore()
 
@@ -8306,9 +8357,9 @@ class OnDemandOverlay(QWidget):
         title_font = self.sleek_font(theme, 18, QFont.Bold, 14, 24)
         sub_font = self.sleek_font(theme, 10, QFont.DemiBold, 8, 13)
         title_rect = QRect(rect.left(), rect.top(), rect.width(), self.sleek_metric(28, 22, 34))
-        self.draw_sleek_elided(painter, title_rect, section.get("title", ""), title_font, theme["guide_primary_text"])
+        self.draw_sleek_elided(painter, title_rect, section.get("title", ""), title_font, theme.get("vault_primary_text", theme["guide_primary_text"]))
         subtitle_rect = QRect(rect.left(), title_rect.bottom(), rect.width(), self.sleek_metric(20, 16, 24))
-        self.draw_sleek_elided(painter, subtitle_rect, section.get("subtitle", ""), sub_font, theme["guide_muted_text"])
+        self.draw_sleek_elided(painter, subtitle_rect, section.get("subtitle", ""), sub_font, theme.get("vault_muted_text", theme["guide_muted_text"]))
 
         items = section.get("items", [])
         if not items:
@@ -8349,15 +8400,15 @@ class OnDemandOverlay(QWidget):
         focus_amount = max(0.0, min(1.0, float(focus_amount if focused else 0.0)))
         lift = int(round(self.sleek_metric(10, 3, 12) - (self.sleek_metric(5, 3, 12) * focus_amount)))
         draw_rect = rect.adjusted(0, lift, 0, 0)
-        radius = theme.get("cell_radius", 8)
+        radius = theme.get("vault_card_radius", theme.get("cell_radius", 8))
         if focus_amount > 0.01:
             painter.setOpacity(focus_amount)
-            painter.setPen(QPen(theme["guide_glow"], self.sleek_metric(7, 4, 9)))
+            painter.setPen(QPen(theme.get("vault_focus_glow", theme["guide_glow"]), self.sleek_metric(7, 4, 9)))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(draw_rect.adjusted(3, 3, -3, -3), radius, radius)
             painter.setOpacity(1.0)
-        painter.setPen(QPen(blend_color(theme["guide_card_border"], theme["guide_card_selected_border"], focus_amount), 2 if focus_amount > 0.55 else 1))
-        painter.setBrush(blend_color(theme["guide_card_bg"], theme["guide_card_selected_bg"], focus_amount))
+        painter.setPen(QPen(blend_color(theme.get("vault_card_border", theme["guide_card_border"]), theme.get("vault_card_selected_border", theme["guide_card_selected_border"]), focus_amount), 2 if focus_amount > 0.55 else 1))
+        painter.setBrush(blend_color(theme.get("vault_card_bg", theme["guide_card_bg"]), theme.get("vault_card_selected_bg", theme["guide_card_selected_bg"]), focus_amount))
         painter.drawRoundedRect(draw_rect, radius, radius)
 
         pad = self.sleek_metric(10, 8, 14)
@@ -8370,9 +8421,9 @@ class OnDemandOverlay(QWidget):
             self.draw_sleek_vault_chip(painter, QRect(art_rect.left() + 8, art_rect.top() + 8, badge_w, self.sleek_metric(20, 16, 24)), badge, theme, active=focus_amount > 0.5)
 
         title_rect = QRect(draw_rect.left() + pad, art_rect.bottom() + self.sleek_metric(8, 5, 10), draw_rect.width() - pad * 2, self.sleek_metric(24, 18, 30))
-        self.draw_sleek_elided(painter, title_rect, item.get("title", ""), self.sleek_font(theme, 13, QFont.Bold, 10, 17), blend_color(theme["guide_primary_text"], theme["guide_card_selected_text"], focus_amount))
+        self.draw_sleek_elided(painter, title_rect, item.get("title", ""), self.sleek_font(theme, 13, QFont.Bold, 10, 17), blend_color(theme.get("vault_primary_text", theme["guide_primary_text"]), theme.get("vault_selected_text", theme["guide_card_selected_text"]), focus_amount))
         sub_rect = QRect(draw_rect.left() + pad, title_rect.bottom() + self.sleek_metric(3, 2, 5), draw_rect.width() - pad * 2, self.sleek_metric(18, 14, 22))
-        self.draw_sleek_elided(painter, sub_rect, item.get("subtitle", "") or item.get("meta", ""), self.sleek_font(theme, 9, QFont.DemiBold, 8, 12), blend_color(theme["guide_muted_text"], theme["guide_card_selected_text"], focus_amount))
+        self.draw_sleek_elided(painter, sub_rect, item.get("subtitle", "") or item.get("meta", ""), self.sleek_font(theme, 9, QFont.DemiBold, 8, 12), blend_color(theme.get("vault_muted_text", theme["guide_muted_text"]), theme.get("vault_selected_text", theme["guide_card_selected_text"]), focus_amount))
         progress = max(0.0, min(1.0, float(item.get("progress", 0.0) or 0.0)))
         if progress > 0:
             track = QRect(art_rect.left(), art_rect.bottom() - self.sleek_metric(6, 4, 7), art_rect.width(), self.sleek_metric(4, 3, 5))
@@ -8402,24 +8453,24 @@ class OnDemandOverlay(QWidget):
             fit_mode="cover",
             show_badge=False,
         )
-        painter.setPen(QPen(theme["guide_card_selected_border"], 1))
+        painter.setPen(QPen(theme.get("vault_card_selected_border", theme["guide_card_selected_border"]), 1))
         painter.setBrush(Qt.NoBrush)
-        painter.drawRoundedRect(poster_rect, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+        painter.drawRoundedRect(poster_rect, theme.get("vault_card_radius", theme.get("cell_radius", 8)), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
 
         chip_rect = QRect(copy_rect.left(), copy_rect.top(), self.sleek_metric(112, 82, 142), self.sleek_metric(26, 20, 32))
         self.draw_sleek_vault_chip(painter, chip_rect, detail.get("badge", "VAULT"), theme, active=True)
         title_rect = QRect(copy_rect.left(), chip_rect.bottom() + self.sleek_metric(12, 8, 16), copy_rect.width(), self.sleek_metric(76, 54, 96))
         painter.setFont(self.sleek_font(theme, 36, QFont.Bold, 25, 48))
-        painter.setPen(theme["guide_primary_text"])
+        painter.setPen(theme.get("vault_primary_text", theme["guide_primary_text"]))
         painter.setClipRect(title_rect)
         painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, str(detail.get("title", "")))
         painter.setClipping(False)
         meta_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(6, 4, 10), copy_rect.width(), self.sleek_metric(28, 22, 34))
-        self.draw_sleek_elided(painter, meta_rect, detail.get("subtitle", ""), self.sleek_font(theme, 13, QFont.DemiBold, 10, 16), theme["guide_secondary_text"])
+        self.draw_sleek_elided(painter, meta_rect, detail.get("subtitle", ""), self.sleek_font(theme, 13, QFont.DemiBold, 10, 16), theme.get("vault_secondary_text", theme["guide_secondary_text"]))
         summary_rect = QRect(copy_rect.left(), meta_rect.bottom() + self.sleek_metric(12, 8, 16), copy_rect.width(), self.sleek_metric(58, 42, 76))
         painter.setClipRect(summary_rect)
         painter.setFont(self.sleek_font(theme, 13, QFont.Normal, 10, 17))
-        painter.setPen(theme["guide_secondary_text"])
+        painter.setPen(theme.get("vault_secondary_text", theme["guide_secondary_text"]))
         painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, detail.get("summary", ""))
         painter.setClipping(False)
 
@@ -8476,22 +8527,23 @@ class OnDemandOverlay(QWidget):
             x += w + self.sleek_metric(10, 7, 14)
 
         list_top = max(poster_rect.bottom() + self.sleek_metric(26, 18, 34), seasons_rect.bottom() + self.sleek_metric(18, 12, 26))
-        list_rect = QRect(inner.left() + side, list_top, int(inner.width() * 0.68), max(self.sleek_metric(210, 160, 270), bottom - list_top))
+        list_h = max(0, bottom - list_top)
+        list_rect = QRect(inner.left() + side, list_top, int(inner.width() * 0.68), list_h)
         now_rect = QRect(list_rect.right() + self.sleek_metric(18, 12, 24), list_rect.top(), inner.right() - list_rect.right() - side - self.sleek_metric(18, 12, 24), list_rect.height())
         self.draw_sleek_episode_panel(painter, list_rect, episodes, theme)
         self.draw_sleek_now_playing_panel(painter, now_rect, episode_detail, theme)
 
     def draw_sleek_episode_panel(self, painter, rect, episodes, theme):
         painter.save()
-        painter.setPen(QPen(theme["guide_card_border"], 1))
-        painter.setBrush(with_alpha(theme["guide_card_bg"], 176))
-        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+        painter.setPen(QPen(theme.get("vault_card_border", theme["guide_card_border"]), 1))
+        painter.setBrush(with_alpha(theme.get("vault_card_bg", theme["guide_card_bg"]), 176))
+        painter.drawRoundedRect(rect, theme.get("vault_radius", theme.get("border_radius", 8)), theme.get("vault_radius", theme.get("border_radius", 8)))
         title_rect = QRect(rect.left() + 18, rect.top() + 12, rect.width() - 36, self.sleek_metric(30, 22, 36))
-        self.draw_sleek_elided(painter, title_rect, "Episodes", self.sleek_font(theme, 18, QFont.Bold, 14, 24), theme["guide_primary_text"])
+        self.draw_sleek_elided(painter, title_rect, "Episodes", self.sleek_font(theme, 18, QFont.Bold, 14, 24), theme.get("vault_primary_text", theme["guide_primary_text"]))
         if not episodes:
             empty_rect = rect.adjusted(24, title_rect.bottom() + self.sleek_metric(18, 12, 24), -24, -24)
             painter.setFont(self.sleek_font(theme, 13, QFont.DemiBold, 10, 17))
-            painter.setPen(theme["guide_secondary_text"])
+            painter.setPen(theme.get("vault_secondary_text", theme["guide_secondary_text"]))
             painter.drawText(empty_rect, Qt.AlignCenter | Qt.TextWordWrap, "No episodes found for this show.")
             painter.restore()
             return
@@ -8502,21 +8554,21 @@ class OnDemandOverlay(QWidget):
         for index, item in enumerate(episodes[:max(1, (rect.bottom() - y) // max(1, row_h + gap))]):
             row = QRect(rect.left() + 18, y, rect.width() - 36, row_h)
             focused = self.state.get("detail_focus") == "episodes" and index == selected
-            painter.setPen(QPen(theme["guide_card_selected_border"] if focused else theme["guide_card_border"], 2 if focused else 1))
-            painter.setBrush(theme["guide_card_selected_bg"] if focused else with_alpha(theme["guide_program_bg"], 166))
-            painter.drawRoundedRect(row, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+            painter.setPen(QPen(theme.get("vault_card_selected_border", theme["guide_card_selected_border"]) if focused else theme.get("vault_card_border", theme["guide_card_border"]), 2 if focused else 1))
+            painter.setBrush(theme.get("vault_card_selected_bg", theme["guide_card_selected_bg"]) if focused else with_alpha(theme.get("vault_card_bg", theme["guide_program_bg"]), 166))
+            painter.drawRoundedRect(row, theme.get("vault_card_radius", theme.get("cell_radius", 8)), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
             thumb = QRect(row.left(), row.top(), min(self.sleek_metric(160, 118, 190), row.width() // 4), row.height())
             self.draw_streaming_art_placeholder(painter, thumb.adjusted(1, 1, -1, -1), item.get("label", ""), "EPISODE", theme, item.get("artwork_path", ""), show_badge=False)
             text_left = thumb.right() + self.sleek_metric(14, 10, 18)
             ep_rect = QRect(text_left, row.top() + self.sleek_metric(8, 6, 10), row.width() - thumb.width() - self.sleek_metric(30, 20, 38), self.sleek_metric(18, 14, 22))
             self.draw_sleek_elided(painter, ep_rect, item.get("meta", ""), self.sleek_font(theme, 9, QFont.Bold, 8, 12), theme["accent"])
             title = QRect(text_left, ep_rect.bottom() + 2, ep_rect.width(), self.sleek_metric(24, 18, 30))
-            self.draw_sleek_elided(painter, title, item.get("label", ""), self.sleek_font(theme, 14, QFont.Bold, 11, 18), theme["guide_primary_text"])
+            self.draw_sleek_elided(painter, title, item.get("label", ""), self.sleek_font(theme, 14, QFont.Bold, 11, 18), theme.get("vault_primary_text", theme["guide_primary_text"]))
             summary = QRect(text_left, title.bottom() + 1, ep_rect.width(), self.sleek_metric(20, 16, 24))
-            self.draw_sleek_elided(painter, summary, item.get("summary", ""), self.sleek_font(theme, 10, QFont.Normal, 8, 13), theme["guide_secondary_text"])
+            self.draw_sleek_elided(painter, summary, item.get("summary", ""), self.sleek_font(theme, 10, QFont.Normal, 8, 13), theme.get("vault_secondary_text", theme["guide_secondary_text"]))
             runtime = item.get("runtime", "")
             if runtime:
-                self.draw_sleek_elided(painter, QRect(row.right() - self.sleek_metric(82, 62, 94), row.top() + 8, self.sleek_metric(70, 52, 82), 22), runtime, self.sleek_font(theme, 10, QFont.Bold, 8, 13), theme["guide_secondary_text"], Qt.AlignRight | Qt.AlignVCenter)
+                self.draw_sleek_elided(painter, QRect(row.right() - self.sleek_metric(82, 62, 94), row.top() + 8, self.sleek_metric(70, 52, 82), 22), runtime, self.sleek_font(theme, 10, QFont.Bold, 8, 13), theme.get("vault_secondary_text", theme["guide_secondary_text"]), Qt.AlignRight | Qt.AlignVCenter)
             y += row_h + gap
         painter.restore()
 
@@ -8524,24 +8576,31 @@ class OnDemandOverlay(QWidget):
         if rect.width() < self.sleek_metric(210, 160, 250):
             return
         painter.save()
-        painter.setPen(QPen(theme["guide_card_border"], 1))
-        painter.setBrush(with_alpha(theme["guide_card_bg"], 150))
-        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+        painter.setPen(QPen(theme.get("vault_card_border", theme["guide_card_border"]), 1))
+        painter.setBrush(with_alpha(theme.get("vault_card_bg", theme["guide_card_bg"]), 150))
+        painter.drawRoundedRect(rect, theme.get("vault_radius", theme.get("border_radius", 8)), theme.get("vault_radius", theme.get("border_radius", 8)))
         pad = self.sleek_metric(16, 12, 22)
-        self.draw_sleek_elided(painter, QRect(rect.left() + pad, rect.top() + pad, rect.width() - pad * 2, self.sleek_metric(28, 22, 34)), "Now Playing", self.sleek_font(theme, 14, QFont.Bold, 11, 18), theme["accent"])
-        art = QRect(rect.left() + pad, rect.top() + self.sleek_metric(52, 40, 64), rect.width() - pad * 2, min(self.sleek_metric(170, 120, 220), rect.height() // 2))
+        label_h = self.sleek_metric(28, 22, 34)
+        self.draw_sleek_elided(painter, QRect(rect.left() + pad, rect.top() + pad, rect.width() - pad * 2, label_h), "Now Playing", self.sleek_font(theme, 14, QFont.Bold, 11, 18), theme["accent"])
+        art_top = rect.top() + self.sleek_metric(52, 40, 64)
+        title_h = self.sleek_metric(28, 22, 34)
+        art_h = min(self.sleek_metric(170, 120, 220), max(self.sleek_metric(34, 28, 44), rect.bottom() - art_top - title_h - pad))
+        art = QRect(rect.left() + pad, art_top, rect.width() - pad * 2, art_h)
         pixmap = episode_detail.get("thumbnail")
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             painter.drawPixmap(art, pixmap.scaled(art.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation), QRect(0, 0, art.width(), art.height()))
         else:
             self.draw_streaming_art_placeholder(painter, art, episode_detail.get("title", ""), "NOW", theme, "", show_badge=False)
-        title = QRect(rect.left() + pad, art.bottom() + self.sleek_metric(14, 10, 18), rect.width() - pad * 2, self.sleek_metric(28, 22, 34))
-        self.draw_sleek_elided(painter, title, episode_detail.get("title", ""), self.sleek_font(theme, 13, QFont.Bold, 10, 17), theme["guide_primary_text"])
-        summary = QRect(rect.left() + pad, title.bottom() + self.sleek_metric(8, 6, 12), rect.width() - pad * 2, rect.bottom() - title.bottom() - pad)
-        painter.setClipRect(summary)
-        painter.setFont(self.sleek_font(theme, 10, QFont.Normal, 8, 13))
-        painter.setPen(theme["guide_secondary_text"])
-        painter.drawText(summary, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, episode_detail.get("summary", ""))
+        title_top = art.bottom() + self.sleek_metric(10, 7, 14)
+        title = QRect(rect.left() + pad, title_top, rect.width() - pad * 2, max(0, min(title_h, rect.bottom() - title_top - pad)))
+        if title.height() >= self.sleek_metric(16, 12, 20):
+            self.draw_sleek_elided(painter, title, episode_detail.get("title", ""), self.sleek_font(theme, 13, QFont.Bold, 10, 17), theme.get("vault_primary_text", theme["guide_primary_text"]))
+            summary = QRect(rect.left() + pad, title.bottom() + self.sleek_metric(8, 6, 12), rect.width() - pad * 2, max(0, rect.bottom() - title.bottom() - pad))
+            if summary.height() >= self.sleek_metric(24, 18, 30):
+                painter.setClipRect(summary)
+                painter.setFont(self.sleek_font(theme, 10, QFont.Normal, 8, 13))
+                painter.setPen(theme.get("vault_secondary_text", theme["guide_secondary_text"]))
+                painter.drawText(summary, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, episode_detail.get("summary", ""))
         painter.restore()
 
     def draw_sleek_vault_movie_detail(self, painter, inner, header_rect, footer_rect, theme):
@@ -8555,8 +8614,10 @@ class OnDemandOverlay(QWidget):
         self.draw_sleek_vault_detail_header(painter, poster_rect, copy_rect, detail, theme)
         actions_rect = QRect(copy_rect.left(), copy_rect.top() + self.sleek_metric(220, 170, 280), copy_rect.width(), self.sleek_metric(54, 42, 64))
         self.draw_sleek_vault_actions(painter, actions_rect, self.state.get("actions", []), self.state.get("action_selected", 0), self.state.get("detail_focus") == "actions", theme)
-        rows_rect = QRect(inner.left() + side, poster_rect.bottom() + self.sleek_metric(28, 20, 36), inner.width() - side * 2, bottom - poster_rect.bottom() - self.sleek_metric(28, 20, 36))
-        self.draw_sleek_vault_shelves(painter, rows_rect, self.state.get("related_sections", []), theme)
+        rows_top = poster_rect.bottom() + self.sleek_metric(28, 20, 36)
+        rows_rect = QRect(inner.left() + side, rows_top, inner.width() - side * 2, max(0, bottom - rows_top))
+        if rows_rect.height() > self.sleek_metric(64, 48, 82):
+            self.draw_sleek_vault_shelves(painter, rows_rect, self.state.get("related_sections", []), theme)
 
     def canvas_rect(self):
         margin = scaled_metric(10, self.ui_scale, 8)
@@ -8641,7 +8702,7 @@ class OnDemandOverlay(QWidget):
                 if active:
                     painter.save()
                     painter.setBrush(Qt.NoBrush)
-                    painter.setPen(QPen(theme["focus_ring"], 2))
+                    painter.setPen(QPen(theme.get("vault_focus_ring", theme["focus_ring"]), 2))
                     painter.drawRect(rect.adjusted(1, 1, -1, -1))
                     painter.restore()
                 value_font = QFont(guide_font_family("primary"), max(9, small_font.pointSize()), QFont.Bold)
@@ -8655,30 +8716,30 @@ class OnDemandOverlay(QWidget):
                 )
             elif theme.get("sleek"):
                 painter.save()
-                painter.setPen(QPen(theme["focus_ring"] if active else theme["subtle_border"], 1))
-                painter.setBrush(with_alpha(theme["selected_background"], 226) if active else with_alpha(theme["modern_surface_alt"], 150))
-                painter.drawRoundedRect(rect, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+                painter.setPen(QPen(theme.get("vault_focus_ring", theme["focus_ring"]) if active else theme.get("vault_button_border", theme["subtle_border"]), 1))
+                painter.setBrush(theme.get("vault_button_focused_bg", with_alpha(theme["selected_background"], 226)) if active else with_alpha(theme.get("vault_button_bg", theme["modern_surface_alt"]), 150))
+                painter.drawRoundedRect(rect, theme.get("vault_card_radius", theme.get("cell_radius", 8)), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
                 if active:
-                    painter.setPen(QPen(theme["focus_glow"], 4))
+                    painter.setPen(QPen(theme.get("vault_focus_glow", theme["focus_glow"]), 4))
                     painter.setBrush(Qt.NoBrush)
-                    painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+                    painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), theme.get("vault_card_radius", theme.get("cell_radius", 8)), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
                 painter.setFont(small_font)
-                painter.setPen(theme["selected_text"] if active else theme["primary_text"])
+                painter.setPen(theme.get("vault_button_focused_text", theme["selected_text"]) if active else theme.get("vault_button_text", theme["primary_text"]))
                 painter.drawText(rect, Qt.AlignCenter, label)
                 painter.restore()
             else:
-                top = QColor(255, 249, 210, 236) if active else QColor(theme["chrome_top"].red(), theme["chrome_top"].green(), theme["chrome_top"].blue(), 180)
-                bottom = QColor(233, 206, 110, 242) if active else QColor(theme["chrome_bottom"].red(), theme["chrome_bottom"].green(), theme["chrome_bottom"].blue(), 190)
-                border = QColor(58, 42, 14) if active else QColor(theme["muted"].red(), theme["muted"].green(), theme["muted"].blue(), 130)
-                self.draw_rounded_gradient_box(painter, rect, top, bottom, border, radius=8)
+                top = QColor(255, 249, 210, 236) if active else theme.get("vault_button_bg", theme["chrome_top"]).lighter(108)
+                bottom = QColor(233, 206, 110, 242) if active else theme.get("vault_button_bg", theme["chrome_bottom"]).darker(106)
+                border = theme.get("vault_button_focused_border", QColor(58, 42, 14)) if active else theme.get("vault_button_border", QColor(theme["muted"].red(), theme["muted"].green(), theme["muted"].blue(), 130))
+                self.draw_rounded_gradient_box(painter, rect, top, bottom, border, radius=theme.get("vault_card_radius", 8))
                 if active:
                     painter.save()
                     painter.setBrush(Qt.NoBrush)
-                    painter.setPen(QPen(QColor(255, 255, 242, 220), 2))
-                    painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), 8, 8)
+                    painter.setPen(QPen(theme.get("vault_focus_ring", QColor(255, 255, 242, 220)), 2))
+                    painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), theme.get("vault_card_radius", 8), theme.get("vault_card_radius", 8))
                     painter.restore()
                 painter.setFont(small_font)
-                painter.setPen(theme["dark_text"] if active else theme["text"])
+                painter.setPen(theme.get("vault_button_focused_text", theme["dark_text"]) if active else theme.get("vault_button_text", theme["text"]))
                 painter.drawText(rect, Qt.AlignCenter, label)
         return {"left": start_x}
 
@@ -20408,8 +20469,7 @@ class ChannelSurfer(QWidget):
         self.refresh_on_demand()
 
     def ensure_on_demand_focus_state(self):
-        max_nav_index = 4 if self.video_window.on_demand_overlay.skin_style() == "flat" else 3
-        self.on_demand_nav_index = max(0, min(int(self.on_demand_nav_index), max_nav_index))
+        self.on_demand_nav_index = max(0, min(int(self.on_demand_nav_index), 3))
         self.on_demand_settings_focus_index = max(0, min(int(self.on_demand_settings_focus_index), self.in_app_menu_close_index()))
         options = self.on_demand_filter_options()
         self.on_demand_filter_index = max(0, min(int(self.on_demand_filter_index), len(options) - 1))
@@ -20708,6 +20768,7 @@ class ChannelSurfer(QWidget):
             {"key": "featured", "label": "Featured"},
             {"key": "movies", "label": "Movies"},
             {"key": "series", "label": "Series"},
+            {"key": "recently-added", "label": "Recently Added"},
             {"key": "my-vault", "label": "My Vault"},
             {"key": "random", "label": "Random"},
         ]
@@ -20722,6 +20783,7 @@ class ChannelSurfer(QWidget):
         labels = {
             "movies": ("Movies", "No movies found in this Vault yet."),
             "series": ("Series", "No shows found in this Vault yet."),
+            "recently-added": ("Recently Added", "New Vault titles will appear here."),
             "my-vault": ("My Vault", "Add a movie or show to My Vault and it will appear here."),
         }
         title, subtitle = labels.get(filter_key, ("Vault", "Nothing to show here yet."))
@@ -21328,38 +21390,6 @@ class ChannelSurfer(QWidget):
                 return
             self.toggle_sleek_freak_mode()
             return
-        if source == "vault" and self.video_window.on_demand_overlay.skin_style() == "flat":
-            if index == 0:
-                self.on_demand_nav_focused = False
-                if self.on_demand_settings_open:
-                    self.on_demand_settings_open = False
-                    self.refresh_on_demand()
-                elif self.on_demand_view == "home":
-                    self.hide_on_demand()
-                else:
-                    self.on_demand_view = "home"
-                    self.refresh_on_demand()
-                return
-            if index == 1:
-                self.hide_on_demand()
-                self.show_guide()
-                self.video_window.guide_overlay.settings_open = False
-                self.video_window.guide_overlay.nav_focus = False
-                self.video_window.guide_overlay.timeline_start = self.video_window.guide_overlay.floor_to_half_hour(time.time())
-                self.refresh_guide()
-                return
-            if index == 2:
-                self.on_demand_nav_focused = False
-                self.on_demand_settings_open = False
-                self.refresh_on_demand()
-                return
-            if index == 3:
-                self.on_demand_settings_open = True
-                self.on_demand_nav_focused = False
-                self.refresh_on_demand()
-                return
-            self.toggle_sleek_freak_mode()
-            return
         if source == "vault":
             if index == 0:
                 self.on_demand_nav_focused = False
@@ -21941,7 +21971,7 @@ class ChannelSurfer(QWidget):
         self.on_demand_season_index = 0
         self.on_demand_back_focused = False
         self.on_demand_nav_focused = False
-        self.on_demand_nav_index = 2 if self.video_window.on_demand_overlay.skin_style() == "flat" else 3
+        self.on_demand_nav_index = 3
         self.on_demand_settings_open = False
         self.on_demand_settings_focus_index = 0
         self.on_demand_render_sections = []
@@ -22197,8 +22227,7 @@ class ChannelSurfer(QWidget):
                 self.step_profile(1)
             return
         if self.on_demand_nav_focused:
-            max_nav_index = 4 if self.video_window.on_demand_overlay.skin_style() == "flat" else 3
-            if self.on_demand_nav_index < max_nav_index:
+            if self.on_demand_nav_index < 3:
                 self.on_demand_nav_index += 1
             self.refresh_on_demand()
             return
