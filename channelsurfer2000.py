@@ -15636,6 +15636,7 @@ class ChannelSurfer(QWidget):
         self.nettv_playing_entry = {}
         self.nettv_playing_started_at = 0.0
         self.nettv_playing_offset = 0.0
+        self.nettv_skip_attempts = 0
         self.nettv_loaded_entry_path = ""
         self.nettv_loaded_stream_url = ""
         self.nettv_last_frame = QPixmap()
@@ -19051,6 +19052,7 @@ class ChannelSurfer(QWidget):
             self.nettv_loaded_entry_path = ""
             self.nettv_loaded_stream_url = ""
             self.nettv_last_frame = QPixmap()
+            self.nettv_skip_attempts = 0
             self.pending_youtube_entry = youtube_entry
             self.pending_youtube_entry["_nettv_selected_at"] = time.time()
             self.pending_youtube_entry["_nettv_selected_offset"] = float(offset or 0)
@@ -19177,8 +19179,8 @@ class ChannelSurfer(QWidget):
             return
         title = (entry or {}).get("title", "NetTV Video")
         if not stream_url:
-            self.show_youtube_tuning_slate(title, error or "This NetTV video could not be cached for playback.")
-            self.status.setText(f"NetTV channel could not play:\n{title}\n{error or 'No playable video was found.'}")
+            _nettv_log(f"stream_resolved  FAILED  title={title!r}  error={error!r}")
+            self.skip_to_next_nettv_entry(error or "This NetTV video could not be cached for playback.")
             return
         self.update_youtube_entry_cache(entry)
         actual_duration = float((entry or {}).get("duration") or 0)
@@ -19259,7 +19261,7 @@ class ChannelSurfer(QWidget):
         channel = self.current_youtube_channel()
         entry = dict(self.nettv_playing_entry or {})
         if channel is None or not entry or entry.get("_nettv_force_progressive"):
-            self.show_youtube_tuning_slate("NetTV", reason or "NetTV could not open this cached video.")
+            self.skip_to_next_nettv_entry(reason or "NetTV could not open this cached video.")
             return
         cached_path = cached_youtube_video_path(entry)
         if cached_path and os.path.isfile(cached_path):
@@ -19281,6 +19283,80 @@ class ChannelSurfer(QWidget):
         self.nettv_player.stop()
         self.nettv_loaded_entry_path = ""
         self.nettv_loaded_stream_url = ""
+        self.channel_switch_timer.start(10)
+
+    def skip_to_next_nettv_entry(self, reason=""):
+        _NETTV_MAX_SKIPS = 3
+        channel = self.current_youtube_channel()
+        if channel is None:
+            self.show_youtube_tuning_slate("NetTV", reason or "NetTV channel is no longer active.")
+            return
+
+        self.nettv_skip_attempts += 1
+        attempt = self.nettv_skip_attempts
+
+        if attempt > _NETTV_MAX_SKIPS:
+            msg = f"NetTV tried {_NETTV_MAX_SKIPS} entries but none could play."
+            _nettv_log(f"skip  attempt={attempt}  GIVING UP  reason={reason!r}")
+            self.show_youtube_tuning_slate("NetTV", msg)
+            self.status.setText(f"NetTV: {msg}\n{reason or ''}")
+            return
+
+        entries = channel.get_schedule_entries()
+        if not entries:
+            self.show_youtube_tuning_slate("NetTV", "No scheduled entries available.")
+            return
+
+        # Find the failing entry's position in the schedule by path
+        current_path = (self.nettv_playing_entry or {}).get("path") or self.current_youtube_user_path
+        current_index = -1
+        for i, se in enumerate(entries):
+            ye = se.get("youtube_entry") or {}
+            if ye.get("path") == current_path or se.get("path") == current_path:
+                current_index = i
+                break
+
+        # Step forward by 1; if failing entry wasn't found, use attempt number as fallback offset
+        next_index = (current_index + 1) % len(entries) if current_index >= 0 else (attempt - 1) % len(entries)
+
+        # Skip over any placeholder entries
+        for _ in range(len(entries)):
+            candidate = entries[next_index]
+            ye = candidate.get("youtube_entry") or {}
+            if not ye.get("placeholder"):
+                break
+            next_index = (next_index + 1) % len(entries)
+
+        next_se = entries[next_index]
+        next_ye = dict(next_se.get("youtube_entry") or {})
+        next_ye.setdefault("path", next_se.get("path", ""))
+        next_ye.setdefault("title", next_se.get("title", "NetTV Video"))
+        next_ye.setdefault("duration", float(next_se.get("duration", 900.0) or 900.0))
+
+        _nettv_log(
+            f"skip  attempt={attempt}/{_NETTV_MAX_SKIPS}"
+            f"  failed_title={(self.nettv_playing_entry or {}).get('title')!r}"
+            f"  failed_index={current_index}"
+            f"  reason={reason!r}"
+            f"  next_index={next_index}"
+            f"  next_title={next_ye.get('title')!r}"
+            f"  next_url={next_ye.get('url', '')!r}"
+        )
+
+        next_ye["_nettv_selected_at"] = time.time()
+        next_ye["_nettv_selected_offset"] = 0.0
+        next_ye["_nettv_cached_at_tune"] = bool(cached_youtube_video_path(next_ye))
+
+        self.nettv_player.stop()
+        self.nettv_loaded_entry_path = ""
+        self.nettv_loaded_stream_url = ""
+        self.pending_youtube_entry = next_ye
+        self.pending_offset = 0.0
+        self.show_youtube_tuning_slate(
+            next_ye.get("title", "NetTV Video"),
+            f"Tuning to next available video (skip {attempt}/{_NETTV_MAX_SKIPS})...",
+        )
+        self.nettv_playing_entry = dict(next_ye)
         self.channel_switch_timer.start(10)
 
     def reset_live_playback_health(self, path=""):
