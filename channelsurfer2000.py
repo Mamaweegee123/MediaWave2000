@@ -25,18 +25,46 @@ except ImportError:
     AppKit = None
     Foundation = None
 
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QLabel, QHBoxLayout, QComboBox, QFormLayout, QSizePolicy, QProgressBar, QDialog, QLineEdit, QCheckBox, QSpinBox, QListWidget, QAbstractItemView, QScrollArea, QTabWidget
-from PySide6.QtCore import Qt, QTimer, Slot, QUrl, Signal, QRect, QPoint, QSize, QEvent
-from PySide6.QtGui import QPainter, QColor, QKeySequence, QShortcut, QPixmap, QFont, QFontDatabase, QLinearGradient, QRadialGradient, QPen, QPolygon, QImage, QFontMetrics, QPainterPath
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QLabel, QHBoxLayout, QComboBox, QFormLayout, QSizePolicy, QProgressBar, QDialog, QLineEdit, QCheckBox, QSpinBox, QListWidget, QAbstractItemView, QScrollArea, QTabWidget, QTextEdit, QGridLayout, QButtonGroup, QStackedWidget
+from PySide6.QtCore import Qt, QTimer, Slot, QUrl, Signal, QRect, QRectF, QPoint, QPointF, QSize, QEvent
+from PySide6.QtGui import QPainter, QColor, QIcon, QKeySequence, QShortcut, QPixmap, QFont, QFontDatabase, QLinearGradient, QRadialGradient, QPen, QPolygon, QImage, QFontMetrics, QPainterPath
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink, QSoundEffect, QAudioBufferOutput, QAudioFormat
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 
 APP_NAME = "MediaWave2000"
+APP_VERSION = "1.0.0"
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov")
+
+# ── Startup screen fixed palette ──────────────────────────────────────────────
+# Completely independent of the active guide theme. One consistent look.
+_SW_BG           = QColor(13,  16,  38)   # Deep space background
+_SW_HERO_TOP     = QColor( 9,  11,  27)   # Hero gradient top
+_SW_HERO_BOT     = QColor(15,  18,  44)   # Hero gradient bottom
+_SW_CARD_BG      = QColor(22,  26,  58)   # Card background
+_SW_CARD_BORDER  = QColor(68, 108, 235)   # Electric-blue card border
+_SW_ACCENT       = QColor(96, 144, 255)   # Blue accent
+_SW_CTA_BG       = QColor(255, 188,  10)  # Amber "Watch TV" button
+_SW_CTA_TEXT     = QColor( 13,  16,  38)  # Dark text on CTA
+_SW_TEXT         = QColor(210, 222, 252)  # Primary text
+_SW_TEXT_DIM     = QColor(138, 158, 212)  # Muted / secondary
+_SW_HEADER       = QColor(118, 162, 255)  # Section header label
+_SW_INPUT_BG     = QColor( 16,  20,  50)  # Input / path field bg
+_SW_INPUT_TEXT   = QColor(188, 205, 248)  # Input text
+_SW_FOOTER_BG    = QColor( 9,  11,  27)   # Footer bar bg
+_SW_FOOTER_BORD  = QColor(42,  54, 128)   # Footer top-border
+_SW_STAR_WARM    = QColor(255, 218,  96)  # Warm pixel star
+_SW_STAR_COOL    = QColor(148, 196, 255)  # Cool pixel star
+_SW_COAXIE_BODY  = QColor( 50,  68, 162)  # Coaxie TV body
+_SW_COAXIE_SCR   = QColor(  7,  10,  32)  # Screen dark
+_SW_COAXIE_GLOW  = QColor( 55,  96, 228)  # Screen glow edge
+_SW_COAXIE_EYE   = QColor( 96, 200, 255)  # Eye highlight
+_SW_COAXIE_KNOB  = QColor(192, 150,  48)  # Dial/knob color
 AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".wma")
 METADATA_SCHEMA_VERSION = 2
 VAULT_DEBUG_LOGGING = os.environ.get("MEDIAWAVE_VAULT_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
+PERF_LOGGING = os.environ.get("MEDIAWAVE_PERF", "").strip().lower() in {"1", "true", "yes", "on"}
+SYNC_THUMBNAIL_GENERATION = os.environ.get("MEDIAWAVE_SYNC_THUMBNAILS", "").strip().lower() in {"1", "true", "yes", "on"}
 REMOTE_METADATA_EXPERIMENTAL = os.environ.get("MEDIAWAVE_EXPERIMENTAL_REMOTE_METADATA", "").strip().lower() in {"1", "true", "yes", "on"}
 
 GLOBAL_START = time.time() - random.randint(0, 86400)
@@ -102,9 +130,11 @@ YOUTUBE_PLAYLIST_CACHE_FILE = os.path.join(DATA_DIR, "youtube_playlist_cache.jso
 CATALOG_VALIDATION_FILE = os.path.join(DATA_DIR, "catalog_validation.json")
 CHANNEL_SWITCH_SOUND = os.path.join(RESOURCE_DIR, "assets", "channel_switch.wav")
 APP_LOGO_PATH = resolve_resource_path(
+    "logos/MW2K.png",
     "logos/MediaWave2000.png",
     "logos/MediaWave-2000-2000-2000-MediaWave-2000.png",
 )
+APP_ICON_PATH = resolve_resource_path("logos/MW2K.png")
 CLASSIC_APP_LOGO_PATH = resolve_resource_path("logos/mediawave80s.png")
 CLOCK_FONT_PATH = resolve_resource_path("ds_digital/DS-DIGIT.TTF")
 CRT_FONT_PATH = resolve_resource_path(
@@ -150,6 +180,70 @@ _VIDEOPHREAK_FONT_FAMILY = None
 _SCIFI2KI_FONT_FAMILY = None
 _RADIOWAVE_DEFAULT_ART = None
 _UI_PIXMAP_CACHE = {}
+_SCALED_UI_PIXMAP_CACHE = {}
+_FILE_SIGNATURE_CACHE = {}
+_LOCAL_MEDIA_ASSET_CACHE = {}
+_LOCAL_ASSET_SIGNATURE_CACHE = {}
+_PERF_STATS = {}
+
+
+def perf_log(name, elapsed_ms=None, **fields):
+    if not PERF_LOGGING:
+        return
+    if elapsed_ms is not None:
+        _PERF_STATS[name] = elapsed_ms
+    parts = [f"[PERF] {name}"]
+    if elapsed_ms is not None:
+        parts.append(f"{elapsed_ms:.1f}ms")
+    for key, value in fields.items():
+        parts.append(f"{key}={value}")
+    print(" ".join(parts), flush=True)
+
+
+def perf_summary(label, **fields):
+    if not PERF_LOGGING:
+        return
+    important = [
+        "catalog.scan",
+        "catalog.on_demand_cache.load",
+        "catalog.on_demand_cache.miss",
+        "vault.catalog.build",
+        "guide.rows.build",
+        "guide.refresh",
+        "vault.cards.build",
+        "vault.home_sections.build",
+        "vault.state.build",
+        "vault.refresh",
+        "image.thumbnail.load",
+        "image.thumbnail.miss",
+        "commercial.library.load",
+        "commercial.schedule.apply",
+        "commercial.schedule.channel",
+    ]
+    parts = [f"[PERF SUMMARY] {label}"]
+    for key, value in fields.items():
+        parts.append(f"{key}={value}")
+    for key in important:
+        if key in _PERF_STATS:
+            parts.append(f"{key}={_PERF_STATS[key]:.1f}ms")
+    print(" ".join(parts), flush=True)
+
+
+class PerfTimer:
+    def __init__(self, name, threshold_ms=0.0, **fields):
+        self.name = name
+        self.threshold_ms = threshold_ms
+        self.fields = fields
+        self.started = 0.0
+
+    def __enter__(self):
+        self.started = time.perf_counter()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        elapsed_ms = (time.perf_counter() - self.started) * 1000.0
+        if elapsed_ms >= self.threshold_ms:
+            perf_log(self.name, elapsed_ms, **self.fields)
 
 GUIDE_UI_SCALE_DEFAULT = 1.0
 GUIDE_UI_SCALE_MIN = 0.8
@@ -171,23 +265,23 @@ CLASSIC_CABLE_TUNING = {
         "secondary": GUIDE_SECONDARY_FONT_PATH,
     },
     "font_scale": {
-        "header": 11,
-        "title": 10,
-        "body": 9,
-        "small": 8,
-        "channel_number": 13,
-        "channel_abbrev": 9,
-        "time": 8,
-        "info_title": 10,
-        "info_meta": 8,
+        "header": 12,
+        "title": 13,
+        "body": 12,
+        "small": 10,
+        "channel_number": 20,
+        "channel_abbrev": 11,
+        "time": 10,
+        "info_title": 13,
+        "info_meta": 10,
     },
     "layout": {
         "top_y": 34,
         "preview_ratio": 0.34,
-        "preview_height": 0.205,
-        "header_height": 24,
-        "row_height": 31,
-        "channel_col": 68,
+        "preview_height": 0.27,
+        "header_height": 22,
+        "row_height": 42,
+        "channel_col": 112,
         "panel_margin": 16,
         "grid_gap": 2,
     },
@@ -199,13 +293,13 @@ CLASSIC_CABLE_TUNING = {
         "selected_thickness": 2,
     },
     "crt": {
-        "surface_scale": 0.97,
-        "screen_mix_a": 0.045,
-        "screen_mix_b": 0.022,
-        "scanline_alpha": 10,
-        "scanline_step": 4,
-        "noise_line_alpha_base": 4,
-        "noise_dot_alpha": 10,
+        "surface_scale": 1.0,
+        "screen_mix_a": 0,
+        "screen_mix_b": 0,
+        "scanline_alpha": 0,
+        "scanline_step": 6,
+        "noise_line_alpha_base": 0,
+        "noise_dot_alpha": 0,
     },
 }
 
@@ -342,6 +436,26 @@ def build_guide_metrics(profile_name, ui_scale, skin_style):
     }
 
 
+def safe_isdir(path):
+    """os.path.isdir but won't hang on sleeping/unmounted network volumes.
+    On macOS, stat-ing a path under /Volumes/<vol>/ will block indefinitely
+    if the volume is sleeping. We check the mount point first with a non-blocking
+    os.path.ismount so we only stat when the parent mount is already active."""
+    if not path:
+        return False
+    try:
+        parts = path.replace("\\", "/").split("/")
+        # If path is under /Volumes/<vol>/..., guard on the volume itself
+        if sys.platform == "darwin" and len(parts) >= 3 and parts[1] == "Volumes":
+            mount = "/" + "/".join(parts[1:3])
+            # ismount is a lstat call on the parent — fast and won't hang
+            if not os.path.ismount(mount):
+                return False
+        return os.path.isdir(path)
+    except OSError:
+        return False
+
+
 def load_json_file(path, default):
     try:
         with open(path, "r", encoding="utf-8") as handle:
@@ -358,7 +472,47 @@ def save_json_file(path, data):
         pass
 
 
-COMMERCIALS_SCHEMA_VERSION = 1
+COMMERCIALS_SCHEMA_VERSION = 2
+COMMERCIAL_MODES = ("off", "between_episodes", "timed_midroll")
+COMMERCIAL_MODE_LABELS = {
+    "off": "Off",
+    "between_episodes": "Between Episodes Only",
+    "timed_midroll": "Timed Mid-Episode Breaks",
+}
+COMMERCIAL_MODE_VALUES_BY_LABEL = {label: key for key, label in COMMERCIAL_MODE_LABELS.items()}
+CATALOG_CATEGORY_USE_CHANNEL = "Use Channel Name"
+CATALOG_CATEGORY_CUSTOM = "Custom..."
+CATALOG_BUILTIN_CATEGORIES = [
+    CATALOG_CATEGORY_USE_CHANNEL,
+    "Comedy",
+    "Drama",
+    "Horror",
+    "Thriller",
+    "Action",
+    "Adventure",
+    "Sci-Fi",
+    "Fantasy",
+    "Kids",
+    "Animation",
+    "Anime",
+    "Music",
+    "Sports",
+    "News",
+    "Weather",
+    "Documentary",
+    "Edutainment",
+    "Reality",
+    "Game Shows",
+    "Lifestyle",
+    "Food",
+    "Travel",
+    "Movies",
+    "Classic TV",
+    "Late Night",
+    "Soapy",
+    "Miscellaneous",
+    CATALOG_CATEGORY_CUSTOM,
+]
 COMMERCIAL_DENSITY_PRESETS = {
     "none": (0, 0),
     "light": (1, 2),
@@ -374,79 +528,51 @@ COMMERCIAL_SPECIAL_CATEGORY_LABELS = {
 COMMERCIAL_SIMPLE_PRESETS = {
     "premium": {
         "enabled": False,
-        "mode": "between_episodes_only",
+        "mode": "off",
         "density": "none",
-        "pre_roll_enabled": False,
-        "post_roll_enabled": False,
         "allow_bumpers": False,
         "allow_promos": False,
-        "prefer_promos": False,
         "allow_station_ids": False,
+        "prefer_same_era": True,
         "min_ads_per_break": 0,
         "max_ads_per_break": 0,
-        "min_seconds_between_breaks": 1800,
-        "target_break_interval_minutes": 30,
-        "minimum_content_before_first_break_seconds": 1800,
-        "break_jitter_seconds": 0,
-        "max_ad_seconds_per_half_hour": 0,
-        "skip_midroll_if_no_smart_breaks": True,
+        "midroll_interval_minutes": 15,
     },
     "light_tv": {
         "enabled": True,
-        "mode": "between_episodes_only",
+        "mode": "between_episodes",
         "density": "light",
-        "pre_roll_enabled": False,
-        "post_roll_enabled": True,
         "allow_bumpers": False,
         "allow_promos": False,
-        "prefer_promos": False,
         "allow_station_ids": False,
+        "prefer_same_era": True,
         "min_ads_per_break": 1,
         "max_ads_per_break": 2,
-        "min_seconds_between_breaks": 600,
-        "target_break_interval_minutes": 10,
-        "minimum_content_before_first_break_seconds": 420,
-        "break_jitter_seconds": 30,
-        "max_ad_seconds_per_half_hour": 120,
-        "skip_midroll_if_no_smart_breaks": True,
+        "midroll_interval_minutes": 18,
     },
     "classic_cable": {
         "enabled": True,
-        "mode": "hybrid",
+        "mode": "between_episodes",
         "density": "medium",
-        "pre_roll_enabled": False,
-        "post_roll_enabled": True,
         "allow_bumpers": True,
         "allow_promos": True,
-        "prefer_promos": False,
         "allow_station_ids": True,
+        "prefer_same_era": True,
         "min_ads_per_break": 2,
         "max_ads_per_break": 3,
-        "min_seconds_between_breaks": 330,
-        "target_break_interval_minutes": 7,
-        "minimum_content_before_first_break_seconds": 90,
-        "break_jitter_seconds": 45,
-        "max_ad_seconds_per_half_hour": 240,
-        "skip_midroll_if_no_smart_breaks": False,
+        "midroll_interval_minutes": 15,
     },
     "heavy_retro": {
         "enabled": True,
-        "mode": "hybrid",
+        "mode": "timed_midroll",
         "density": "heavy",
-        "pre_roll_enabled": True,
-        "post_roll_enabled": True,
         "allow_bumpers": True,
         "allow_promos": True,
-        "prefer_promos": True,
         "allow_station_ids": True,
+        "prefer_same_era": True,
         "min_ads_per_break": 3,
         "max_ads_per_break": 5,
-        "min_seconds_between_breaks": 240,
-        "target_break_interval_minutes": 5,
-        "minimum_content_before_first_break_seconds": 75,
-        "break_jitter_seconds": 60,
-        "max_ad_seconds_per_half_hour": 360,
-        "skip_midroll_if_no_smart_breaks": False,
+        "midroll_interval_minutes": 12,
     },
 }
 
@@ -482,10 +608,12 @@ def apply_commercial_simple_preset(settings, preset_name, smart_breaks=None, ena
     preset_key = normalize_commercial_simple_preset(preset_name)
     merged.update(COMMERCIAL_SIMPLE_PRESETS[preset_key])
     merged["simple_preset"] = preset_key
-    if smart_breaks is not None:
-        merged["smart_breaks"] = bool(smart_breaks)
     if enabled is not None:
         merged["enabled"] = bool(enabled)
+        if not enabled:
+            merged["mode"] = "off"
+        elif merged.get("mode") == "off":
+            merged["mode"] = "between_episodes"
     if root_folder is not None:
         merged["root_folder"] = os.path.abspath(os.path.expanduser(root_folder.strip())) if root_folder else ""
     return normalize_commercials_config(merged)
@@ -493,27 +621,21 @@ def apply_commercial_simple_preset(settings, preset_name, smart_breaks=None, ena
 
 def commercial_settings_defaults():
     return {
+        "schema_version": COMMERCIALS_SCHEMA_VERSION,
         "enabled": False,
+        "commercials_enabled": False,
         "root_folder": "",
         "simple_preset": "classic_cable",
-        "smart_breaks": True,
-        "mode": "between_episodes_only",
+        "mode": "between_episodes",
         "density": "light",
         "allow_fallback": True,
-        "pre_roll_enabled": False,
-        "post_roll_enabled": False,
         "allow_bumpers": True,
         "allow_promos": True,
-        "prefer_promos": False,
         "allow_station_ids": True,
+        "prefer_same_era": True,
         "min_ads_per_break": 1,
         "max_ads_per_break": 3,
-        "min_seconds_between_breaks": 330,
-        "target_break_interval_minutes": 7,
-        "minimum_content_before_first_break_seconds": 90,
-        "break_jitter_seconds": 45,
-        "max_ad_seconds_per_half_hour": 240,
-        "skip_midroll_if_no_smart_breaks": False,
+        "midroll_interval_minutes": 15,
         "preferred_era": "",
         "preferred_category": "",
         "channel_overrides": {},
@@ -573,66 +695,179 @@ def commercials_config_signature(config):
     return stable_hash(json.dumps(config or {}, sort_keys=True))
 
 
+def normalize_commercial_mode(value, enabled=True):
+    text = str(value or "").strip().lower().replace("-", "_")
+    aliases = {
+        "none": "off",
+        "disabled": "off",
+        "commercials_off": "off",
+        "no_commercials": "off",
+        "between": "between_episodes",
+        "between_episodes_only": "between_episodes",
+        "between_shows": "between_episodes",
+        "natural_breaks": "timed_midroll",
+        "timed_breaks": "timed_midroll",
+        "timed_break": "timed_midroll",
+        "midroll": "timed_midroll",
+        "hybrid": "timed_midroll",
+    }
+    mode = aliases.get(text, text)
+    if mode not in COMMERCIAL_MODES:
+        mode = "between_episodes"
+    if not enabled:
+        return "off"
+    return mode
+
+
+def commercial_mode_label(value):
+    return COMMERCIAL_MODE_LABELS.get(normalize_commercial_mode(value), COMMERCIAL_MODE_LABELS["between_episodes"])
+
+
+def sanitize_catalog_category(value):
+    text = re.sub(r"\s+", " ", str(value or "").strip())
+    return text[:64]
+
+
+def catalog_category_key(value):
+    return normalize_title(sanitize_catalog_category(value))
+
+
+def catalog_channel_settings_defaults():
+    return {
+        "enabled": True,
+        "channel_number": 0,
+        "display_name": "",
+        "vault_category_mode": "channel_name",
+        "vault_category": "",
+        "custom_vault_category": "",
+        "description": "",          # user-written blurb shown in Vault
+        "vault_genre_tags": "",     # comma-separated extra genre tags for Vault filters
+    }
+
+
+def normalize_catalog_channel_settings(settings):
+    source = settings if isinstance(settings, dict) else {}
+    normalized = {}
+    for channel_id, value in source.items():
+        if not isinstance(channel_id, str) or not isinstance(value, dict):
+            continue
+        merged = merge_dict_defaults(value, catalog_channel_settings_defaults())
+        mode = str(merged.get("vault_category_mode", "channel_name") or "channel_name").lower()
+        if mode not in {"channel_name", "builtin", "custom"}:
+            mode = "channel_name"
+        try:
+            number = int(merged.get("channel_number", 0) or 0)
+        except (TypeError, ValueError):
+            number = 0
+        normalized[channel_id] = {
+            "enabled": bool(merged.get("enabled", True)),
+            "channel_number": max(0, min(9999, number)),
+            "display_name": str(merged.get("display_name", "") or "").strip(),
+            "vault_category_mode": mode,
+            "vault_category": sanitize_catalog_category(merged.get("vault_category", "")),
+            "custom_vault_category": sanitize_catalog_category(merged.get("custom_vault_category", "")),
+            "description": str(merged.get("description", "") or "").strip(),
+            "vault_genre_tags": str(merged.get("vault_genre_tags", "") or "").strip(),
+        }
+    return normalized
+
+
+def catalog_channel_id_from_info(info):
+    if not isinstance(info, dict):
+        return ""
+    channel_type = str(info.get("channel_type", "media") or "media")
+    if channel_type == "weatherstar":
+        return "special:weatherstar"
+    if channel_type == "radiowave":
+        return "special:radiowave"
+    if channel_type == "youtube":
+        return "special:youtube"
+    root_path = os.path.realpath(info.get("root_path", "") or "")
+    if root_path:
+        return f"media:{root_path}"
+    return f"media-name:{normalize_title(info.get('name', 'channel'))}"
+
+
 def normalize_commercials_config(settings):
-    merged = merge_dict_defaults(settings or {}, commercial_settings_defaults())
-    merged["enabled"] = bool(merged.get("enabled", False))
-    merged["smart_breaks"] = bool(merged.get("smart_breaks", True))
+    defaults = commercial_settings_defaults()
+    source = settings if isinstance(settings, dict) else {}
+    merged = merge_dict_defaults(source, defaults)
+    raw_enabled = merged.get("enabled", merged.get("commercials_enabled", False))
+    if "commercials_enabled" in source:
+        raw_enabled = source.get("commercials_enabled")
+    mode = normalize_commercial_mode(merged.get("mode", defaults["mode"]), enabled=bool(raw_enabled))
+    enabled = bool(raw_enabled) and mode != "off"
+    merged["schema_version"] = COMMERCIALS_SCHEMA_VERSION
+    merged["mode"] = mode
+    merged["enabled"] = enabled
+    merged["commercials_enabled"] = enabled
     merged["allow_fallback"] = bool(merged.get("allow_fallback", True))
-    merged["pre_roll_enabled"] = bool(merged.get("pre_roll_enabled", False))
-    merged["post_roll_enabled"] = bool(merged.get("post_roll_enabled", False))
     merged["allow_bumpers"] = bool(merged.get("allow_bumpers", True))
     merged["allow_promos"] = bool(merged.get("allow_promos", True))
-    merged["prefer_promos"] = bool(merged.get("prefer_promos", False))
     merged["allow_station_ids"] = bool(merged.get("allow_station_ids", True))
-    merged["skip_midroll_if_no_smart_breaks"] = bool(merged.get("skip_midroll_if_no_smart_breaks", False))
+    merged["prefer_same_era"] = bool(merged.get("prefer_same_era", True))
     merged["root_folder"] = os.path.abspath(os.path.expanduser((merged.get("root_folder") or "").strip())) if merged.get("root_folder") else ""
     merged["simple_preset"] = normalize_commercial_simple_preset(merged.get("simple_preset", "classic_cable"))
     merged["preferred_era"] = normalize_commercial_era(merged.get("preferred_era", ""))
     merged["preferred_category"] = normalize_commercial_category(merged.get("preferred_category", ""))
-    merged["mode"] = str(merged.get("mode", "between_episodes_only") or "between_episodes_only")
-    if merged["mode"] not in {"between_episodes_only", "natural_breaks", "timed_breaks", "hybrid"}:
-        merged["mode"] = "between_episodes_only"
     merged["density"] = str(merged.get("density", "light") or "light").lower()
-    if merged["density"] not in {"none", "light", "medium", "heavy", "custom"}:
+    if merged["density"] not in {"light", "medium", "heavy", "custom"}:
         merged["density"] = "light"
-    for key in (
-        "min_ads_per_break",
-        "max_ads_per_break",
-        "min_seconds_between_breaks",
-        "target_break_interval_minutes",
-        "minimum_content_before_first_break_seconds",
-        "break_jitter_seconds",
-        "max_ad_seconds_per_half_hour",
-    ):
+    interval_value = merged.get("midroll_interval_minutes", merged.get("target_break_interval_minutes", defaults["midroll_interval_minutes"]))
+    for key in ("min_ads_per_break", "max_ads_per_break"):
         try:
-            merged[key] = int(merged.get(key, commercial_settings_defaults()[key]) or commercial_settings_defaults()[key])
+            merged[key] = int(merged.get(key, defaults[key]) or defaults[key])
         except (TypeError, ValueError):
-            merged[key] = commercial_settings_defaults()[key]
+            merged[key] = defaults[key]
+    try:
+        merged["midroll_interval_minutes"] = int(interval_value or defaults["midroll_interval_minutes"])
+    except (TypeError, ValueError):
+        merged["midroll_interval_minutes"] = defaults["midroll_interval_minutes"]
+    merged["midroll_interval_minutes"] = max(6, min(60, merged["midroll_interval_minutes"]))
     merged["min_ads_per_break"] = max(0, merged["min_ads_per_break"])
     merged["max_ads_per_break"] = max(merged["min_ads_per_break"], merged["max_ads_per_break"])
     normalized_overrides = {}
     for channel_name, override in (merged.get("channel_overrides") or {}).items():
         if not isinstance(channel_name, str) or not isinstance(override, dict):
             continue
+        override_enabled_mode = str(override.get("enabled_mode", "inherit") or "inherit")
+        override_enabled = enabled if override_enabled_mode == "inherit" else override_enabled_mode == "on"
+        override_mode = normalize_commercial_mode(override.get("mode", merged["mode"]), enabled=override_enabled)
+        override_density = str(override.get("density", merged["density"]) or merged["density"]).lower()
+        if override_density not in {"light", "medium", "heavy", "custom"}:
+            override_density = merged["density"]
         normalized_overrides[str(channel_name)] = {
-            "enabled_mode": str(override.get("enabled_mode", "inherit") or "inherit"),
+            "enabled_mode": override_enabled_mode if override_enabled_mode in {"inherit", "on", "off"} else "inherit",
             "preferred_era": normalize_commercial_era(override.get("preferred_era", "")),
             "preferred_category": normalize_commercial_category(override.get("preferred_category", "")),
-            "mode": str(override.get("mode", merged["mode"]) or merged["mode"]),
-            "density": str(override.get("density", merged["density"]) or merged["density"]).lower(),
+            "mode": override_mode,
+            "density": override_density,
             "min_ads_per_break": int(override.get("min_ads_per_break", merged["min_ads_per_break"]) or merged["min_ads_per_break"]),
             "max_ads_per_break": int(override.get("max_ads_per_break", merged["max_ads_per_break"]) or merged["max_ads_per_break"]),
-            "min_seconds_between_breaks": int(override.get("min_seconds_between_breaks", merged["min_seconds_between_breaks"]) or merged["min_seconds_between_breaks"]),
-            "target_break_interval_minutes": int(override.get("target_break_interval_minutes", merged["target_break_interval_minutes"]) or merged["target_break_interval_minutes"]),
-            "minimum_content_before_first_break_seconds": int(override.get("minimum_content_before_first_break_seconds", merged["minimum_content_before_first_break_seconds"]) or merged["minimum_content_before_first_break_seconds"]),
-            "max_ad_seconds_per_half_hour": int(override.get("max_ad_seconds_per_half_hour", merged["max_ad_seconds_per_half_hour"]) or merged["max_ad_seconds_per_half_hour"]),
+            "midroll_interval_minutes": int(override.get("midroll_interval_minutes", override.get("target_break_interval_minutes", merged["midroll_interval_minutes"])) or merged["midroll_interval_minutes"]),
             "allow_fallback": bool(override.get("allow_fallback", merged["allow_fallback"])),
             "allow_bumpers": bool(override.get("allow_bumpers", merged["allow_bumpers"])),
             "allow_promos": bool(override.get("allow_promos", merged["allow_promos"])),
-            "prefer_promos": bool(override.get("prefer_promos", merged["prefer_promos"])),
             "allow_station_ids": bool(override.get("allow_station_ids", merged["allow_station_ids"])),
+            "prefer_same_era": bool(override.get("prefer_same_era", merged["prefer_same_era"])),
         }
     merged["channel_overrides"] = normalized_overrides
+    for deprecated_key in (
+        "smart_breaks",
+        "skip_midroll_if_no_smart_breaks",
+        "learned_breaks",
+        "black_frame_breaks",
+        "silence_breaks",
+        "pre_roll_enabled",
+        "post_roll_enabled",
+        "prefer_promos",
+        "min_seconds_between_breaks",
+        "target_break_interval_minutes",
+        "minimum_content_before_first_break_seconds",
+        "break_jitter_seconds",
+        "max_ad_seconds_per_half_hour",
+    ):
+        merged.pop(deprecated_key, None)
     return merged
 
 
@@ -763,48 +998,10 @@ def schedule_entry_user_path(entry, fallback_path=""):
 
 
 def detect_smart_break_candidates_for_path(path):
-    if not FFMPEG_PATH or not path:
-        return []
-    command = [
-        FFMPEG_PATH,
-        "-hide_banner",
-        "-threads",
-        "1",
-        "-i",
-        path,
-        "-vf",
-        "blackdetect=d=0.20:pix_th=0.98",
-        "-af",
-        "silencedetect=n=-35dB:d=0.25",
-        "-f",
-        "null",
-        "-",
-    ]
-    try:
-        result = subprocess.run(
-            command,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.PIPE,
-            text=True,
-            timeout=90,
-        )
-        stderr = result.stderr or ""
-    except (subprocess.SubprocessError, OSError):
-        stderr = ""
-
-    black_points = []
-    silence_points = []
-    for line in stderr.splitlines():
-        black_match = re.search(r"black_start:(?P<start>[0-9.]+)\s+black_end:(?P<end>[0-9.]+)", line)
-        if black_match:
-            start = float(black_match.group("start"))
-            end = float(black_match.group("end"))
-            black_points.append(max(0.0, (start + end) / 2.0))
-            continue
-        silence_match = re.search(r"silence_start:\s*(?P<start>[0-9.]+)", line)
-        if silence_match:
-            silence_points.append(float(silence_match.group("start")))
-    return sorted({round(point, 2) for point in (black_points + silence_points) if point >= 15.0})
+    # Deprecated: MediaWave now uses predictable schedule-driven commercial
+    # placement only. Keep this compatibility stub so older call sites/settings
+    # cannot accidentally invoke black-frame or silence probing.
+    return []
 
 
 def write_vault_debug_log(channel, message, fields=None):
@@ -1733,8 +1930,8 @@ def scifi2ki_font_family():
 
 def format_clock_range(start_ts, end_ts):
     return (
-        f"{time.strftime('%I:%M', time.localtime(start_ts)).lstrip('0')} - "
-        f"{time.strftime('%I:%M', time.localtime(end_ts)).lstrip('0')}"
+        f"{time.strftime('%I:%M %p', time.localtime(start_ts)).lstrip('0')} - "
+        f"{time.strftime('%I:%M %p', time.localtime(end_ts)).lstrip('0')}"
     )
 
 
@@ -1881,12 +2078,15 @@ def load_local_description_file(path):
 
 
 def discover_local_media_assets(path, local):
+    cached = _LOCAL_MEDIA_ASSET_CACHE.get(path)
+    if cached is not None:
+        return dict(cached)
     directories = local_asset_directories(path, local)
     poster_path = find_named_asset(directories, LOCAL_POSTER_NAMES)
     fanart_path = find_named_asset(directories, LOCAL_FANART_NAMES)
     clearlogo_path = find_named_asset(directories, LOCAL_CLEARLOGO_NAMES)
     description_path = find_named_asset(directories, LOCAL_DESCRIPTION_NAMES)
-    return {
+    assets = {
         "directories": directories,
         "poster_path": poster_path,
         "fanart_path": fanart_path,
@@ -1894,9 +2094,16 @@ def discover_local_media_assets(path, local):
         "description_path": description_path,
         "description": load_local_description_file(description_path),
     }
+    if len(_LOCAL_MEDIA_ASSET_CACHE) > 12000:
+        _LOCAL_MEDIA_ASSET_CACHE.clear()
+    _LOCAL_MEDIA_ASSET_CACHE[path] = dict(assets)
+    return assets
 
 
 def local_asset_signature(path, local):
+    cached = _LOCAL_ASSET_SIGNATURE_CACHE.get(path)
+    if cached is not None:
+        return cached
     assets = discover_local_media_assets(path, local)
     parts = [file_cache_signature(path)]
     for directory in assets.get("directories", []):
@@ -1909,7 +2116,11 @@ def local_asset_signature(path, local):
         candidate = assets.get(key, "")
         if candidate:
             parts.append(file_cache_signature(candidate))
-    return stable_hash("|".join(parts))
+    signature = stable_hash("|".join(parts))
+    if len(_LOCAL_ASSET_SIGNATURE_CACHE) > 12000:
+        _LOCAL_ASSET_SIGNATURE_CACHE.clear()
+    _LOCAL_ASSET_SIGNATURE_CACHE[path] = signature
+    return signature
 
 
 def build_local_media_metadata(path, duration=None):
@@ -2164,12 +2375,45 @@ def load_ui_pixmap(path):
     return pixmap
 
 
+def load_scaled_ui_pixmap(path, size, aspect_mode=Qt.KeepAspectRatioByExpanding):
+    resolved = (path or "").strip()
+    if not resolved or not size or size.isEmpty():
+        return QPixmap()
+    key = (resolved, int(size.width()), int(size.height()), str(aspect_mode))
+    cached = _SCALED_UI_PIXMAP_CACHE.get(key)
+    if cached is not None and not cached.isNull():
+        return cached
+    pixmap = load_ui_pixmap(resolved)
+    if pixmap.isNull():
+        return QPixmap()
+    scaled = pixmap.scaled(size, aspect_mode, Qt.SmoothTransformation)
+    if not scaled.isNull():
+        if len(_SCALED_UI_PIXMAP_CACHE) > 320:
+            _SCALED_UI_PIXMAP_CACHE.clear()
+        _SCALED_UI_PIXMAP_CACHE[key] = scaled
+    return scaled
+
+
 def file_cache_signature(path):
+    now = time.monotonic()
+    cached = _FILE_SIGNATURE_CACHE.get(path)
+    if cached and now - cached[1] < 300:
+        return cached[0]
     try:
         stat = os.stat(path)
-        return stable_hash(f"{path}|{int(stat.st_mtime)}|{stat.st_size}")
+        signature = stable_hash(f"{path}|{int(stat.st_mtime)}|{stat.st_size}")
     except OSError:
-        return stable_hash(path)
+        signature = stable_hash(path)
+    if len(_FILE_SIGNATURE_CACHE) > 12000:
+        _FILE_SIGNATURE_CACHE.clear()
+    _FILE_SIGNATURE_CACHE[path] = (signature, now)
+    return signature
+
+
+def clear_catalog_lookup_caches():
+    _FILE_SIGNATURE_CACHE.clear()
+    _LOCAL_MEDIA_ASSET_CACHE.clear()
+    _LOCAL_ASSET_SIGNATURE_CACHE.clear()
 
 
 def resolve_ffprobe_path():
@@ -2446,24 +2690,49 @@ THEME_NAME_ALIASES = {
     "Clementine": "Tangerine Dream",
     "Slate Modern": "Millennial Grey",
     "Signal Modern": "Baby Blue",
+    "Green Screen": "Silver Olive",
 }
 
 GUIDE_THEME_DEFINITIONS = {
     "Promised Future": {
         "Silver Olive": {
-            "bg": QColor(76, 82, 72, 228),
-            "panel": QColor(200, 202, 190, 218),
-            "header": QColor(124, 140, 108, 240),
-            "row_a": QColor(144, 158, 120, 214),
-            "row_b": QColor(104, 120, 92, 214),
-            "selected": QColor(246, 226, 132, 236),
-            "text": QColor(250, 252, 244),
-            "dark_text": QColor(36, 42, 30),
-            "muted": QColor(230, 234, 218),
-            "chrome_top": QColor(244, 244, 236, 240),
-            "chrome_mid": QColor(198, 202, 184, 228),
-            "chrome_bottom": QColor(118, 132, 102, 226),
-            "glass": QColor(255, 255, 255, 56),
+            "bg": QColor(37, 48, 28, 238),
+            "panel": QColor(224, 224, 216, 238),
+            "header": QColor(54, 72, 32, 246),
+            "row_a": QColor(236, 234, 222, 240),
+            "row_b": QColor(214, 216, 206, 238),
+            "selected": QColor(252, 225, 114, 246),
+            "text": QColor(248, 250, 242),
+            "dark_text": QColor(31, 39, 20),
+            "muted": QColor(94, 104, 78),
+            "chrome_top": QColor(250, 250, 246, 248),
+            "chrome_mid": QColor(211, 214, 204, 240),
+            "chrome_bottom": QColor(144, 152, 124, 238),
+            "glass": QColor(255, 255, 255, 78),
+            "pf_outer_top": QColor(92, 102, 70, 248),
+            "pf_outer_bottom": QColor(30, 42, 20, 250),
+            "pf_header_top": QColor(76, 92, 48, 250),
+            "pf_header_bottom": QColor(28, 42, 18, 250),
+            "pf_info_top": QColor(250, 250, 248, 250),
+            "pf_info_bottom": QColor(214, 216, 208, 248),
+            "pf_time_top": QColor(76, 92, 48, 250),
+            "pf_time_bottom": QColor(34, 50, 22, 250),
+            "pf_channel_top": QColor(244, 244, 238, 250),
+            "pf_channel_bottom": QColor(216, 218, 210, 248),
+            "pf_program_top": QColor(248, 247, 238, 250),
+            "pf_program_bottom": QColor(224, 223, 212, 248),
+            "pf_program_alt_top": QColor(240, 239, 230, 250),
+            "pf_program_alt_bottom": QColor(211, 213, 204, 248),
+            "pf_selected_top": QColor(255, 241, 160, 252),
+            "pf_selected_bottom": QColor(238, 198, 78, 252),
+            "pf_grid_line": QColor(92, 100, 72, 176),
+            "pf_button_top": QColor(244, 244, 240, 248),
+            "pf_button_bottom": QColor(190, 194, 184, 248),
+            "pf_button_selected_top": QColor(255, 236, 138, 252),
+            "pf_button_selected_bottom": QColor(222, 178, 62, 252),
+            "pf_led_bg_top": QColor(58, 62, 60, 250),
+            "pf_led_bg_bottom": QColor(22, 24, 24, 252),
+            "pf_led_text": QColor(255, 92, 92, 255),
         },
         "Silver": {
             "bg": QColor(78, 82, 86, 228),
@@ -2541,19 +2810,43 @@ GUIDE_THEME_DEFINITIONS = {
             "glass": QColor(255, 255, 255, 42),
         },
         "Digital Cable Blue": {
-            "bg": QColor(10, 24, 68, 234),
-            "panel": QColor(126, 166, 214, 218),
-            "header": QColor(12, 58, 146, 244),
-            "row_a": QColor(22, 82, 178, 220),
-            "row_b": QColor(12, 46, 118, 220),
-            "selected": QColor(246, 232, 132, 238),
+            "bg": QColor(2, 18, 54, 246),
+            "panel": QColor(16, 88, 166, 240),
+            "header": QColor(4, 64, 148, 248),
+            "row_a": QColor(24, 116, 196, 240),
+            "row_b": QColor(12, 78, 158, 238),
+            "selected": QColor(255, 225, 112, 248),
             "text": QColor(248, 252, 255),
-            "dark_text": QColor(14, 28, 58),
-            "muted": QColor(206, 226, 252),
-            "chrome_top": QColor(212, 232, 255, 240),
-            "chrome_mid": QColor(76, 132, 204, 228),
-            "chrome_bottom": QColor(10, 54, 136, 228),
-            "glass": QColor(255, 255, 255, 52),
+            "dark_text": QColor(6, 24, 54),
+            "muted": QColor(222, 238, 255),
+            "chrome_top": QColor(38, 126, 210, 244),
+            "chrome_mid": QColor(8, 70, 158, 246),
+            "chrome_bottom": QColor(2, 28, 92, 250),
+            "glass": QColor(194, 230, 255, 46),
+            "pf_outer_top": QColor(8, 56, 124, 252),
+            "pf_outer_bottom": QColor(1, 12, 44, 252),
+            "pf_header_top": QColor(10, 80, 176, 252),
+            "pf_header_bottom": QColor(2, 34, 104, 252),
+            "pf_info_top": QColor(40, 138, 212, 248),
+            "pf_info_bottom": QColor(4, 74, 160, 248),
+            "pf_time_top": QColor(30, 120, 206, 252),
+            "pf_time_bottom": QColor(2, 58, 138, 252),
+            "pf_channel_top": QColor(8, 92, 178, 250),
+            "pf_channel_bottom": QColor(2, 50, 126, 250),
+            "pf_program_top": QColor(28, 128, 210, 250),
+            "pf_program_bottom": QColor(6, 82, 168, 250),
+            "pf_program_alt_top": QColor(18, 108, 194, 250),
+            "pf_program_alt_bottom": QColor(4, 68, 150, 250),
+            "pf_selected_top": QColor(255, 241, 156, 252),
+            "pf_selected_bottom": QColor(238, 188, 58, 252),
+            "pf_grid_line": QColor(148, 205, 246, 152),
+            "pf_button_top": QColor(16, 78, 160, 250),
+            "pf_button_bottom": QColor(2, 30, 98, 250),
+            "pf_button_selected_top": QColor(255, 228, 116, 252),
+            "pf_button_selected_bottom": QColor(220, 168, 46, 252),
+            "pf_led_bg_top": QColor(50, 58, 66, 250),
+            "pf_led_bg_bottom": QColor(18, 20, 26, 252),
+            "pf_led_text": QColor(255, 94, 94, 255),
         },
     },
     "Set Top Box": {
@@ -2571,6 +2864,9 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_mid": QColor(8, 28, 112, 232),
             "chrome_bottom": QColor(6, 20, 84, 232),
             "glass": QColor(255, 255, 255, 18),
+            "guide_program_upcoming_bg": QColor(118, 42, 58, 238),
+            "stb_bevel_light": QColor(86, 156, 220, 210),
+            "stb_bevel_dark": QColor(0, 6, 34, 230),
             "flat_panels": True,
             "starfield": False,
         },
@@ -2588,6 +2884,9 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_mid": QColor(5, 20, 90, 234),
             "chrome_bottom": QColor(2, 8, 40, 236),
             "glass": QColor(255, 255, 255, 12),
+            "guide_program_upcoming_bg": QColor(108, 38, 58, 238),
+            "stb_bevel_light": QColor(116, 152, 236, 190),
+            "stb_bevel_dark": QColor(0, 0, 10, 235),
             "flat_panels": True,
             "starfield": True,
         },
@@ -2605,23 +2904,34 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_mid": QColor(84, 124, 28, 234),
             "chrome_bottom": QColor(32, 58, 16, 236),
             "glass": QColor(255, 255, 255, 14),
+            "guide_program_upcoming_bg": QColor(126, 58, 24, 236),
+            "stb_bevel_light": QColor(198, 218, 108, 190),
+            "stb_bevel_dark": QColor(12, 22, 4, 230),
             "flat_panels": True,
             "starfield": False,
         },
-        "Green Screen": {
-            "bg": QColor(2, 10, 4, 246),
-            "panel": QColor(4, 22, 10, 240),
-            "header": QColor(6, 52, 20, 244),
-            "row_a": QColor(8, 68, 26, 232),
-            "row_b": QColor(4, 34, 14, 232),
-            "selected": QColor(134, 230, 116, 242),
-            "text": QColor(196, 246, 188),
-            "dark_text": QColor(2, 18, 6),
-            "muted": QColor(142, 210, 136),
-            "chrome_top": QColor(8, 68, 26, 238),
-            "chrome_mid": QColor(4, 44, 18, 234),
-            "chrome_bottom": QColor(2, 18, 8, 238),
-            "glass": QColor(150, 255, 140, 12),
+        "Silver Olive": {
+            "bg": QColor(48, 50, 38, 246),
+            "panel": QColor(194, 194, 184, 248),
+            "header": QColor(58, 62, 36, 248),
+            "row_a": QColor(168, 170, 158, 240),
+            "row_b": QColor(132, 136, 116, 238),
+            "selected": QColor(232, 202, 70, 246),
+            "text": QColor(246, 246, 236),
+            "dark_text": QColor(28, 30, 20),
+            "muted": QColor(226, 226, 212),
+            "chrome_top": QColor(234, 234, 224, 244),
+            "chrome_mid": QColor(168, 170, 154, 240),
+            "chrome_bottom": QColor(68, 72, 46, 240),
+            "glass": QColor(255, 255, 255, 18),
+            "guide_program_upcoming_bg": QColor(116, 52, 48, 238),
+            "info_overlay_bg": QColor(196, 196, 184, 248),
+            "info_overlay_body_text": QColor(38, 40, 24),
+            "info_button_text": QColor(246, 246, 232),
+            "info_channel_card_top": QColor(226, 226, 214, 246),
+            "info_channel_card_bottom": QColor(108, 112, 82, 246),
+            "stb_bevel_light": QColor(252, 252, 240, 210),
+            "stb_bevel_dark": QColor(32, 34, 24, 230),
             "flat_panels": True,
             "starfield": False,
         },
@@ -2642,6 +2952,25 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_bottom": QColor(7, 8, 8, 232),
             "glass": QColor(255, 255, 255, 18),
             "sleek": True,
+            "default_mode": "dark",
+            "modes": {
+                "dark": {},
+                "light": {
+                    "bg": QColor(224, 226, 214, 255),
+                    "panel": QColor(205, 211, 192, 220),
+                    "header": QColor(150, 164, 128, 214),
+                    "row_a": QColor(198, 207, 178, 178),
+                    "row_b": QColor(238, 239, 229, 232),
+                    "selected": QColor(151, 169, 108, 238),
+                    "text": QColor(36, 40, 34),
+                    "dark_text": QColor(18, 22, 18),
+                    "muted": QColor(92, 100, 82),
+                    "chrome_top": QColor(255, 255, 252, 52),
+                    "chrome_mid": QColor(166, 178, 142, 96),
+                    "chrome_bottom": QColor(214, 218, 204, 236),
+                    "glass": QColor(255, 255, 255, 30),
+                },
+            },
         },
         "Grape Jelly": {
             "bg": QColor(10, 7, 16, 252),
@@ -2658,6 +2987,25 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_bottom": QColor(8, 5, 14, 232),
             "glass": QColor(255, 255, 255, 18),
             "sleek": True,
+            "default_mode": "dark",
+            "modes": {
+                "dark": {},
+                "light": {
+                    "bg": QColor(226, 222, 232, 255),
+                    "panel": QColor(210, 202, 222, 220),
+                    "header": QColor(132, 104, 160, 214),
+                    "row_a": QColor(204, 190, 218, 178),
+                    "row_b": QColor(241, 236, 244, 232),
+                    "selected": QColor(142, 104, 172, 238),
+                    "text": QColor(36, 30, 42),
+                    "dark_text": QColor(22, 16, 28),
+                    "muted": QColor(96, 82, 110),
+                    "chrome_top": QColor(255, 252, 255, 50),
+                    "chrome_mid": QColor(154, 122, 184, 94),
+                    "chrome_bottom": QColor(216, 208, 226, 236),
+                    "glass": QColor(255, 255, 255, 30),
+                },
+            },
         },
         "Baby Blue": {
             "bg": QColor(8, 13, 19, 252),
@@ -2674,6 +3022,25 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_bottom": QColor(6, 10, 16, 232),
             "glass": QColor(255, 255, 255, 20),
             "sleek": True,
+            "default_mode": "dark",
+            "modes": {
+                "dark": {},
+                "light": {
+                    "bg": QColor(222, 229, 234, 255),
+                    "panel": QColor(204, 218, 228, 220),
+                    "header": QColor(112, 148, 178, 214),
+                    "row_a": QColor(190, 210, 224, 178),
+                    "row_b": QColor(237, 243, 246, 232),
+                    "selected": QColor(112, 158, 190, 238),
+                    "text": QColor(28, 38, 46),
+                    "dark_text": QColor(16, 24, 32),
+                    "muted": QColor(72, 92, 106),
+                    "chrome_top": QColor(252, 255, 255, 52),
+                    "chrome_mid": QColor(130, 170, 198, 94),
+                    "chrome_bottom": QColor(212, 224, 232, 236),
+                    "glass": QColor(255, 255, 255, 30),
+                },
+            },
         },
         "Millennial Grey": {
             "bg": QColor(9, 11, 13, 252),
@@ -2690,6 +3057,25 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_bottom": QColor(7, 9, 11, 232),
             "glass": QColor(255, 255, 255, 18),
             "sleek": True,
+            "default_mode": "dark",
+            "modes": {
+                "dark": {},
+                "light": {
+                    "bg": QColor(226, 226, 222, 255),
+                    "panel": QColor(208, 211, 212, 220),
+                    "header": QColor(126, 134, 142, 214),
+                    "row_a": QColor(198, 202, 204, 178),
+                    "row_b": QColor(240, 240, 236, 232),
+                    "selected": QColor(148, 160, 170, 238),
+                    "text": QColor(34, 38, 42),
+                    "dark_text": QColor(18, 22, 26),
+                    "muted": QColor(82, 88, 94),
+                    "chrome_top": QColor(255, 255, 255, 50),
+                    "chrome_mid": QColor(160, 166, 172, 94),
+                    "chrome_bottom": QColor(216, 218, 218, 236),
+                    "glass": QColor(255, 255, 255, 30),
+                },
+            },
         },
     },
 }
@@ -2699,10 +3085,28 @@ def with_alpha(color, alpha):
     return QColor(color.red(), color.green(), color.blue(), max(0, min(255, int(alpha))))
 
 
+def blend_color(start, end, amount):
+    amount = max(0.0, min(1.0, float(amount)))
+    inv = 1.0 - amount
+    return QColor(
+        int(start.red() * inv + end.red() * amount),
+        int(start.green() * inv + end.green() * amount),
+        int(start.blue() * inv + end.blue() * amount),
+        int(start.alpha() * inv + end.alpha() * amount),
+    )
+
+
 def color_to_css(color, alpha=None):
     if alpha is None:
         return f"rgba({color.red()}, {color.green()}, {color.blue()}, {color.alpha()})"
     return f"rgba({color.red()}, {color.green()}, {color.blue()}, {max(0, min(255, int(alpha)))})"
+
+
+def normalize_sleek_mode(mode):
+    name = str(mode or "").strip().lower()
+    if name in {"light", "lite", "day", "bright"}:
+        return "light"
+    return "dark"
 
 
 def draw_sleek_app_background(painter, rect, theme):
@@ -2738,10 +3142,230 @@ def draw_sleek_app_background(painter, rect, theme):
     painter.restore()
 
 
-def build_app_theme_tokens(theme_name, legacy, skin_name=DEFAULT_SKIN_NAME):
+def draw_sleek_nav_icon_shape(painter, rect, kind, color):
+    painter.save()
+    pen_width = max(2, min(3, rect.width() // 9))
+    painter.setPen(QPen(color, pen_width, Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+    painter.setBrush(Qt.NoBrush)
+    center = rect.center()
+    if kind == "back":
+        mid_y = center.y()
+        painter.drawLine(rect.left() + 5, mid_y, rect.right() - 5, mid_y)
+        painter.drawLine(rect.left() + 5, mid_y, rect.left() + 13, mid_y - 8)
+        painter.drawLine(rect.left() + 5, mid_y, rect.left() + 13, mid_y + 8)
+    elif kind == "guide":
+        size = max(4, min(rect.width(), rect.height()) // 3)
+        gap = max(3, size // 2)
+        start_x = center.x() - size - gap // 2
+        start_y = center.y() - size - gap // 2
+        for y in (0, 1):
+            for x in (0, 1):
+                painter.drawRoundedRect(QRect(start_x + x * (size + gap), start_y + y * (size + gap), size, size), 2, 2)
+    elif kind == "vault":
+        box = rect.adjusted(4, 6, -4, -6)
+        painter.drawRoundedRect(box, 2, 2)
+        painter.drawLine(box.left() + 3, box.top() + box.height() // 3, box.right() - 3, box.top() + box.height() // 3)
+    elif kind == "menu":
+        for y in (center.y() - 6, center.y(), center.y() + 6):
+            painter.drawLine(rect.left() + 5, y, rect.right() - 5, y)
+    elif kind == "light":
+        radius = max(5, min(rect.width(), rect.height()) // 5)
+        painter.drawEllipse(center, radius, radius)
+        for angle in range(0, 360, 45):
+            rad = math.radians(angle)
+            inner = QPoint(center.x() + int(math.cos(rad) * (radius + 4)), center.y() + int(math.sin(rad) * (radius + 4)))
+            outer = QPoint(center.x() + int(math.cos(rad) * (radius + 9)), center.y() + int(math.sin(rad) * (radius + 9)))
+            painter.drawLine(inner, outer)
+    else:
+        size = max(10, min(rect.width(), rect.height()))
+        radius = max(4, int(size * 0.38))
+        outer = QRect(center.x() - radius, center.y() - radius, radius * 2, radius * 2)
+        inner_radius = max(3, int(radius * 0.86))
+        inner = QRect(
+            center.x() - inner_radius + int(radius * 0.42),
+            center.y() - inner_radius - int(radius * 0.08),
+            inner_radius * 2,
+            inner_radius * 2,
+        )
+        crescent = QPainterPath()
+        crescent.addEllipse(outer)
+        cutout = QPainterPath()
+        cutout.addEllipse(inner)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(color)
+        painter.drawPath(crescent.subtracted(cutout))
+    painter.restore()
+
+
+def draw_sleek_bottom_nav_bar(
+    painter,
+    rect,
+    theme,
+    mode,
+    nav_focused,
+    nav_index,
+    current_index,
+    ui_scale=1.0,
+    previous_index=-1,
+    transition_progress=1.0,
+):
+    items = [("back", "Back"), ("guide", "Guide"), ("vault", "Vault"), ("menu", "Menu")]
+    active_index = int(nav_index) if nav_focused else -1
+    sleek_light = normalize_sleek_mode(mode) == "light"
+    toggle_kind = "light" if not sleek_light else "dark"
+    transition_progress = max(0.0, min(1.0, float(transition_progress)))
+
+    def active_amount(index):
+        if index == active_index:
+            return 1.0 if previous_index == active_index else transition_progress
+        if index == previous_index:
+            return 1.0 - transition_progress
+        return 0.0
+
+    radius = max(18, rect.height() // 2)
+    painter.save()
+
+    if sleek_light:
+        base = theme["guide_bottom_nav_bg"]
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.setBrush(QColor(base.red(), base.green(), base.blue(), max(150, base.alpha())))
+        painter.drawRoundedRect(rect, radius, radius)
+    else:
+        shadow = rect.adjusted(0, scaled_metric(5, ui_scale, 3, 8), 0, scaled_metric(7, ui_scale, 5, 10))
+        painter.setPen(Qt.NoPen)
+        shadow_color = theme.get("guide_shadow", QColor(0, 0, 0, 76))
+        painter.setBrush(QColor(shadow_color.red(), shadow_color.green(), shadow_color.blue(), 76))
+        painter.drawRoundedRect(shadow, radius, radius)
+        glass = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        glass.setColorAt(0.0, QColor(255, 255, 255, 44))
+        glass.setColorAt(0.26, theme["guide_bottom_nav_bg"])
+        glass.setColorAt(1.0, QColor(0, 0, 0, 42))
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.setBrush(glass)
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.setPen(QPen(QColor(255, 255, 255, 42), 1))
+        painter.drawLine(rect.left() + radius, rect.top() + 1, rect.right() - radius, rect.top() + 1)
+
+    inner = rect.adjusted(scaled_metric(14, ui_scale, 10, 18), scaled_metric(8, ui_scale, 6, 11), -scaled_metric(14, ui_scale, 10, 18), -scaled_metric(8, ui_scale, 6, 11))
+    gap = scaled_metric(8, ui_scale, 5, 12)
+    widths = [
+        scaled_metric(92, ui_scale, 76, 112),
+        scaled_metric(112, ui_scale, 92, 132),
+        scaled_metric(108, ui_scale, 90, 128),
+        scaled_metric(106, ui_scale, 88, 126),
+    ]
+    divider_gap = scaled_metric(14, ui_scale, 10, 20)
+    toggle_size = min(inner.height(), scaled_metric(42, ui_scale, 34, 50))
+    button_h = inner.height()
+    total = sum(widths) + gap * (len(items) - 1) + divider_gap + toggle_size
+    if total > inner.width():
+        shrink = max(0, total - inner.width())
+        per = int(math.ceil(shrink / len(widths)))
+        widths = [max(scaled_metric(68, ui_scale, 58, 82), width - per) for width in widths]
+        total = sum(widths) + gap * (len(items) - 1) + divider_gap + toggle_size
+    x = rect.center().x() - total // 2
+    y = inner.center().y() - button_h // 2
+    rects = []
+    font = QFont(theme.get("font_ui", ".AppleSystemUIFont"), scaled_metric(11, ui_scale, 9, 14), QFont.Bold)
+    font_metrics = QFontMetrics(font)
+    icon_size = scaled_metric(20, ui_scale, 17, 24)
+    icon_text_gap = scaled_metric(8, ui_scale, 6, 10)
+
+    for index, (kind, label) in enumerate(items):
+        button = QRect(x, y, widths[index], button_h)
+        rects.append(button)
+        amount = active_amount(index)
+        focused = nav_focused and index == active_index and amount > 0.5
+        if amount > 0.01:
+            glow = QColor(theme["guide_glow"].red(), theme["guide_glow"].green(), theme["guide_glow"].blue(), 96)
+            painter.setOpacity(amount)
+            painter.setPen(QPen(glow, 5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(button.adjusted(2, 2, -2, -2), max(14, button.height() // 2), max(14, button.height() // 2))
+            painter.setPen(QPen(theme["guide_card_selected_border"], 2 if focused else 1))
+            painter.setBrush(theme["guide_bottom_nav_selected_bg"])
+            painter.drawRoundedRect(button, max(14, button.height() // 2), max(14, button.height() // 2))
+            painter.setOpacity(1.0)
+
+        text_w = min(font_metrics.horizontalAdvance(label), max(10, button.width() - icon_size - scaled_metric(24, ui_scale, 18, 32)))
+        content_w = icon_size + icon_text_gap + text_w
+        icon_rect = QRect(button.center().x() - content_w // 2, button.center().y() - icon_size // 2, icon_size, icon_size)
+        color = blend_color(theme["guide_bottom_nav_text"], theme["guide_card_selected_text"], amount)
+        draw_sleek_nav_icon_shape(painter, icon_rect, kind, color)
+        painter.setFont(font)
+        painter.setPen(color)
+        text_rect = QRect(icon_rect.right() + icon_text_gap, button.top(), text_w + 2, button.height())
+        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine, font_metrics.elidedText(label, Qt.ElideRight, max(10, text_rect.width())))
+        x += widths[index] + gap
+
+    divider_x = x + scaled_metric(3, ui_scale, 2, 6)
+    painter.setPen(QPen(theme["guide_divider"], 1))
+    painter.drawLine(divider_x, inner.top() + scaled_metric(6, ui_scale, 4, 8), divider_x, inner.bottom() - scaled_metric(6, ui_scale, 4, 8))
+    toggle_rect = QRect(divider_x + divider_gap, inner.center().y() - toggle_size // 2, toggle_size, toggle_size)
+    rects.append(toggle_rect)
+    toggle_amount = active_amount(len(rects) - 1)
+    toggle_active = toggle_amount > 0.01
+    toggle_focused = nav_focused and active_index == len(rects) - 1 and toggle_amount > 0.5
+    if toggle_active:
+        painter.setOpacity(toggle_amount)
+        painter.setPen(QPen(QColor(theme["guide_glow"].red(), theme["guide_glow"].green(), theme["guide_glow"].blue(), 110), 5))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawEllipse(toggle_rect.adjusted(2, 2, -2, -2))
+        painter.setOpacity(1.0)
+
+    toggle_fill = blend_color(
+        QColor(255, 255, 255, 34 if sleek_light else 20),
+        theme["guide_bottom_nav_selected_bg"],
+        toggle_amount,
+    )
+    toggle_border = blend_color(theme["guide_divider"], theme["guide_card_selected_border"], toggle_amount)
+    painter.setPen(QPen(toggle_border, 2 if toggle_focused else 1))
+    painter.setBrush(toggle_fill)
+    painter.drawEllipse(toggle_rect)
+    icon_pad = scaled_metric(10, ui_scale, 8, 13)
+    icon_rect = toggle_rect.adjusted(icon_pad, icon_pad, -icon_pad, -icon_pad)
+    draw_sleek_nav_icon_shape(
+        painter,
+        icon_rect,
+        toggle_kind,
+        blend_color(theme["guide_bottom_nav_text"], theme["guide_card_selected_text"], toggle_amount),
+    )
+    painter.restore()
+    return rects
+
+
+def sleek_focus_transition(widget, key, active_index, duration_ms=140):
+    states = getattr(widget, "_sleek_focus_transition_states", None)
+    if states is None:
+        states = {}
+        setattr(widget, "_sleek_focus_transition_states", states)
+    state = states.get(key)
+    now_ms = time.monotonic() * 1000.0
+    if state is None:
+        state = {"active": active_index, "previous": active_index, "started": 0.0}
+        states[key] = state
+    if active_index != state.get("active"):
+        state["previous"] = state.get("active", -1)
+        state["active"] = active_index
+        state["started"] = now_ms
+    started = float(state.get("started", 0.0) or 0.0)
+    progress = 1.0 if started <= 0 else max(0.0, min(1.0, (now_ms - started) / max(1, duration_ms)))
+    if progress < 1.0 and hasattr(widget, "update") and widget.isVisible():
+        QTimer.singleShot(16, widget.update)
+    return int(state.get("previous", -1)), progress
+
+
+def build_app_theme_tokens(theme_name, legacy, skin_name=DEFAULT_SKIN_NAME, mode=None):
+    legacy = dict(legacy)
+    if legacy.get("sleek"):
+        sleek_mode = normalize_sleek_mode(mode or legacy.get("default_mode", "dark"))
+        mode_overrides = (legacy.get("modes") or {}).get(sleek_mode, {})
+        legacy.update(mode_overrides)
+        legacy["sleek_mode"] = sleek_mode
     theme = dict(legacy)
     sleek = bool(legacy.get("sleek"))
     set_top_box = bool(legacy.get("flat_panels")) and not sleek
+    promised_future = skin_name == "Promised Future" and not sleek and not set_top_box
     primary_text = legacy["text"]
     selected_text = legacy["dark_text"]
     panel_text = readable_text_color(legacy["panel"], light=legacy["text"], dark=legacy["dark_text"])
@@ -2762,7 +3386,14 @@ def build_app_theme_tokens(theme_name, legacy, skin_name=DEFAULT_SKIN_NAME):
     guide_channel_bg = with_alpha(legacy["bg"], 236) if set_top_box else with_alpha(legacy["row_b"], 176 if sleek else legacy["row_b"].alpha())
     guide_program_bg = with_alpha(legacy["row_a"], 232 if set_top_box else (150 if sleek else legacy["row_a"].alpha()))
     guide_program_alt_bg = with_alpha(legacy["row_b"], 230 if set_top_box else (134 if sleek else legacy["row_b"].alpha()))
+    guide_program_upcoming_bg = with_alpha(
+        legacy.get("guide_program_upcoming_bg", legacy["row_b"]),
+        236 if set_top_box else (134 if sleek else legacy.get("guide_program_upcoming_bg", legacy["row_b"]).alpha()),
+    )
     guide_selected_bg = with_alpha(legacy["selected"], 242 if set_top_box else (224 if sleek else legacy["selected"].alpha()))
+    guide_channel_text = readable_text_color(guide_channel_bg, light=primary_text, dark=selected_text) if set_top_box else primary_text
+    guide_program_text = readable_text_color(guide_program_bg, light=primary_text, dark=selected_text) if set_top_box else primary_text
+    guide_program_upcoming_text = readable_text_color(guide_program_upcoming_bg, light=primary_text, dark=selected_text) if set_top_box else primary_text
     bottom_nav_bg = with_alpha(legacy["header"], 246 if set_top_box else (118 if sleek else legacy["header"].alpha()))
     if sleek:
         guide_header_bg = with_alpha(legacy["bg"], 0)
@@ -2770,11 +3401,51 @@ def build_app_theme_tokens(theme_name, legacy, skin_name=DEFAULT_SKIN_NAME):
         guide_program_bg = with_alpha(legacy["row_b"], 150)
         guide_program_alt_bg = with_alpha(legacy["row_a"], 118)
         bottom_nav_bg = with_alpha(legacy["bg"], 0)
+    pf_outer_top = legacy.get("pf_outer_top", legacy["chrome_mid"])
+    pf_outer_bottom = legacy.get("pf_outer_bottom", legacy["bg"])
+    pf_header_top = legacy.get("pf_header_top", legacy["chrome_top"])
+    pf_header_bottom = legacy.get("pf_header_bottom", legacy["header"])
+    pf_info_top = legacy.get("pf_info_top", legacy["chrome_top"])
+    pf_info_bottom = legacy.get("pf_info_bottom", legacy["panel"])
+    pf_time_top = legacy.get("pf_time_top", legacy["header"].lighter(112))
+    pf_time_bottom = legacy.get("pf_time_bottom", legacy["header"].darker(108))
+    pf_channel_top = legacy.get("pf_channel_top", legacy["row_a"].lighter(108))
+    pf_channel_bottom = legacy.get("pf_channel_bottom", legacy["row_b"].lighter(104))
+    pf_program_top = legacy.get("pf_program_top", legacy["row_a"].lighter(110))
+    pf_program_bottom = legacy.get("pf_program_bottom", legacy["row_a"])
+    pf_program_alt_top = legacy.get("pf_program_alt_top", legacy["row_b"].lighter(108))
+    pf_program_alt_bottom = legacy.get("pf_program_alt_bottom", legacy["row_b"])
+    pf_selected_top = legacy.get("pf_selected_top", legacy["selected"].lighter(110))
+    pf_selected_bottom = legacy.get("pf_selected_bottom", legacy["selected"].darker(104))
+    pf_button_top = legacy.get("pf_button_top", legacy["chrome_top"])
+    pf_button_bottom = legacy.get("pf_button_bottom", legacy["chrome_mid"])
+    pf_button_selected_top = legacy.get("pf_button_selected_top", pf_selected_top)
+    pf_button_selected_bottom = legacy.get("pf_button_selected_bottom", pf_selected_bottom)
+    pf_led_bg_top = legacy.get("pf_led_bg_top", QColor(58, 58, 62, 250))
+    pf_led_bg_bottom = legacy.get("pf_led_bg_bottom", QColor(18, 18, 22, 252))
+    pf_led_text = legacy.get("pf_led_text", QColor(255, 92, 92, 255))
+    pf_header_text = legacy.get("pf_header_text", readable_text_color(pf_header_bottom, light=QColor(252, 252, 246), dark=legacy["dark_text"]))
+    pf_panel_text = legacy.get("pf_panel_text", readable_text_color(pf_info_bottom, light=legacy["text"], dark=legacy["dark_text"]))
+    pf_grid_text = legacy.get("pf_grid_text", readable_text_color(pf_program_bottom, light=legacy["text"], dark=legacy["dark_text"]))
+    pf_selected_text = legacy.get("pf_selected_text", readable_text_color(pf_selected_bottom, light=legacy["text"], dark=legacy["dark_text"]))
+    pf_grid_line = legacy.get("pf_grid_line", normal_border)
+    info_header_top = legacy.get("info_overlay_header_top", pf_header_top if promised_future else legacy["chrome_top"])
+    info_header_bottom = legacy.get("info_overlay_header_bottom", pf_header_bottom if promised_future else legacy["chrome_mid"])
+    info_body_top = legacy.get("info_overlay_body_top", pf_info_top if promised_future else legacy["panel"])
+    info_body_bottom = legacy.get("info_overlay_body_bottom", pf_info_bottom if promised_future else legacy["panel"].darker(108))
+    info_body_text = legacy.get("info_overlay_body_text", pf_panel_text if promised_future else primary_text)
+    info_card_top = legacy.get("info_channel_card_top", pf_channel_top if promised_future else legacy["row_a"])
+    info_card_bottom = legacy.get("info_channel_card_bottom", pf_channel_bottom if promised_future else legacy["row_b"])
+    info_button_top = legacy.get("info_button_top", pf_button_top if promised_future else legacy["chrome_top"])
+    info_button_bottom = legacy.get("info_button_bottom", pf_button_bottom if promised_future else legacy["chrome_mid"])
+    info_button_selected_top = legacy.get("info_button_selected_top", pf_button_selected_top if promised_future else pf_selected_top)
+    info_button_selected_bottom = legacy.get("info_button_selected_bottom", pf_button_selected_bottom if promised_future else pf_selected_bottom)
     theme.update(
         {
             "theme_name": theme_name,
             "skin_name": skin_name,
             "sleek": sleek,
+            "sleek_mode": legacy.get("sleek_mode", "dark") if sleek else None,
             "app_background": legacy["bg"],
             "panel_background": legacy["panel"],
             "panel_background_alt": legacy["row_a"],
@@ -2795,20 +3466,92 @@ def build_app_theme_tokens(theme_name, legacy, skin_name=DEFAULT_SKIN_NAME):
             "guide_header_text": guide_header_text,
             "guide_time_row_bg": with_alpha(legacy["header"], 230 if set_top_box else (122 if sleek else legacy["header"].alpha())),
             "guide_channel_cell_bg": guide_channel_bg,
-            "guide_channel_cell_text": primary_text,
+            "guide_channel_cell_text": guide_channel_text,
             "guide_program_cell_bg": guide_program_bg,
             "guide_program_cell_alt_bg": guide_program_alt_bg,
-            "guide_program_cell_text": primary_text,
+            "guide_program_upcoming_bg": guide_program_upcoming_bg,
+            "guide_program_cell_text": guide_program_text,
+            "guide_program_upcoming_text": guide_program_upcoming_text,
             "guide_selected_bg": guide_selected_bg,
             "guide_selected_text": selected_text,
             "guide_selected_border": selected_border,
             "guide_grid_line": normal_border,
+            "stb_bevel_light": legacy.get("stb_bevel_light", QColor(255, 255, 255, 150)),
+            "stb_bevel_dark": legacy.get("stb_bevel_dark", QColor(0, 0, 0, 170)),
+            "stb_bevel_mid": with_alpha(legacy["chrome_mid"], 210),
             "guide_detail_panel_bg": with_alpha(legacy["panel"], 238 if set_top_box else (172 if sleek else legacy["panel"].alpha())),
             "guide_detail_panel_border": normal_border,
             "guide_preview_border": normal_border,
             "guide_grid_background": with_alpha(legacy["row_b"], 170 if sleek else legacy["row_b"].alpha()),
             "guide_program_cell_background": guide_program_bg,
             "guide_current_program_background": guide_selected_bg,
+            "guide_app_background": legacy["bg"],
+            "guide_header_background": with_alpha(legacy["bg"], 236 if sleek else legacy["bg"].alpha()),
+            "guide_header_text": primary_text,
+            "guide_hero_panel_bg": with_alpha(legacy["panel"], 214 if sleek else legacy["panel"].alpha()),
+            "guide_preview_frame_bg": with_alpha(legacy["row_b"], 232 if sleek else legacy["row_b"].alpha()),
+            "guide_preview_frame_border": selected_border if sleek else normal_border,
+            "guide_card_bg": with_alpha(legacy["row_b"], 188 if sleek else legacy["row_b"].alpha()),
+            "guide_card_border": subtle_border,
+            "guide_card_selected_bg": with_alpha(legacy["selected"], 220 if sleek else legacy["selected"].alpha()),
+            "guide_card_selected_border": selected_border,
+            "guide_card_selected_text": selected_text,
+            "guide_channel_bg": with_alpha(legacy["row_b"], 200 if sleek else legacy["row_b"].alpha()),
+            "guide_channel_text": primary_text,
+            "guide_time_bg": with_alpha(legacy["row_b"], 166 if sleek else legacy["row_b"].alpha()),
+            "guide_time_text": with_alpha(primary_text, 220),
+            "guide_chip_bg": with_alpha(legacy["selected"], 48 if sleek else 210),
+            "guide_chip_text": primary_text,
+            "guide_chip_selected_bg": with_alpha(legacy["selected"], 236),
+            "guide_chip_selected_text": selected_text,
+            "guide_progress_track": QColor(255, 255, 255, 46) if sleek else with_alpha(legacy["muted"], 118),
+            "guide_progress_fill": with_alpha(legacy["selected"], 236),
+            "guide_bottom_nav_bg": QColor(255, 255, 255, 24) if sleek else bottom_nav_bg,
+            "guide_bottom_nav_selected_bg": with_alpha(legacy["selected"], 198 if sleek else 242),
+            "guide_bottom_nav_text": primary_text,
+            "guide_bottom_nav_icon": primary_text,
+            "guide_primary_text": primary_text,
+            "guide_secondary_text": legacy["muted"],
+            "guide_muted_text": with_alpha(legacy["muted"], 180),
+            "guide_divider": subtle_border,
+            "guide_shadow": QColor(0, 0, 0, 110 if sleek else 42),
+            "guide_glow": with_alpha(legacy["selected"], 70 if sleek else 74),
+            "guide_wave_motif": with_alpha(legacy["selected"], 30 if sleek else 42),
+            "promised_future": promised_future,
+            "pf_outer_top": pf_outer_top,
+            "pf_outer_bottom": pf_outer_bottom,
+            "pf_header_top": pf_header_top,
+            "pf_header_bottom": pf_header_bottom,
+            "pf_header_text": pf_header_text,
+            "pf_info_top": pf_info_top,
+            "pf_info_bottom": pf_info_bottom,
+            "pf_info_text": pf_panel_text,
+            "pf_time_top": pf_time_top,
+            "pf_time_bottom": pf_time_bottom,
+            "pf_time_text": pf_header_text,
+            "pf_channel_top": pf_channel_top,
+            "pf_channel_bottom": pf_channel_bottom,
+            "pf_channel_text": pf_grid_text,
+            "pf_program_top": pf_program_top,
+            "pf_program_bottom": pf_program_bottom,
+            "pf_program_alt_top": pf_program_alt_top,
+            "pf_program_alt_bottom": pf_program_alt_bottom,
+            "pf_program_text": pf_grid_text,
+            "pf_selected_top": pf_selected_top,
+            "pf_selected_bottom": pf_selected_bottom,
+            "pf_selected_text": pf_selected_text,
+            "pf_grid_line": pf_grid_line,
+            "pf_button_top": pf_button_top,
+            "pf_button_bottom": pf_button_bottom,
+            "pf_button_selected_top": pf_button_selected_top,
+            "pf_button_selected_bottom": pf_button_selected_bottom,
+            "pf_button_text": readable_text_color(pf_button_bottom, light=legacy["text"], dark=legacy["dark_text"]),
+            "pf_button_selected_text": pf_selected_text,
+            "pf_led_bg_top": pf_led_bg_top,
+            "pf_led_bg_bottom": pf_led_bg_bottom,
+            "pf_led_text": pf_led_text,
+            "pf_bevel_highlight": QColor(255, 255, 255, 92),
+            "pf_bevel_shadow": QColor(0, 0, 0, 96),
             "bottom_nav_bg": bottom_nav_bg,
             "bottom_nav_button_bg": with_alpha(legacy["header"], 238 if set_top_box else (120 if sleek else 238)),
             "bottom_nav_button_text": primary_text,
@@ -2816,10 +3559,47 @@ def build_app_theme_tokens(theme_name, legacy, skin_name=DEFAULT_SKIN_NAME):
             "menu_panel_border": normal_border,
             "menu_button_bg": with_alpha(legacy["header"], 238 if set_top_box else (120 if sleek else 238)),
             "menu_button_selected_bg": guide_selected_bg,
-            "info_overlay_bg": with_alpha(legacy["bg"] if set_top_box else legacy["panel"], 246 if set_top_box else (222 if sleek else 240)),
+            "info_overlay_bg": with_alpha(legacy.get("info_overlay_bg", legacy["bg"] if set_top_box else legacy["panel"]), 246 if set_top_box else (240 if sleek else 240)),
+            "info_overlay_body_top": with_alpha(info_body_top, 252 if promised_future else info_body_top.alpha()),
+            "info_overlay_body_bottom": with_alpha(info_body_bottom, 252 if promised_future else info_body_bottom.alpha()),
+            "info_overlay_header_top": with_alpha(info_header_top, 252 if promised_future else info_header_top.alpha()),
+            "info_overlay_header_bottom": with_alpha(info_header_bottom, 252 if promised_future else info_header_bottom.alpha()),
+            "info_overlay_header_text": pf_header_text if promised_future else primary_text,
             "info_overlay_border": normal_border,
-            "info_overlay_text": primary_text,
-            "info_progress_fill": with_alpha(legacy["selected"], 236),
+            "info_overlay_highlight": QColor(255, 255, 255, 128 if promised_future else 72),
+            "info_overlay_shadow": QColor(0, 0, 0, 138 if promised_future else 96),
+            "info_overlay_surface": with_alpha(legacy["row_b"], 190 if sleek else 238),
+            "info_overlay_edge_highlight": QColor(255, 255, 255, 64 if sleek else 92),
+            "info_overlay_text": info_body_text,
+            "info_channel_card_top": with_alpha(info_card_top, 250 if promised_future else info_card_top.alpha()),
+            "info_channel_card_bottom": with_alpha(info_card_bottom, 250 if promised_future else info_card_bottom.alpha()),
+            "info_channel_card_border": pf_grid_line if promised_future else normal_border,
+            "info_channel_text": legacy.get("info_channel_text", pf_grid_text if promised_future else primary_text),
+            "info_title_text": pf_panel_text if promised_future else primary_text,
+            "info_description_text": with_alpha(info_body_text if sleek else (pf_panel_text if promised_future else primary_text), 238 if sleek else 214),
+            "info_metadata_text": with_alpha(legacy["muted"] if sleek else info_body_text, 234 if sleek else 218),
+            "info_body_text": with_alpha(info_body_text, 244 if sleek else 232),
+            "info_muted_text": with_alpha(info_body_text, 192),
+            "info_progress_fill": legacy.get("info_progress_fill", QColor(226, 18, 18, 244) if promised_future else with_alpha(legacy["selected"], 236)),
+            "info_progress_track": legacy.get("info_progress_track", QColor(188, 190, 188, 226) if promised_future else with_alpha(legacy["muted"], 156 if sleek else 118)),
+            "info_progress_knob": legacy.get("info_progress_knob", QColor(226, 226, 220, 255)),
+            "info_button_top": with_alpha(info_button_top, 250 if promised_future else info_button_top.alpha()),
+            "info_button_bottom": with_alpha(info_button_bottom, 250 if promised_future else info_button_bottom.alpha()),
+            "info_button_selected_top": with_alpha(info_button_selected_top, 252 if promised_future else info_button_selected_top.alpha()),
+            "info_button_selected_bottom": with_alpha(info_button_selected_bottom, 252 if promised_future else info_button_selected_bottom.alpha()),
+            "info_button_text": legacy.get("info_button_text", readable_text_color(info_button_bottom, light=legacy["text"], dark=legacy["dark_text"])),
+            "info_button_selected_text": legacy.get("info_button_selected_text", readable_text_color(info_button_selected_bottom, light=legacy["text"], dark=legacy["dark_text"])),
+            "info_button_bg": QColor(255, 255, 255, 36 if sleek else 0),
+            "info_button_border": subtle_border,
+            "info_button_icon": primary_text,
+            "info_button_focused_bg": with_alpha(legacy["selected"], 190 if sleek else 236),
+            "info_button_focused_border": selected_border,
+            "info_toggle_bg": QColor(255, 255, 255, 44 if sleek else 0),
+            "info_toggle_icon": primary_text,
+            "info_toggle_focused_bg": with_alpha(legacy["selected"], 188 if sleek else 236),
+            "info_led_clock_bg_top": pf_led_bg_top if promised_future else QColor(74, 78, 80, 240),
+            "info_led_clock_bg_bottom": pf_led_bg_bottom if promised_future else QColor(44, 46, 48, 244),
+            "info_led_clock_text": pf_led_text if promised_future else QColor(255, 94, 94, 255),
             "startup_bg": legacy["bg"],
             "startup_panel_bg": dialog_bg,
             "startup_card_bg": with_alpha(legacy["row_b"] if sleek else legacy["row_a"], 184 if sleek else 214),
@@ -2887,10 +3667,18 @@ def normalize_theme_name(theme_name):
     return THEME_NAME_ALIASES.get(name, name)
 
 
-def app_theme(theme_name, skin_name=None):
+def app_theme(theme_name, skin_name=None, mode=None):
     skin_name = normalize_skin_name(skin_name or DEFAULT_SKIN_NAME)
     canonical = normalize_theme_name(theme_name)
     family = APP_THEMES_BY_SKIN.get(skin_name, APP_THEMES_BY_SKIN[DEFAULT_SKIN_NAME])
+    if mode is not None:
+        definitions = GUIDE_THEME_DEFINITIONS.get(skin_name, GUIDE_THEME_DEFINITIONS[DEFAULT_SKIN_NAME])
+        legacy = definitions.get(canonical)
+        if legacy is None:
+            default_name = DEFAULT_THEME_NAME if DEFAULT_THEME_NAME in definitions else next(iter(definitions))
+            canonical = default_name
+            legacy = definitions[default_name]
+        return build_app_theme_tokens(canonical, legacy, skin_name, mode=mode)
     if canonical in family:
         return family[canonical]
     default_name = DEFAULT_THEME_NAME if DEFAULT_THEME_NAME in family else next(iter(family))
@@ -2898,281 +3686,514 @@ def app_theme(theme_name, skin_name=None):
 
 
 def build_themed_dialog_stylesheet(theme_name=DEFAULT_THEME_NAME, skin_name=DEFAULT_SKIN_NAME):
-    theme = app_theme(theme_name, skin_name)
-    dialog_bg = theme["dialog_background"]
-    dialog_panel = theme["dialog_panel"]
-    text = theme["dialog_text"]
-    note = theme["dialog_note_text"]
-    input_bg = theme["input_background"]
-    input_text = theme["input_text"]
-    border = theme["normal_border"]
-    selected = theme["selected_background"]
-    selected_text = theme["selected_text"]
+    """Dark-space palette dialog stylesheet — matches the startup screen aesthetic."""
+    # Use the fixed _SW_* palette so all dialogs share the same visual language
+    # regardless of which guide theme the user has active.
+    def c(col, a=255):
+        return f"rgba({col.red()},{col.green()},{col.blue()},{a})"
+
+    bg        = c(_SW_BG)
+    card      = c(_SW_CARD_BG)
+    card_b    = c(_SW_CARD_BORDER, 110)
+    card_b2   = c(_SW_CARD_BORDER, 160)
+    text      = c(_SW_TEXT)
+    dim       = c(_SW_TEXT_DIM)
+    header    = c(_SW_HEADER)
+    inp_bg    = c(_SW_INPUT_BG)
+    inp_txt   = c(_SW_INPUT_TEXT)
+    acc       = c(_SW_ACCENT)
+    cta_bg    = c(_SW_CTA_BG)
+    cta_txt   = c(_SW_CTA_TEXT)
+    footer_b  = c(_SW_FOOTER_BORD)
+
     return f"""
         QDialog {{
-            background: {color_to_css(dialog_bg, 255)};
+            background: {bg};
         }}
         QWidget#dialogCard, QWidget#sectionCard {{
-            background: {color_to_css(dialog_panel, 232)};
-            border: 1px solid {color_to_css(border, 170)};
-            border-radius: 14px;
+            background: {card};
+            border: 1px solid {card_b};
+            border-radius: 10px;
         }}
         QLabel#dialogTitle {{
-            color: {color_to_css(text, 255)};
-            font-size: 22px;
+            color: {header};
+            font-size: 20px;
             font-weight: 700;
+            background: transparent;
         }}
         QLabel#sectionHeader, QLabel#sectionTitle {{
-            color: {color_to_css(text, 255)};
-            font-size: 15px;
+            color: {header};
+            font-size: 14px;
             font-weight: 700;
+            background: transparent;
         }}
         QLabel#dialogNote, QLabel#sectionNote, QLabel#presetHint, QLabel#fieldHelp, QLabel#metaLabel {{
-            color: {color_to_css(note, 230)};
+            color: {dim};
             font-size: 12px;
-            font-weight: 500;
+            background: transparent;
         }}
         QLabel#valueTitle {{
-            color: {color_to_css(text, 255)};
-            font-size: 24px;
+            color: {text};
+            font-size: 22px;
             font-weight: 700;
+            background: transparent;
         }}
         QLabel#reasonBox {{
-            color: {color_to_css(text, 255)};
+            color: {text};
             font-size: 13px;
-            background: {color_to_css(dialog_panel, 205)};
-            border: 1px solid {color_to_css(border, 145)};
-            border-radius: 10px;
+            background: {card};
+            border: 1px solid {card_b};
+            border-radius: 8px;
             padding: 10px;
         }}
         QLabel#configLabel {{
-            color: {color_to_css(text, 255)};
-            font-size: 14px;
-            font-weight: 700;
+            color: {text};
+            font-size: 13px;
+            font-weight: 600;
+            background: transparent;
         }}
-        QLineEdit, QComboBox, QSpinBox, QListWidget {{
-            min-height: 32px;
-            padding: 4px 10px;
-            border-radius: 9px;
-            border: 1px solid {color_to_css(border, 190)};
-            background: {color_to_css(input_bg, 245)};
-            color: {color_to_css(input_text, 255)};
+        QLabel {{
+            color: {text};
+            background: transparent;
+        }}
+        QLineEdit, QSpinBox, QTextEdit {{
+            min-height: 30px;
+            padding: 4px 9px;
+            border-radius: 6px;
+            border: 1px solid {card_b2};
+            background: {inp_bg};
+            color: {inp_txt};
+        }}
+        QComboBox {{
+            min-height: 30px;
+            padding: 3px 28px 3px 9px;
+            border-radius: 6px;
+            border: 1px solid {card_b2};
+            background: {inp_bg};
+            color: {inp_txt};
+            selection-background-color: {acc};
+            selection-color: white;
+        }}
+        QComboBox::drop-down {{
+            width: 24px;
+            border-left: 1px solid {card_b};
+            background: rgba(30,38,90,220);
+            border-top-right-radius: 6px;
+            border-bottom-right-radius: 6px;
+        }}
+        QComboBox QAbstractItemView {{
+            border: 1px solid {card_b2};
+            background: rgba(18,22,52,255);
+            color: {inp_txt};
+            selection-background-color: {acc};
+            selection-color: white;
+        }}
+        QListWidget {{
+            border-radius: 6px;
+            border: 1px solid {card_b};
+            background: {inp_bg};
+            color: {inp_txt};
+        }}
+        QListWidget::item:selected {{
+            background: {acc};
+            color: white;
         }}
         QCheckBox {{
-            color: {color_to_css(text, 255)};
+            color: {dim};
             font-size: 13px;
             spacing: 8px;
+            background: transparent;
+        }}
+        QCheckBox::indicator {{
+            width: 14px;
+            height: 14px;
+            border: 1px solid {card_b2};
+            border-radius: 3px;
+            background: {inp_bg};
+        }}
+        QCheckBox::indicator:checked {{
+            background: {acc};
+            border: 1px solid {card_b2};
         }}
         QPushButton {{
-            min-height: 34px;
-            padding: 6px 18px;
-            border-radius: 10px;
-            border: 1px solid {color_to_css(border, 190)};
-            color: {color_to_css(input_text, 255)};
-            background: {color_to_css(theme["button_background"], 238)};
+            min-height: 32px;
+            padding: 5px 16px;
+            border-radius: 7px;
+            border: 1px solid {card_b2};
+            color: {text};
+            background: rgba(30,38,90,220);
+            font-size: 12px;
         }}
         QPushButton:hover, QPushButton:focus {{
-            background: {color_to_css(selected, 238)};
-            color: {color_to_css(selected_text, 255)};
+            border: 1px solid {c(_SW_CARD_BORDER, 220)};
+            background: rgba(50,70,160,240);
+            color: white;
         }}
         QPushButton#saveButton {{
-            color: {color_to_css(selected_text, 255)};
+            color: {cta_txt};
             font-weight: 700;
-            border: 1px solid {color_to_css(theme["selected_border"], 220)};
-            background: {color_to_css(selected, 242)};
+            font-size: 13px;
+            border: 2px solid rgba(200,148,0,200);
+            background: {cta_bg};
+        }}
+        QPushButton#saveButton:hover {{
+            background: rgba(255,205,40,255);
         }}
         QTabWidget::pane {{
-            border: 1px solid {color_to_css(border, 160)};
-            border-radius: 12px;
-            background: {color_to_css(dialog_panel, 90)};
+            border: 1px solid {card_b};
+            border-radius: 8px;
+            background: rgba(22,26,58,160);
             top: -1px;
         }}
         QTabBar::tab {{
-            min-width: 120px;
-            padding: 8px 16px;
-            margin-right: 6px;
-            border: 1px solid {color_to_css(border, 170)};
+            min-width: 110px;
+            padding: 7px 14px;
+            margin-right: 4px;
+            border: 1px solid {card_b};
             border-bottom: none;
-            border-top-left-radius: 10px;
-            border-top-right-radius: 10px;
-            background: {color_to_css(theme["header_background"], 190)};
-            color: {color_to_css(theme["primary_text"], 255)};
-            font-weight: 700;
+            border-top-left-radius: 7px;
+            border-top-right-radius: 7px;
+            background: rgba(18,22,48,200);
+            color: {dim};
+            font-weight: 600;
+            font-size: 12px;
         }}
         QTabBar::tab:selected {{
-            background: {color_to_css(selected, 230)};
-            color: {color_to_css(selected_text, 255)};
+            background: rgba(50,70,160,230);
+            color: white;
+            border-color: {card_b2};
+        }}
+        QTabBar::tab:hover {{
+            background: rgba(35,45,110,220);
+            color: {text};
         }}
         QScrollArea {{
             border: none;
             background: transparent;
         }}
         QScrollBar:vertical {{
-            background: {color_to_css(theme["scrollbar_track"], 130)};
-            width: 12px;
+            background: rgba(22,26,58,120);
+            width: 10px;
             margin: 2px;
-            border-radius: 6px;
+            border-radius: 5px;
         }}
         QScrollBar::handle:vertical {{
-            background: {color_to_css(theme["scrollbar_thumb"], 220)};
-            min-height: 32px;
-            border-radius: 6px;
+            background: rgba(96,144,255,160);
+            min-height: 24px;
+            border-radius: 5px;
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
             height: 0px;
         }}
         QScrollBar:horizontal {{
-            background: {color_to_css(theme["scrollbar_track"], 130)};
-            height: 12px;
+            background: rgba(22,26,58,120);
+            height: 8px;
             margin: 2px;
-            border-radius: 6px;
+            border-radius: 4px;
         }}
         QScrollBar::handle:horizontal {{
-            background: {color_to_css(theme["scrollbar_thumb"], 220)};
-            min-width: 32px;
-            border-radius: 6px;
+            background: rgba(96,144,255,160);
+            min-width: 24px;
+            border-radius: 4px;
         }}
         QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{
             width: 0px;
+        }}
+        /* ── Advanced Config wizard sidebar ─────────────────────────────── */
+        QWidget#advNavHeader {{
+            background: transparent;
+        }}
+        QLabel#advNavSubtitle {{
+            color: {dim};
+            font-size: 11px;
+            letter-spacing: 1px;
+            background: transparent;
+        }}
+        QWidget#advNavSep {{
+            background: rgba(68,108,235,90);
+        }}
+        QPushButton#advNavItem {{
+            text-align: left;
+            padding: 11px 16px 11px 22px;
+            border: none;
+            border-left: 3px solid transparent;
+            border-radius: 0px;
+            background: transparent;
+            color: {dim};
+            font-size: 13px;
+            font-weight: 600;
+            min-height: 38px;
+        }}
+        QPushButton#advNavItem:checked {{
+            border-left: 3px solid {c(_SW_ACCENT, 255)};
+            background: rgba(68,108,235,38);
+            color: white;
+        }}
+        QPushButton#advNavItem:hover:!checked {{
+            background: rgba(68,108,235,18);
+            color: {text};
+        }}
+        QLabel#advNavFooter {{
+            color: {dim};
+            font-size: 10px;
+            background: transparent;
+            opacity: 0.6;
+        }}
+        QStackedWidget#advContentStack {{
+            background: {c(_SW_BG)};
+        }}
+        QWidget#advFooter {{
+            background: {c(_SW_FOOTER_BG)};
+            border-top: 1px solid {c(_SW_FOOTER_BORD)};
+        }}
+        QWidget#catalogRowHeader {{
+            background: transparent;
+        }}
+        QWidget#catalogExpandPanel {{
+            background: rgba(12, 14, 36, 200);
+            border-top: 1px solid rgba(68,108,235,80);
+        }}
+        QTextEdit#catalogDescEdit {{
+            min-height: 60px;
+            border-radius: 6px;
+            border: 1px solid rgba(68,108,235,140);
+            background: rgba(16,20,50,220);
+            color: {inp_txt};
+            font-size: 12px;
+            padding: 4px 6px;
+        }}
+        QLineEdit#catalogTagsInput {{
+            border-radius: 6px;
+            border: 1px solid rgba(68,108,235,140);
+            background: rgba(16,20,50,220);
+            color: {inp_txt};
+        }}
+        QPushButton#configToggleButton {{
+            min-width: 80px;
+            font-size: 11px;
+            background: rgba(24,30,72,210);
+            border: 1px solid rgba(68,108,235,120);
+            color: {dim};
+        }}
+        QPushButton#configToggleButton:checked {{
+            background: rgba(50,70,160,230);
+            color: white;
+            border: 1px solid {card_b2};
+        }}
+        QPushButton#catalogResetButton {{
+            min-width: 100px;
+            font-size: 11px;
+            color: {dim};
+            background: rgba(22,26,58,180);
+            border: 1px solid rgba(68,108,235,80);
         }}
     """
 
 
 def build_startup_stylesheet(theme_name=DEFAULT_THEME_NAME, skin_name=DEFAULT_SKIN_NAME):
-    theme = app_theme(theme_name, skin_name)
-    text = theme["dialog_text"]
-    note = theme["dialog_note_text"]
-    panel = theme.get("startup_panel_bg", theme["dialog_panel"])
-    card = theme.get("startup_card_bg", with_alpha(theme["panel_background_alt"], 228))
-    input_bg = theme["input_background"]
-    input_text = theme["input_text"]
-    border = theme["normal_border"]
-    selected = theme["selected_background"]
-    selected_text = theme["selected_text"]
-    sleek = bool(theme.get("sleek"))
-    panel_radius = 8 if sleek else 14
-    card_radius = 8 if sleek else 12
-    control_radius = 7 if sleek else 10
-    button_radius = 7 if sleek else 10
-    window_bg = (
-        f"qlineargradient(x1:0, y1:0, x2:1, y2:1, "
-        f"stop:0 {color_to_css(QColor(min(255, theme['startup_bg'].red() + 5), min(255, theme['startup_bg'].green() + 5), min(255, theme['startup_bg'].blue() + 6)), 255)}, "
-        f"stop:0.55 {color_to_css(theme['startup_bg'], 255)}, "
-        f"stop:1 {color_to_css(QColor(max(0, theme['startup_bg'].red() - 8), max(0, theme['startup_bg'].green() - 8), max(0, theme['startup_bg'].blue() - 8)), 255)})"
-        if sleek else color_to_css(theme["app_background"], 255)
-    )
+    """Fixed-palette startup stylesheet — completely independent of the active guide theme."""
+    def css(c, a=255):
+        return f"rgba({c.red()},{c.green()},{c.blue()},{a})"
+
+    c_bg        = css(_SW_BG)
+    c_card      = css(_SW_CARD_BG)
+    c_border    = css(_SW_CARD_BORDER)
+    c_border_d  = css(_SW_CARD_BORDER, 120)
+    c_text      = css(_SW_TEXT)
+    c_dim       = css(_SW_TEXT_DIM)
+    c_header    = css(_SW_HEADER)
+    c_input_bg  = css(_SW_INPUT_BG)
+    c_input_txt = css(_SW_INPUT_TEXT)
+    c_accent    = css(_SW_ACCENT)
+    c_cta_bg    = css(_SW_CTA_BG)
+    c_cta_txt   = css(_SW_CTA_TEXT)
+    c_footer_bg = css(_SW_FOOTER_BG)
+    c_footer_b  = css(_SW_FOOTER_BORD)
+
     return f"""
         QWidget#startupWindow {{
-            background: {window_bg};
+            background: {c_bg};
         }}
-        QWidget#chromeCard, QWidget#loadingCard {{
-            background: {color_to_css(panel, 218 if sleek else 232)};
-            border: 1px solid {color_to_css(border, 150 if sleek else 170)};
-            border-radius: {panel_radius}px;
+        QWidget#startupContent {{
+            background: {c_bg};
         }}
-        QWidget#sourceCard {{
-            background: {color_to_css(card, 176 if sleek else 214)};
-            border: 1px solid {color_to_css(border, 145 if sleek else 160)};
-            border-radius: {card_radius}px;
+        QWidget#startupOptions {{
+            background: {c_bg};
+            padding-top: 4px;
+            padding-bottom: 4px;
         }}
-        QLabel#subLabel {{
-            color: {color_to_css(text, 255)};
-            font-size: 16px;
+        QWidget#setupCard {{
+            background: {c_card};
+            border: 1px solid {c_border_d};
+            border-radius: 8px;
+        }}
+        QLabel#setupCardHeader {{
+            color: {c_header};
+            font-size: 10px;
             font-weight: 700;
+            background: transparent;
         }}
-        QLabel#sectionLabel, QLabel#fieldLabel, QLabel#loadingStage {{
-            color: {color_to_css(text, 255)};
-            font-size: 13px;
-            font-weight: 700;
+        QLabel#catalogPathLabel {{
+            color: {c_dim};
+            font-size: 12px;
+            background: {c_input_bg};
+            border: 1px solid rgba(68,108,235,100);
+            border-radius: 5px;
+            padding: 5px 8px;
+            min-height: 18px;
         }}
-        QLabel#statusLabel, QLabel#infoPill {{
-            color: {color_to_css(text, 255)};
-            font-size: 13px;
-            background: {color_to_css(panel, 150 if sleek else 180)};
-            border: 1px solid {color_to_css(border, 135 if sleek else 150)};
-            border-radius: {control_radius}px;
-            padding: 10px;
-            min-height: 56px;
+        QLabel#librarySummaryLabel {{
+            color: {c_dim};
+            font-size: 12px;
+            font-style: italic;
+            background: transparent;
+        }}
+        QLabel#fieldLabel {{
+            color: {c_text};
+            font-size: 12px;
+            font-weight: 600;
+            background: transparent;
+        }}
+        QLabel#statusLabel {{
+            color: {c_dim};
+            font-size: 12px;
+            background: transparent;
+        }}
+        QLabel#loadingStage {{
+            color: {c_text};
+            font-size: 12px;
+            font-weight: 600;
+            background: transparent;
         }}
         QLabel#loadingDetail {{
-            color: {color_to_css(note, 230)};
-            font-size: 12px;
+            color: {c_dim};
+            font-size: 11px;
+            background: transparent;
         }}
-        QLabel#startupLogo {{
-            min-height: 86px;
+        QWidget#loadingCard {{
+            background: transparent;
+        }}
+        QWidget#startupFooter {{
+            background: {c_footer_bg};
+            border-top: 1px solid {c_footer_b};
+        }}
+        QCheckBox#autoLaunchCheck {{
+            color: {c_dim};
+            font-size: 12px;
+            background: transparent;
+            spacing: 8px;
+        }}
+        QCheckBox#autoLaunchCheck::indicator {{
+            width: 14px;
+            height: 14px;
+            border: 1px solid rgba(68,108,235,160);
+            border-radius: 3px;
+            background: {c_input_bg};
+        }}
+        QCheckBox#autoLaunchCheck::indicator:checked {{
+            background: {c_accent};
+            border: 1px solid {c_border};
+            image: none;
+        }}
+        QLabel#diagnosticsPill {{
+            color: {c_dim};
+            font-size: 10px;
+            background: {c_card};
+            border: 1px solid {c_border_d};
+            border-radius: 6px;
+            padding: 7px;
+            min-height: 52px;
+        }}
+        QLabel#diagnosticsPill:focus {{
+            border: 1px solid {c_border};
         }}
         QComboBox {{
-            min-height: 32px;
-            padding: 4px 34px 4px 10px;
-            border-radius: {control_radius}px;
-            border: 1px solid {color_to_css(border, 190)};
-            color: {color_to_css(input_text, 255)};
-            background: {color_to_css(input_bg, 235 if sleek else 245)};
-            selection-background-color: {color_to_css(selected, 235)};
-            selection-color: {color_to_css(selected_text, 255)};
+            min-height: 30px;
+            padding: 3px 30px 3px 9px;
+            border-radius: 6px;
+            border: 1px solid rgba(68,108,235,160);
+            color: {c_input_txt};
+            background: {c_input_bg};
+            selection-background-color: {c_accent};
+            selection-color: white;
         }}
         QComboBox::drop-down {{
-            width: 28px;
-            border-left: 1px solid {color_to_css(border, 150)};
-            background: {color_to_css(theme.get("startup_button_bg", theme["button_background"]), 238)};
-            border-top-right-radius: {control_radius}px;
-            border-bottom-right-radius: {control_radius}px;
+            width: 24px;
+            border-left: 1px solid rgba(68,108,235,100);
+            background: rgba(30,38,90,220);
+            border-top-right-radius: 6px;
+            border-bottom-right-radius: 6px;
         }}
         QComboBox QAbstractItemView {{
-            border: 1px solid {color_to_css(border, 190)};
-            background: {color_to_css(input_bg, 255)};
-            color: {color_to_css(input_text, 255)};
-            selection-background-color: {color_to_css(selected, 235)};
-            selection-color: {color_to_css(selected_text, 255)};
+            border: 1px solid {c_border};
+            background: rgba(18,22,52,255);
+            color: {c_input_txt};
+            selection-background-color: {c_accent};
+            selection-color: white;
         }}
         QPushButton {{
-            min-height: 36px;
-            padding: 6px 16px;
-            border-radius: {button_radius}px;
-            border: 1px solid {color_to_css(border, 190)};
-            color: {color_to_css(input_text, 255)};
-            background: {color_to_css(theme.get("startup_button_bg", theme["button_background"]), 220 if sleek else 238)};
+            min-height: 32px;
+            min-width: 110px;
+            padding: 5px 14px;
+            border-radius: 6px;
+            border: 1px solid rgba(68,108,235,160);
+            color: {c_text};
+            background: rgba(30,38,90,220);
+            font-size: 12px;
         }}
-        QPushButton:hover, QPushButton:focus, QPushButton#watchButton {{
-            color: {color_to_css(selected_text, 255)};
-            font-weight: 700;
-            border: 1px solid {color_to_css(theme["selected_border"], 210)};
-            background: {color_to_css(selected, 242)};
+        QPushButton:hover, QPushButton:focus {{
+            border: 1px solid {c_border};
+            background: rgba(50,70,160,240);
+            color: white;
+        }}
+        QPushButton#chooseCatalogButton {{
+            border: 1px solid {c_border};
+            background: rgba(40,58,140,220);
+        }}
+        QPushButton#watchButton {{
+            color: {c_cta_txt};
+            font-weight: 800;
+            font-size: 13px;
+            border: 2px solid rgba(200,148,0,220);
+            background: {c_cta_bg};
+            min-width: 128px;
+        }}
+        QPushButton#watchButton:hover, QPushButton#watchButton:focus {{
+            background: rgba(255,205,40,255);
+            border: 2px solid rgba(220,168,0,255);
         }}
         QPushButton:disabled, QPushButton#watchButton:disabled {{
-            color: {color_to_css(theme["muted_text"], 150)};
-            border: 1px solid {color_to_css(border, 110)};
-            background: {color_to_css(theme["panel_background"], 150)};
-        }}
-        QPushButton#advancedButton {{
-            font-weight: 700;
+            color: rgba(138,158,212,120);
+            border: 1px solid rgba(68,108,235,60);
+            background: rgba(22,26,58,160);
         }}
         QProgressBar {{
-            min-height: 18px;
-            border: 1px solid {color_to_css(border, 170)};
-            border-radius: 9px;
-            background: {color_to_css(theme["panel_background"], 170)};
+            min-height: 15px;
+            border: 1px solid rgba(68,108,235,140);
+            border-radius: 7px;
+            background: rgba(16,20,50,180);
             text-align: center;
-            color: {color_to_css(text, 255)};
+            font-size: 11px;
+            color: {c_text};
         }}
         QProgressBar::chunk {{
-            border-radius: 8px;
-            background: {color_to_css(selected, 242)};
+            border-radius: 6px;
+            background: {c_accent};
         }}
         QScrollArea {{
             border: none;
             background: transparent;
         }}
         QScrollBar:vertical {{
-            background: {color_to_css(theme["scrollbar_track"], 130)};
-            width: 12px;
+            background: rgba(30,38,90,100);
+            width: 8px;
             margin: 2px;
-            border-radius: 6px;
+            border-radius: 4px;
         }}
         QScrollBar::handle:vertical {{
-            background: {color_to_css(theme["scrollbar_thumb"], 220)};
-            min-height: 32px;
-            border-radius: 6px;
+            background: rgba(96,144,255,160);
+            min-height: 24px;
+            border-radius: 4px;
         }}
         QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{
             height: 0px;
@@ -3182,7 +4203,7 @@ def build_startup_stylesheet(theme_name=DEFAULT_THEME_NAME, skin_name=DEFAULT_SK
 
 SKIN_THEME_MAP = {
     "Promised Future": ["Silver Olive", "Silver", "Olive", "Purple Passion", "Charcoal", "Tangerine Dream", "Digital Cable Blue"],
-    "Set Top Box": ["Cable Blue", "Midnight Star", "Get Slimed", "Green Screen"],
+    "Set Top Box": ["Silver Olive", "Cable Blue", "Midnight Star", "Get Slimed"],
     "Sleek Freak": ["Silver Olive", "Grape Jelly", "Baby Blue", "Millennial Grey"],
 }
 
@@ -3239,13 +4260,41 @@ def draw_classic_cable_starfield(painter, rect, theme_name, seed_offset=0):
     painter.restore()
 
 
+def draw_classic_cable_beveled_rect(painter, rect, fill, border, light, dark, width=2, raised=True):
+    painter.save()
+    painter.setPen(QPen(border, max(1, width)))
+    painter.setBrush(fill)
+    painter.drawRect(rect)
+    edge = max(1, width)
+    top_left = light if raised else dark
+    bottom_right = dark if raised else light
+    for offset in range(edge):
+        inset = rect.adjusted(offset, offset, -offset, -offset)
+        painter.setPen(QPen(top_left, 1))
+        painter.drawLine(inset.left(), inset.bottom(), inset.left(), inset.top())
+        painter.drawLine(inset.left(), inset.top(), inset.right(), inset.top())
+        painter.setPen(QPen(bottom_right, 1))
+        painter.drawLine(inset.right(), inset.top(), inset.right(), inset.bottom())
+        painter.drawLine(inset.right(), inset.bottom(), inset.left(), inset.bottom())
+    painter.restore()
+
+
 def draw_classic_cable_panel(painter, rect, theme, theme_name, inset=3, border_width=1, border_alpha=90):
     border = theme.get("guide_detail_panel_border", theme.get("normal_border", QColor(228, 236, 255)))
     header = theme.get("guide_header_bg", theme.get("header", QColor(5, 28, 136)))
     panel = theme.get("guide_detail_panel_bg", theme.get("panel", QColor(0, 0, 0)))
-    painter.setPen(QPen(with_alpha(border, border_alpha), border_width))
-    painter.setBrush(with_alpha(header, 255))
-    painter.drawRect(rect)
+    light = theme.get("stb_bevel_light", QColor(255, 255, 255, 150))
+    dark = theme.get("stb_bevel_dark", QColor(0, 0, 0, 170))
+    draw_classic_cable_beveled_rect(
+        painter,
+        rect,
+        with_alpha(header, 255),
+        with_alpha(border, border_alpha),
+        light,
+        dark,
+        width=max(2, border_width),
+        raised=True,
+    )
     inner = rect.adjusted(inset, inset, -inset, -inset)
     if theme.get("starfield"):
         draw_classic_cable_starfield(painter, inner, theme_name, seed_offset=17)
@@ -3261,9 +4310,16 @@ def draw_classic_cable_panel(painter, rect, theme, theme_name, inset=3, border_w
 def draw_classic_cable_bar(painter, rect, theme, border_width=1, border_alpha=90):
     border = theme.get("guide_grid_line", theme.get("normal_border", QColor(214, 230, 255)))
     fill = theme.get("guide_header_bg", theme.get("header", QColor(5, 28, 136)))
-    painter.setPen(QPen(with_alpha(border, border_alpha), border_width))
-    painter.setBrush(with_alpha(fill, 255))
-    painter.drawRect(rect)
+    draw_classic_cable_beveled_rect(
+        painter,
+        rect,
+        with_alpha(fill, 255),
+        with_alpha(border, border_alpha),
+        theme.get("stb_bevel_light", QColor(255, 255, 255, 130)),
+        theme.get("stb_bevel_dark", QColor(0, 0, 0, 160)),
+        width=max(2, border_width),
+        raised=True,
+    )
 
 
 def draw_classic_cable_slot_box(painter, rect, theme, active=False, border_width=1, border_alpha=84):
@@ -3271,27 +4327,50 @@ def draw_classic_cable_slot_box(painter, rect, theme, active=False, border_width
     fill_key = "guide_selected_bg" if active else "menu_button_bg"
     border = theme.get(border_key, theme.get("normal_border", QColor(214, 230, 255)))
     fill = theme.get(fill_key, theme.get("selected" if active else "header", QColor(5, 28, 136)))
-    painter.setPen(QPen(with_alpha(border, border_alpha), border_width))
-    painter.setBrush(with_alpha(fill, 255))
-    painter.drawRect(rect)
+    draw_classic_cable_beveled_rect(
+        painter,
+        rect,
+        with_alpha(fill, 255),
+        with_alpha(border, border_alpha),
+        theme.get("stb_bevel_light", QColor(255, 255, 255, 130)),
+        theme.get("stb_bevel_dark", QColor(0, 0, 0, 160)),
+        width=max(2 if active else 1, border_width),
+        raised=not active,
+    )
+
+
+def diagnostics_enabled_from_settings(settings_values):
+    return bool((settings_values or {}).get("dev_menu_enabled", True))
+
+
+def build_in_app_menu_rows(settings_values=None):
+    rows = [
+        ("Skin", "", "skin"),
+        ("Theme", "", "theme"),
+        ("Display", "", "display"),
+    ]
+    if diagnostics_enabled_from_settings(settings_values):
+        rows.append(("Diagnostic Readout", "Open", "diagnostics"))
+    rows.append(("Close", "Close", "close"))
+    return rows
 
 
 def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, small_font, theme):
     settings_values = getattr(widget, "settings_values", {}) or {}
-    setting_rows = [
-        ("Skin", str(getattr(widget, "skin_name", "")), "value"),
-        ("Theme", str(getattr(widget, "theme_name", "")), "value"),
-        ("Display", str(getattr(widget, "profile_name", "")), "value"),
-        ("No Catalog TV", bool_label(settings_values.get("allow_empty_catalog_tv", False)), "toggle"),
-        ("Dummy Vault", bool_label(settings_values.get("allow_dummy_vault_catalog", False)), "toggle"),
-        ("Dev Menu", bool_label(settings_values.get("dev_menu_enabled", True)), "toggle"),
-        ("Close", "Close", "action"),
-    ]
+    setting_rows = []
+    for label, value, kind in build_in_app_menu_rows(settings_values):
+        if kind == "skin":
+            value = str(getattr(widget, "skin_name", ""))
+        elif kind == "theme":
+            value = str(getattr(widget, "theme_name", ""))
+        elif kind == "display":
+            value = str(getattr(widget, "profile_name", ""))
+        setting_rows.append((label, value, kind))
     row_height = 34
     row_gap = 6
     body_top = 42
     rect_h = 66 + (len(setting_rows) * row_height) + ((len(setting_rows) - 1) * row_gap)
-    rect = QRect(0, 0, 430, rect_h)
+    rect = QRect(0, 0, 520, rect_h)
     rect.moveCenter(panel.center())
     widget.draw_xp_panel(painter, rect, theme, radius=10, inset=2)
     title_bar = QRect(rect.left() + 4, rect.top() + 4, rect.width() - 8, 28)
@@ -3326,9 +4405,9 @@ def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, smal
         painter.setPen(theme["text"])
         painter.drawText(title_bar.adjusted(12, 0, -12, 0), Qt.AlignVCenter, f"{APP_NAME} Menu")
 
-    left_arrow_x = rect.left() + 166
-    value_x = rect.left() + 200
-    value_w = rect.width() - 210 - 34
+    left_arrow_x = rect.left() + 224
+    value_x = rect.left() + 260
+    value_w = rect.width() - 270 - 34
     row_tops = [body_top + idx * (row_height + row_gap) for idx in range(len(setting_rows))]
     focus_index = max(0, min(int(getattr(widget, "settings_focus_index", 0)), len(setting_rows) - 1))
 
@@ -3344,19 +4423,35 @@ def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, smal
         widget.scale_next_rect = QRect()
     if hasattr(widget, "catalog_action_rect"):
         widget.catalog_action_rect = QRect()
+    if hasattr(widget, "diagnostic_action_rect"):
+        widget.diagnostic_action_rect = QRect()
     widget.close_action_rect = QRect(value_x, rect.top() + row_tops[-1], value_w, 28)
+    diagnostic_index = next((idx for idx, (_label, _value, kind) in enumerate(setting_rows) if kind == "diagnostics"), None)
+    if diagnostic_index is not None and hasattr(widget, "diagnostic_action_rect"):
+        widget.diagnostic_action_rect = QRect(value_x, rect.top() + row_tops[diagnostic_index], value_w, 28)
 
     skin_rect = QRect(value_x, rect.top() + row_tops[0], value_w, 28)
     theme_rect = QRect(value_x, rect.top() + row_tops[1], value_w, 28)
     profile_rect = QRect(value_x, rect.top() + row_tops[2], value_w, 28)
     value_rects = [QRect(value_x, rect.top() + row_top, value_w, 28) for row_top in row_tops]
+    sleek_settings = bool(theme.get("sleek"))
+    previous_focus_index, transition_progress = sleek_focus_transition(widget, "settings_focus", focus_index, 140) if sleek_settings else (-1, 1.0)
+
+    def settings_focus_amount(index):
+        if not sleek_settings:
+            return 1.0 if focus_index == index else 0.0
+        if index == focus_index:
+            return 1.0 if previous_focus_index == focus_index else transition_progress
+        if index == previous_focus_index:
+            return 1.0 - transition_progress
+        return 0.0
 
     painter.setFont(body_font)
     if widget.skin_style() == "cable":
         for idx, row_top in enumerate(row_tops):
             widget.draw_cable_text(
                 painter,
-                QRect(rect.left() + 18, rect.top() + row_top - 8, 140, 24),
+                QRect(rect.left() + 18, rect.top() + row_top - 8, 220, 24),
                 setting_rows[idx][0].upper(),
                 theme["settings_label_text"],
                 body_font,
@@ -3368,7 +4463,16 @@ def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, smal
             painter.drawText(rect.left() + 18, rect.top() + row_top + 20, setting_rows[idx][0])
 
     for idx, rect_box in enumerate(value_rects):
-        widget.draw_slot_box(painter, rect_box, theme, active=focus_index == idx)
+        if sleek_settings:
+            amount = settings_focus_amount(idx)
+            widget.draw_slot_box(painter, rect_box, theme, active=False)
+            if amount > 0.01:
+                painter.save()
+                painter.setOpacity(amount)
+                widget.draw_slot_box(painter, rect_box, theme, active=True)
+                painter.restore()
+        else:
+            widget.draw_slot_box(painter, rect_box, theme, active=focus_index == idx)
 
     for rect_box, label in (
         (widget.skin_prev_rect, "<"),
@@ -3384,17 +4488,20 @@ def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, smal
     if widget.skin_style() == "cable":
         value_font = QFont(small_font.family(), small_font.pointSize(), QFont.Bold)
         for idx, (_label, value, _kind) in enumerate(setting_rows):
+            amount = settings_focus_amount(idx)
+            value_color = blend_color(theme["settings_value_text"], theme["settings_value_selected_text"], amount) if theme.get("sleek") else theme["settings_value_text"]
             widget.draw_cable_text(
                 painter,
                 value_rects[idx],
                 value.upper(),
-                theme["settings_value_selected_text"] if focus_index == idx else theme["settings_value_text"],
+                value_color,
                 value_font,
                 Qt.AlignCenter,
             )
     else:
         for idx, (_label, value, _kind) in enumerate(setting_rows):
-            painter.setPen(theme["settings_value_selected_text"] if focus_index == idx else theme["settings_value_text"])
+            amount = settings_focus_amount(idx)
+            painter.setPen(blend_color(theme["settings_value_text"], theme["settings_value_selected_text"], amount) if theme.get("sleek") else theme["settings_value_text"])
             painter.drawText(value_rects[idx], Qt.AlignCenter, value)
 
 
@@ -4254,6 +5361,8 @@ class GuideOverlay(QWidget):
     uiScaleStepRequested = Signal(int)
     catalogRequested = Signal()
     settingsToggleRequested = Signal()
+    footerNavRequested = Signal(int)
+    diagnosticReadoutRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -4265,6 +5374,7 @@ class GuideOverlay(QWidget):
         self.profile_name = "Auto"
         self.theme_name = DEFAULT_THEME_NAME
         self.skin_name = DEFAULT_SKIN_NAME
+        self.sleek_mode = "dark"
         self.ui_scale = GUIDE_UI_SCALE_DEFAULT
         self.settings_open = False
         self.settings_focus_index = 0
@@ -4275,7 +5385,10 @@ class GuideOverlay(QWidget):
         self.theme_next_rect = QRect()
         self.profile_prev_rect = QRect()
         self.profile_next_rect = QRect()
+        self.scale_prev_rect = QRect()
+        self.scale_next_rect = QRect()
         self.catalog_action_rect = QRect()
+        self.diagnostic_action_rect = QRect()
         self.close_action_rect = QRect()
         self.nav_focus = False
         self.nav_index = 1
@@ -4283,15 +5396,25 @@ class GuideOverlay(QWidget):
         self.menu_rect = QRect()
         self.guide_rect = QRect()
         self.vault_rect = QRect()
+        self.footer_button_rects = []
         self.last_preview_update = 0.0
         self.timeline_start = self.floor_to_half_hour(time.time())
+        self.sleek_nav_active_index = -1
+        self.sleek_nav_previous_index = -1
+        self.sleek_nav_transition_started = 0.0
+        self.sleek_nav_transition_ms = 140
+        self._sleek_focus_transition_states = {}
         self.hide()
 
     def show_guide(self, channels, selected_index):
         self.channels = channels
         self.selected_index = max(0, min(selected_index, len(channels) - 1)) if channels else 0
         self.nav_focus = False
-        self.nav_index = 1
+        self.nav_index = 1 if self.skin_style() == "flat" else 1
+        self.sleek_nav_active_index = -1
+        self.sleek_nav_previous_index = -1
+        self.sleek_nav_transition_started = 0.0
+        self._sleek_focus_transition_states = {}
         self.timeline_start = self.floor_to_half_hour(time.time())
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
@@ -4305,6 +5428,19 @@ class GuideOverlay(QWidget):
         if self.isVisible():
             self.update()
 
+    def sleek_nav_transition_state(self):
+        active_index = int(self.nav_index) if self.nav_focus else -1
+        now_ms = time.monotonic() * 1000.0
+        if active_index != self.sleek_nav_active_index:
+            self.sleek_nav_previous_index = self.sleek_nav_active_index
+            self.sleek_nav_active_index = active_index
+            self.sleek_nav_transition_started = now_ms
+        elapsed = now_ms - self.sleek_nav_transition_started
+        progress = 1.0 if self.sleek_nav_transition_started <= 0 else max(0.0, min(1.0, elapsed / max(1, self.sleek_nav_transition_ms)))
+        if progress < 1.0 and self.isVisible():
+            QTimer.singleShot(16, self.update)
+        return self.sleek_nav_previous_index, progress
+
     def set_preview_frame(self, pixmap, mode="video"):
         self.preview_frame = pixmap
         self.preview_mode = mode or "video"
@@ -4313,10 +5449,11 @@ class GuideOverlay(QWidget):
             self.last_preview_update = now
             self.update()
 
-    def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT):
+    def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
         self.profile_name = profile_name if profile_name in GUIDE_PROFILES else "Auto"
         self.skin_name = normalize_skin_name(skin_name)
         self.theme_name = normalize_theme_for_skin(self.skin_name, theme_name)
+        self.sleek_mode = normalize_sleek_mode(sleek_mode)
         self.ui_scale = clamp_guide_ui_scale(ui_scale)
         if self.isVisible():
             self.update()
@@ -4329,7 +5466,7 @@ class GuideOverlay(QWidget):
             return
 
         profile = GUIDE_PROFILES[self.profile_name]
-        theme = app_theme(self.theme_name, self.skin_name)
+        theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
         panel = self.guide_canvas_rect()
         cable_skin = self.skin_style() == "cable"
@@ -4345,25 +5482,17 @@ class GuideOverlay(QWidget):
         else:
             painter.fillRect(self.rect(), QColor(theme["bg"].red(), theme["bg"].green(), theme["bg"].blue(), 170))
         if cable_skin:
-            surface_size = self.cable_surface_size(panel)
-            surface = QImage(surface_size, QImage.Format_ARGB32_Premultiplied)
-            surface.fill(QColor(theme["bg"].red(), theme["bg"].green(), theme["bg"].blue(), 0))
-            surface_painter = QPainter(surface)
-            surface_painter.setRenderHint(QPainter.TextAntialiasing, False)
-            surface_painter.setRenderHint(QPainter.SmoothPixmapTransform, False)
-            source_panel = QRect(0, 0, surface.width(), surface.height()).adjusted(4, 4, -4, -4)
-            self.draw_guide_scene(surface_painter, source_panel, profile, theme)
-            surface_painter.end()
-            scaled = QPixmap.fromImage(surface).scaled(panel.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
-            self.draw_cable_composite(painter, panel, scaled)
+            painter.setRenderHint(QPainter.TextAntialiasing, False)
+            painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+            self.draw_guide_scene(painter, panel, profile, theme)
             if self.settings_open:
-                painter.fillRect(panel.adjusted(3, 3, -3, -3), QColor(8, 10, 14, 152))
-                self.draw_settings_panel(painter, panel, body_font, small_font, theme)
+                painter.fillRect(self.rect(), QColor(8, 10, 14, 150))
+                self.draw_settings_panel(painter, self.rect(), body_font, small_font, theme)
         else:
             self.draw_guide_scene(painter, panel, profile, theme)
             if self.settings_open:
-                painter.fillRect(self.rect(), QColor(8, 10, 14, 120))
-                self.draw_settings_panel(painter, panel, body_font, small_font, theme)
+                painter.fillRect(self.rect(), QColor(8, 10, 14, 150))
+                self.draw_settings_panel(painter, self.rect(), body_font, small_font, theme)
 
     def cable_surface_size(self, panel):
         scale = CLASSIC_CABLE_TUNING["crt"]["surface_scale"]
@@ -4427,11 +5556,721 @@ class GuideOverlay(QWidget):
             lines.append(final_line)
         return lines[:max_lines]
 
+    def sleek_scale_factor(self, profile):
+        return max(0.82, min(1.45, float(profile.get("scale", 1.0)) * self.ui_scale))
+
+    def sleek_metric(self, value, profile, minimum=1, maximum=None):
+        return scaled_metric(value, self.sleek_scale_factor(profile), minimum, maximum)
+
+    def sleek_font(self, theme, size, profile, weight=QFont.Normal, minimum=8, maximum=42):
+        point_size = self.sleek_metric(size, profile, minimum, maximum)
+        return QFont(theme.get("font_ui", ".AppleSystemUIFont"), point_size, weight)
+
+    def draw_sleek_elided(self, painter, rect, text, font, color, flags=Qt.AlignLeft | Qt.AlignVCenter):
+        painter.save()
+        painter.setClipRect(rect)
+        painter.setFont(font)
+        painter.setPen(color)
+        painter.drawText(rect, flags | Qt.TextSingleLine, painter.fontMetrics().elidedText(str(text or ""), Qt.ElideRight, max(12, rect.width())))
+        painter.restore()
+
+    def draw_sleek_chip(self, painter, rect, text, theme, active=False):
+        painter.save()
+        painter.setPen(QPen(theme["guide_card_selected_border"] if active else theme["guide_divider"], 1))
+        painter.setBrush(theme["guide_chip_selected_bg"] if active else theme["guide_chip_bg"])
+        radius = min(theme.get("cell_radius", 8), max(4, rect.height() // 2))
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.setPen(theme["guide_chip_selected_text"] if active else theme["guide_chip_text"])
+        painter.setFont(QFont(theme.get("font_ui", ".AppleSystemUIFont"), max(8, min(11, rect.height() - 10)), QFont.DemiBold))
+        painter.drawText(rect.adjusted(8, 0, -8, 0), Qt.AlignCenter, str(text or "").upper())
+        painter.restore()
+
+    def draw_sleek_signal_motif(self, painter, rect, theme, profile):
+        painter.save()
+        painter.setClipRect(rect)
+        color = theme["guide_wave_motif"]
+        painter.setPen(QPen(color, self.sleek_metric(2, profile, 1, 3)))
+        mid_y = rect.center().y()
+        step = max(18, rect.width() // 22)
+        points = []
+        for i in range(0, rect.width() + step, step):
+            x = rect.left() + i
+            y = mid_y + int(math.sin(i / max(1, step) * 0.9) * rect.height() * 0.10)
+            points.append(QPoint(x, y))
+        if len(points) > 1:
+            painter.drawPolyline(QPolygon(points))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(with_alpha(theme["guide_wave_motif"], 18))
+        for offset in (0.18, 0.48, 0.76):
+            x = rect.left() + int(rect.width() * offset)
+            poly = QPolygon(
+                [
+                    QPoint(x - int(rect.width() * 0.06), rect.top()),
+                    QPoint(x + int(rect.width() * 0.06), rect.top()),
+                    QPoint(x + int(rect.width() * 0.16), rect.bottom()),
+                    QPoint(x - int(rect.width() * 0.02), rect.bottom()),
+                ]
+            )
+            painter.drawPolygon(poly)
+        painter.restore()
+
+    def draw_sleek_nav_icon(self, painter, rect, kind, color):
+        draw_sleek_nav_icon_shape(painter, rect, kind, color)
+
+    def draw_sleek_guide_scene(self, painter, panel, profile, theme):
+        scale = self.sleek_scale_factor(profile)
+        margin = scaled_metric(30, scale, 18, 58)
+        inner = panel.adjusted(margin, margin, -margin, -margin)
+        if inner.width() < 420 or inner.height() < 320:
+            inner = panel.adjusted(12, 12, -12, -12)
+
+        painter.save()
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(inner.adjusted(0, 0, -1, -1), theme.get("border_radius", 8), theme.get("border_radius", 8))
+        painter.restore()
+
+        header_h = self.sleek_metric(64, profile, 48, 84)
+        header_rect = QRect(inner.left(), inner.top(), inner.width(), header_h)
+        gap = self.sleek_metric(22, profile, 14, 32)
+        nav_h = self.sleek_metric(58, profile, 48, 68)
+        footer_w = min(inner.width() - self.sleek_metric(80, profile, 42, 120), self.sleek_metric(560, profile, 450, 650))
+        footer_rect = QRect(inner.center().x() - footer_w // 2, inner.bottom() - nav_h - self.sleek_metric(10, profile, 8, 18), footer_w, nav_h)
+        wide = inner.width() / max(1, inner.height()) >= 1.55
+        hero_h = max(
+            self.sleek_metric(172 if not wide else 188, profile, 148, 226),
+            min(self.sleek_metric(284 if wide else 244, profile, 196, 318), int(inner.height() * (0.30 if wide else 0.28))),
+        )
+        hero_rect = QRect(inner.left() + self.sleek_metric(18, profile, 10, 28), header_rect.bottom() + gap, inner.width() - self.sleek_metric(36, profile, 20, 56), hero_h)
+        time_h = self.sleek_metric(54, profile, 42, 64)
+        time_rect = QRect(hero_rect.left(), hero_rect.bottom() + self.sleek_metric(18, profile, 12, 28), hero_rect.width(), time_h)
+        grid_top = time_rect.bottom() + self.sleek_metric(12, profile, 8, 20)
+        grid_bottom = inner.bottom() - self.sleek_metric(8, profile, 6, 14)
+        grid_rect = QRect(time_rect.left(), grid_top, time_rect.width(), max(self.sleek_metric(120, profile, 96, 160), grid_bottom - grid_top))
+
+        slot_count = 4 if grid_rect.width() >= 1120 else (3 if grid_rect.width() >= 760 else 2)
+        channel_col = max(self.sleek_metric(176, profile, 138, 230), min(int(grid_rect.width() * 0.22), self.sleek_metric(250, profile, 190, 310)))
+        timeline_rect = QRect(grid_rect.left() + channel_col + self.sleek_metric(12, profile, 8, 18), time_rect.top(), grid_rect.width() - channel_col - self.sleek_metric(12, profile, 8, 18), time_rect.height())
+
+        selected = self.channels[self.selected_index]
+        self.draw_sleek_header(painter, header_rect, theme, profile)
+        self.draw_sleek_hero(painter, hero_rect, selected, theme, profile)
+        self.draw_sleek_schedule_header(painter, time_rect, timeline_rect, slot_count, theme, profile)
+        self.draw_sleek_grid(painter, grid_rect, timeline_rect, channel_col, slot_count, theme, profile)
+        self.draw_sleek_footer_controls(painter, footer_rect, theme, profile)
+
+    def draw_sleek_header(self, painter, rect, theme, profile):
+        painter.save()
+        painter.fillRect(rect, theme["guide_header_background"])
+        brand_x = rect.left() + self.sleek_metric(10, profile, 6, 18)
+        brand_rect = QRect(brand_x, rect.top() + self.sleek_metric(9, profile, 6, 14), self.sleek_metric(180, profile, 142, 240), rect.height() - self.sleek_metric(18, profile, 12, 24))
+        painter.setFont(self.sleek_font(theme, 19, profile, QFont.Bold, 15, 24))
+        painter.setPen(theme["guide_primary_text"])
+        painter.drawText(brand_rect.adjusted(0, 0, 0, -self.sleek_metric(13, profile, 10, 18)), Qt.AlignLeft | Qt.AlignVCenter, "MediaWave")
+        painter.setFont(self.sleek_font(theme, 9, profile, QFont.DemiBold, 8, 12))
+        painter.setPen(theme["accent"])
+        painter.drawText(brand_rect.adjusted(2, self.sleek_metric(22, profile, 16, 28), 0, 0), Qt.AlignLeft | Qt.AlignVCenter, "2000")
+
+        section_x = brand_rect.right() + self.sleek_metric(34, profile, 24, 46)
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.drawLine(section_x - self.sleek_metric(18, profile, 12, 24), rect.top() + self.sleek_metric(14, profile, 10, 20), section_x - self.sleek_metric(18, profile, 12, 24), rect.bottom() - self.sleek_metric(14, profile, 10, 20))
+        painter.setFont(self.sleek_font(theme, 16, profile, QFont.Bold, 12, 21))
+        painter.setPen(theme["guide_secondary_text"])
+        painter.drawText(QRect(section_x, rect.top(), self.sleek_metric(150, profile, 108, 190), rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "GUIDE")
+
+        time_w = self.sleek_metric(120, profile, 92, 150)
+        date_w = self.sleek_metric(130, profile, 96, 170)
+        clock_rect = QRect(rect.right() - time_w - self.sleek_metric(10, profile, 6, 16), rect.top(), time_w, rect.height())
+        date_rect = QRect(clock_rect.left() - date_w - self.sleek_metric(14, profile, 8, 18), rect.top(), date_w, rect.height())
+        painter.setFont(self.sleek_font(theme, 12, profile, QFont.DemiBold, 9, 16))
+        painter.setPen(theme["guide_secondary_text"])
+        painter.drawText(date_rect, Qt.AlignRight | Qt.AlignVCenter, time.strftime("%a, %b %d").upper())
+        painter.setFont(self.sleek_font(theme, 17, profile, QFont.Bold, 13, 23))
+        painter.setPen(theme["guide_primary_text"])
+        painter.drawText(clock_rect, Qt.AlignRight | Qt.AlignVCenter, time.strftime("%I:%M %p").lstrip("0"))
+        painter.restore()
+
+    def draw_sleek_hero(self, painter, rect, item, theme, profile):
+        painter.save()
+        painter.setPen(QPen(theme["guide_card_selected_border"], 1))
+        painter.setBrush(theme["guide_hero_panel_bg"])
+        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+
+        pad = self.sleek_metric(18, profile, 14, 28)
+        preview_w = min(int(rect.width() * (0.35 if rect.width() / max(1, rect.height()) > 4.4 else 0.38)), self.sleek_metric(500, profile, 300, 620))
+        preview_h = int(preview_w * 9 / 16)
+        max_preview_h = rect.height() - int(pad * 1.55)
+        if preview_h > max_preview_h:
+            preview_h = max(72, min(max_preview_h, self.sleek_metric(210, profile, 126, 250)))
+            preview_w = int(preview_h * 16 / 9)
+        preview_rect = QRect(rect.right() - pad - preview_w, rect.top() + (rect.height() - preview_h) // 2, preview_w, preview_h)
+        text_rect = QRect(rect.left() + pad, rect.top() + pad, max(120, preview_rect.left() - rect.left() - pad * 2), rect.height() - pad * 2)
+
+        glow = QRadialGradient(preview_rect.center(), max(rect.width(), rect.height()) * 0.58)
+        accent = theme["selected_background"]
+        glow.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 72 if self.sleek_mode == "dark" else 54))
+        glow.setColorAt(0.22, QColor(accent.red(), accent.green(), accent.blue(), 42 if self.sleek_mode == "dark" else 32))
+        glow.setColorAt(0.58, QColor(accent.red(), accent.green(), accent.blue(), 12 if self.sleek_mode == "dark" else 10))
+        glow.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), theme.get("border_radius", 8), theme.get("border_radius", 8))
+
+        meta_h = self.sleek_metric(26, profile, 20, 32)
+        channel_rect = QRect(text_rect.left(), text_rect.top(), text_rect.width(), meta_h)
+        self.draw_sleek_elided(
+            painter,
+            channel_rect,
+            f"{item['number']:02d}  {item['name']}",
+            self.sleek_font(theme, 13, profile, QFont.DemiBold, 10, 16),
+            theme["guide_secondary_text"],
+        )
+
+        title_top = channel_rect.bottom() + self.sleek_metric(8, profile, 6, 14)
+        title_font = self.sleek_font(theme, 25 if text_rect.width() < self.sleek_metric(560, profile, 430, 700) else 28, profile, QFont.Bold, 19, 36)
+        title_metrics = QFontMetrics(title_font)
+        title_text = item.get("detail_title", item.get("now_title", ""))
+        wraps_title = title_metrics.horizontalAdvance(str(title_text or "")) > text_rect.width() and text_rect.height() > self.sleek_metric(136, profile, 104, 180)
+        title_h = min(
+            self.sleek_metric(86 if wraps_title else 46, profile, 34, 96),
+            max(self.sleek_metric(34, profile, 28, 44), title_metrics.height() * (2 if wraps_title else 1) + self.sleek_metric(4, profile, 2, 6)),
+        )
+        title_rect = QRect(text_rect.left(), title_top, text_rect.width(), title_h)
+        painter.save()
+        painter.setClipRect(title_rect)
+        painter.setFont(title_font)
+        painter.setPen(theme["guide_primary_text"])
+        if wraps_title:
+            painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, str(title_text or ""))
+        else:
+            painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine, title_metrics.elidedText(str(title_text or ""), Qt.ElideRight, max(12, title_rect.width())))
+        painter.restore()
+        summary_top = title_rect.bottom() + self.sleek_metric(6, profile, 4, 10)
+        progress_h = self.sleek_metric(22, profile, 18, 28)
+        progress_gap = self.sleek_metric(6, profile, 4, 10)
+        summary_h = text_rect.bottom() - summary_top - progress_h - progress_gap - self.sleek_metric(8, profile, 5, 12)
+        compact_summary_h = self.sleek_metric(22, profile, 16, 28)
+        if summary_h >= compact_summary_h:
+            summary_rect = QRect(text_rect.left(), summary_top, text_rect.width(), summary_h)
+            painter.setFont(self.sleek_font(theme, 13, profile, QFont.Normal, 10, 17))
+            painter.setPen(theme["guide_secondary_text"])
+            if summary_h < self.sleek_metric(40, profile, 30, 48):
+                self.draw_sleek_elided(
+                    painter,
+                    QRect(summary_rect.left(), summary_rect.top(), summary_rect.width(), compact_summary_h),
+                    item.get("detail_summary", item.get("summary", "")),
+                    painter.font(),
+                    theme["guide_secondary_text"],
+                )
+            else:
+                painter.setClipRect(summary_rect)
+                painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, item.get("detail_summary", item.get("summary", "")))
+                painter.setClipping(False)
+
+        slot = (item.get("slots") or [{}])[min(item.get("detail_slot_index", 0), max(0, len(item.get("slots", [])) - 1))] if item.get("slots") else {}
+        start_ts = slot.get("start", time.time())
+        end_ts = max(start_ts + 1, slot.get("end", start_ts + 1))
+        progress = max(0.0, min(1.0, (time.time() - start_ts) / max(1.0, end_ts - start_ts)))
+        progress_rect = QRect(text_rect.left(), text_rect.bottom() - progress_h, text_rect.width(), progress_h)
+        meta = item.get("detail_time") or (f"{slot.get('time', '')}" if slot else "")
+        end_label = time.strftime("%I:%M %p", time.localtime(end_ts)).lstrip("0") if slot else ""
+        painter.setFont(self.sleek_font(theme, 12, profile, QFont.DemiBold, 9, 15))
+        painter.setPen(theme["guide_secondary_text"])
+        painter.drawText(progress_rect.adjusted(0, 0, -progress_rect.width() // 2, -self.sleek_metric(10, profile, 7, 12)), Qt.AlignLeft | Qt.AlignVCenter, meta)
+        painter.drawText(progress_rect.adjusted(progress_rect.width() // 2, 0, 0, -self.sleek_metric(10, profile, 7, 12)), Qt.AlignRight | Qt.AlignVCenter, end_label)
+        track = QRect(progress_rect.left(), progress_rect.bottom() - self.sleek_metric(7, profile, 5, 9), progress_rect.width(), self.sleek_metric(4, profile, 3, 5))
+        painter.setPen(QPen(theme["guide_progress_track"], 1))
+        painter.setBrush(theme["guide_progress_track"])
+        painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
+        fill = QRect(track.left(), track.top(), int(track.width() * progress), track.height())
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(theme["guide_progress_fill"])
+        painter.drawRoundedRect(fill, track.height() // 2, track.height() // 2)
+
+        painter.setClipping(False)
+        painter.setPen(QPen(theme["guide_glow"], self.sleek_metric(5, profile, 3, 7)))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(preview_rect.adjusted(3, 3, -3, -3), theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+        painter.setPen(QPen(theme["guide_preview_frame_border"], 1))
+        painter.setBrush(theme["guide_preview_frame_bg"])
+        painter.drawRoundedRect(preview_rect, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+        preview_inner = preview_rect.adjusted(6, 6, -6, -6)
+        painter.fillRect(preview_inner, QColor(0, 0, 0, 230))
+        if not self.preview_frame.isNull():
+            keep_mode = Qt.KeepAspectRatio if self.preview_mode in ("radiowave", "weatherstar") else Qt.KeepAspectRatioByExpanding
+            scaled = self.preview_frame.scaled(preview_inner.size(), keep_mode, Qt.SmoothTransformation)
+            draw_rect = QRect(
+                preview_inner.left() + max(0, (preview_inner.width() - scaled.width()) // 2),
+                preview_inner.top() + max(0, (preview_inner.height() - scaled.height()) // 2),
+                scaled.width(),
+                scaled.height(),
+            )
+            painter.drawPixmap(draw_rect, scaled)
+        else:
+            painter.setFont(self.sleek_font(theme, 12, profile, QFont.Bold, 9, 16))
+            painter.setPen(theme["guide_muted_text"])
+            painter.drawText(preview_inner, Qt.AlignCenter, "LIVE PREVIEW")
+        live_badge = QRect(preview_rect.right() - self.sleek_metric(74, profile, 58, 88), preview_rect.top() + self.sleek_metric(10, profile, 8, 14), self.sleek_metric(60, profile, 48, 74), self.sleek_metric(28, profile, 22, 32))
+        self.draw_sleek_chip(painter, live_badge, "LIVE", theme, active=True)
+        painter.restore()
+
+    def draw_sleek_schedule_header(self, painter, rect, timeline_rect, slot_count, theme, profile):
+        painter.save()
+        label_rect = QRect(rect.left(), rect.top(), timeline_rect.left() - rect.left() - self.sleek_metric(12, profile, 8, 18), rect.height())
+        label_font = self.sleek_font(theme, 10, profile, QFont.Bold, 8, 13)
+        current_time = time.strftime("%I:%M %p", time.localtime()).lstrip("0")
+        painter.setFont(label_font)
+        painter.setPen(theme["guide_muted_text"])
+        painter.setClipRect(label_rect)
+        label = f"LOCAL TIME • {current_time}"
+        elided = QFontMetrics(label_font).elidedText(label, Qt.ElideRight, max(12, label_rect.width()))
+        painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, elided)
+        painter.setClipping(False)
+        slot_seconds = 30 * 60
+        slot_w = timeline_rect.width() / max(1, slot_count)
+        for i in range(slot_count):
+            slot_start = self.timeline_start + (i * slot_seconds)
+            slot_rect = QRect(int(timeline_rect.left() + i * slot_w), timeline_rect.top(), max(1, int(slot_w) - self.sleek_metric(8, profile, 6, 12)), timeline_rect.height())
+            active = i == 0
+            painter.setPen(QPen(theme["guide_card_selected_border"] if active else theme["guide_card_border"], 1))
+            painter.setBrush(theme["guide_time_bg"] if not active else with_alpha(theme["selected_background"], 72))
+            painter.drawRoundedRect(slot_rect, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+            label = time.strftime("%I:%M %p", time.localtime(slot_start)).lstrip("0")
+            painter.setFont(self.sleek_font(theme, 12, profile, QFont.DemiBold, 9, 16))
+            painter.setPen(theme["guide_time_text"])
+            painter.drawText(slot_rect, Qt.AlignCenter, label)
+            if active:
+                now_rect = QRect(slot_rect.center().x() + self.sleek_metric(38, profile, 28, 46), slot_rect.center().y() - self.sleek_metric(9, profile, 7, 11), self.sleek_metric(34, profile, 26, 42), self.sleek_metric(18, profile, 14, 22))
+                painter.setFont(self.sleek_font(theme, 8, profile, QFont.Bold, 7, 10))
+                painter.setPen(theme["accent"])
+                painter.drawText(now_rect, Qt.AlignCenter, "NOW")
+        painter.restore()
+
+    def draw_sleek_grid(self, painter, grid_rect, timeline_rect, channel_col, slot_count, theme, profile):
+        row_gap = self.sleek_metric(8, profile, 6, 12)
+        base_row_h = self.sleek_metric(66, profile, 54, 82)
+        visible_rows = max(2, min(7, (grid_rect.height() + row_gap) // max(1, base_row_h + row_gap)))
+        start = max(0, self.selected_index - visible_rows // 2)
+        end = min(len(self.channels), start + visible_rows)
+        start = max(0, end - visible_rows)
+        if end <= start:
+            return
+        row_h = min(base_row_h, max(self.sleek_metric(54, profile, 44, 70), (grid_rect.height() - row_gap * (end - start - 1)) // max(1, end - start)))
+        timeline_start = self.timeline_start
+        timeline_end = timeline_start + slot_count * 30 * 60
+        active_focus_index = self.selected_index if not self.nav_focus and not self.settings_open else -1
+        previous_focus_index, transition_progress = sleek_focus_transition(self, "guide_grid_focus", active_focus_index)
+
+        def row_focus_amount(index):
+            if index == active_focus_index:
+                return 1.0 if previous_focus_index == active_focus_index else transition_progress
+            if index == previous_focus_index:
+                return 1.0 - transition_progress
+            return 0.0
+
+        painter.save()
+        painter.setClipRect(grid_rect)
+        for row, idx in enumerate(range(start, end)):
+            item = self.channels[idx]
+            y = grid_rect.top() + row * (row_h + row_gap)
+            row_rect = QRect(grid_rect.left(), y, grid_rect.width(), row_h)
+            selected_row = idx == self.selected_index
+            focus_amount = row_focus_amount(idx)
+            channel_rect = QRect(row_rect.left(), row_rect.top(), channel_col, row_rect.height())
+            self.draw_sleek_channel_card(painter, channel_rect, item, focus_amount > 0.01, theme, profile, focus_amount=focus_amount)
+            row_timeline = QRect(timeline_rect.left(), row_rect.top(), timeline_rect.width(), row_rect.height())
+            self.draw_time_grid_row(painter, row_timeline, slot_count, theme)
+            for slot_index, slot in enumerate(item.get("slots", [])):
+                start_ts = slot.get("start", timeline_start)
+                end_ts = slot.get("end", start_ts + 30 * 60)
+                if end_ts <= timeline_start or start_ts >= timeline_end:
+                    continue
+                clamped_start = max(start_ts, timeline_start)
+                clamped_end = min(end_ts, timeline_end)
+                rel_start = (clamped_start - timeline_start) / max(1, timeline_end - timeline_start)
+                rel_end = (clamped_end - timeline_start) / max(1, timeline_end - timeline_start)
+                slot_left = row_timeline.left() + int(rel_start * row_timeline.width())
+                slot_right = row_timeline.left() + int(rel_end * row_timeline.width())
+                slot_rect = QRect(slot_left, row_rect.top(), max(12, slot_right - slot_left), row_rect.height())
+                card_rect = slot_rect.adjusted(self.sleek_metric(2, profile, 1, 4), 0, -self.sleek_metric(8, profile, 5, 12), 0)
+                focused = focus_amount > 0.01 and slot_index == item.get("detail_slot_index", 0)
+                self.draw_sleek_program_card(painter, card_rect, slot, focused, theme, profile, focus_amount=focus_amount if focused else 0.0)
+        painter.restore()
+
+    def draw_sleek_channel_card(self, painter, rect, item, focused, theme, profile, focus_amount=1.0):
+        painter.save()
+        focus_amount = max(0.0, min(1.0, float(focus_amount if focused else 0.0)))
+        painter.setPen(QPen(blend_color(theme["guide_card_border"], theme["guide_card_selected_border"], focus_amount), 2 if focus_amount > 0.55 else 1))
+        painter.setBrush(blend_color(theme["guide_channel_bg"], theme["guide_card_selected_bg"], focus_amount))
+        painter.drawRoundedRect(rect, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+        pad = self.sleek_metric(18, profile, 12, 24)
+        number_w = self.sleek_metric(62, profile, 48, 78)
+        number_rect = QRect(rect.left() + pad, rect.top(), number_w, rect.height())
+        name_rect = QRect(number_rect.right() + self.sleek_metric(14, profile, 10, 20), rect.top() + self.sleek_metric(12, profile, 8, 16), rect.right() - number_rect.right() - pad, rect.height() - self.sleek_metric(24, profile, 16, 30))
+        text_color = blend_color(theme["guide_channel_text"], theme["guide_card_selected_text"], focus_amount)
+        self.draw_sleek_elided(painter, number_rect, f"{item['number']:02d}", self.sleek_font(theme, 23, profile, QFont.Bold, 18, 30), text_color, Qt.AlignLeft | Qt.AlignVCenter)
+        self.draw_sleek_elided(painter, QRect(name_rect.left(), name_rect.top(), name_rect.width(), name_rect.height() // 2 + 4), item["name"], self.sleek_font(theme, 13, profile, QFont.DemiBold, 10, 17), text_color)
+        self.draw_sleek_elided(painter, QRect(name_rect.left(), name_rect.center().y(), name_rect.width(), name_rect.height() // 2), f"CH {item['number']:02d}", self.sleek_font(theme, 9, profile, QFont.DemiBold, 8, 11), blend_color(theme["guide_muted_text"], theme["guide_card_selected_text"], focus_amount))
+        painter.restore()
+
+    def draw_sleek_program_card(self, painter, rect, slot, focused, theme, profile, focus_amount=1.0):
+        painter.save()
+        painter.setClipRect(rect.adjusted(-1, -1, 1, 1))
+        focus_amount = max(0.0, min(1.0, float(focus_amount if focused else 0.0)))
+        painter.setPen(QPen(blend_color(theme["guide_card_border"], theme["guide_card_selected_border"], focus_amount), 2 if focus_amount > 0.55 else 1))
+        painter.setBrush(blend_color(theme["guide_card_bg"], theme["guide_card_selected_bg"], focus_amount))
+        painter.drawRoundedRect(rect, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+        if focus_amount > 0.01:
+            painter.setOpacity(focus_amount)
+            painter.setPen(QPen(theme["guide_glow"], 5))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(4, 4, -4, -4), theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+            self.draw_sleek_signal_motif(painter, rect.adjusted(10, 6, -10, -6), theme, profile)
+            painter.setOpacity(1.0)
+
+        pad = self.sleek_metric(16, profile, 10, 22)
+        text_color = blend_color(theme["guide_primary_text"], theme["guide_card_selected_text"], focus_amount)
+        muted = blend_color(theme["guide_secondary_text"], theme["guide_card_selected_text"], focus_amount)
+        is_live = slot.get("start", 0) <= time.time() < slot.get("end", 0)
+        badge = "LIVE" if is_live else ""
+        badge_rect = QRect()
+        badge_min_width = self.sleek_metric(154 if is_live else 220, profile, 124, 260)
+        if badge and rect.width() >= badge_min_width:
+            badge_rect = QRect(rect.right() - self.sleek_metric(78, profile, 60, 92), rect.top() + self.sleek_metric(16, profile, 10, 20), self.sleek_metric(62, profile, 50, 76), self.sleek_metric(24, profile, 18, 28))
+        title_right = badge_rect.left() - self.sleek_metric(8, profile, 5, 12) if not badge_rect.isNull() else rect.right() - pad
+        title_rect = QRect(rect.left() + pad, rect.top() + self.sleek_metric(14, profile, 9, 18), max(20, title_right - rect.left() - pad), self.sleek_metric(24, profile, 18, 30))
+        time_rect = QRect(title_rect.left(), title_rect.bottom() + self.sleek_metric(4, profile, 2, 8), title_rect.width(), self.sleek_metric(20, profile, 15, 24))
+        self.draw_sleek_elided(painter, title_rect, slot.get("title", ""), self.sleek_font(theme, 14, profile, QFont.DemiBold, 10, 18), text_color)
+        end_time = time.strftime("%I:%M %p", time.localtime(slot.get("end", time.time()))).lstrip("0")
+        start_time = time.strftime("%I:%M %p", time.localtime(slot.get("start", time.time()))).lstrip("0")
+        self.draw_sleek_elided(painter, time_rect, f"{start_time} - {end_time}", self.sleek_font(theme, 10, profile, QFont.DemiBold, 8, 13), muted)
+        if not badge_rect.isNull():
+            self.draw_sleek_chip(painter, badge_rect, badge, theme, active=focus_amount > 0.5 and is_live)
+        painter.restore()
+
+    def draw_sleek_footer_controls(self, painter, rect, theme, profile):
+        previous_index, transition_progress = self.sleek_nav_transition_state()
+        rects = draw_sleek_bottom_nav_bar(
+            painter,
+            rect,
+            theme,
+            self.sleek_mode,
+            self.nav_focus,
+            self.nav_index,
+            1,
+            self.sleek_scale_factor(profile),
+            previous_index=previous_index,
+            transition_progress=transition_progress,
+        )
+        self.footer_button_rects = rects
+        self.back_rect, self.guide_rect, self.vault_rect, self.menu_rect = rects[:4]
+
+    def pf_metric(self, value, profile, minimum=1, maximum=None):
+        scale = max(0.82, min(1.34, float(profile.get("scale", 1.0)) * self.ui_scale))
+        return scaled_metric(value, scale, minimum, maximum)
+
+    def pf_font(self, size, profile, weight=QFont.Normal, minimum=8, maximum=40):
+        return QFont("Trebuchet MS", self.pf_metric(size, profile, minimum, maximum), weight)
+
+    def pf_glossy_rect(self, painter, rect, top_color, bottom_color, border_color, radius=4, highlight=True):
+        painter.save()
+        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        grad.setColorAt(0.0, top_color)
+        grad.setColorAt(0.48, QColor(
+            max(0, int((top_color.red() + bottom_color.red()) / 2)),
+            max(0, int((top_color.green() + bottom_color.green()) / 2)),
+            max(0, int((top_color.blue() + bottom_color.blue()) / 2)),
+            max(top_color.alpha(), bottom_color.alpha()),
+        ))
+        grad.setColorAt(1.0, bottom_color)
+        painter.setPen(QPen(border_color, 1))
+        painter.setBrush(grad)
+        painter.drawRoundedRect(rect, radius, radius)
+        if highlight and rect.height() > 8:
+            painter.setPen(QPen(QColor(255, 255, 255, 86), 1))
+            painter.drawLine(rect.left() + radius, rect.top() + 1, rect.right() - radius, rect.top() + 1)
+            painter.setPen(QPen(QColor(0, 0, 0, 54), 1))
+            painter.drawLine(rect.left() + radius, rect.bottom() - 1, rect.right() - radius, rect.bottom() - 1)
+        painter.restore()
+
+    def draw_pf_text(self, painter, rect, text, font, color, flags=Qt.AlignLeft | Qt.AlignVCenter, shadow=False):
+        painter.save()
+        painter.setClipRect(rect)
+        painter.setFont(font)
+        if shadow:
+            painter.setPen(QColor(0, 0, 0, 118))
+            painter.drawText(rect.translated(1, 1), flags, str(text or ""))
+        painter.setPen(color)
+        if flags & Qt.TextWordWrap:
+            painter.drawText(rect, flags, str(text or ""))
+        else:
+            painter.drawText(rect, flags | Qt.TextSingleLine, painter.fontMetrics().elidedText(str(text or ""), Qt.ElideRight, max(12, rect.width())))
+        painter.restore()
+
+    def draw_promised_future_guide_scene(self, painter, panel, profile, theme):
+        border = theme["pf_grid_line"]
+        margin = self.pf_metric(8, profile, 6, 14)
+        inner = panel.adjusted(margin, margin, -margin, -margin)
+        aspect = inner.width() / max(1, inner.height())
+        wide = aspect >= 1.45
+
+        painter.save()
+        outer = QLinearGradient(panel.topLeft(), panel.bottomLeft())
+        outer.setColorAt(0.0, theme["pf_outer_top"])
+        outer.setColorAt(0.16, theme["pf_header_bottom"])
+        outer.setColorAt(1.0, theme["pf_outer_bottom"])
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(outer)
+        painter.drawRoundedRect(panel.adjusted(0, 0, -1, -1), self.pf_metric(8, profile, 5, 14), self.pf_metric(8, profile, 5, 14))
+        painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
+        painter.drawLine(panel.left() + 8, panel.top() + 2, panel.right() - 8, panel.top() + 2)
+
+        header_h = min(self.pf_metric(60, profile, 44, 76), max(self.pf_metric(46, profile, 38, 62), int(inner.height() * (0.074 if wide else 0.068))))
+        footer_h = min(self.pf_metric(58, profile, 42, 72), max(self.pf_metric(44, profile, 36, 58), int(inner.height() * 0.068)))
+        gap = self.pf_metric(5, profile, 3, 8)
+        header_rect = QRect(inner.left(), inner.top(), inner.width(), header_h)
+        footer_rect = QRect(inner.left(), inner.bottom() - footer_h + 1, inner.width(), footer_h)
+        content_left = inner.left() + self.pf_metric(8, profile, 5, 12)
+        content_right = inner.right() - self.pf_metric(8, profile, 5, 12)
+        content_w = max(260, content_right - content_left + 1)
+        hero_top = header_rect.bottom() + gap
+        hero_h = min(
+            max(self.pf_metric(132, profile, 96, 190), int(inner.height() * (0.25 if wide else 0.22))),
+            max(self.pf_metric(96, profile, 78, 150), int((footer_rect.top() - hero_top) * 0.35)),
+        )
+        hero_rect = QRect(content_left, hero_top, content_w, hero_h)
+        time_h = self.pf_metric(34, profile, 26, 44)
+        time_rect = QRect(content_left, hero_rect.bottom() + gap, content_w, time_h)
+        grid_top = time_rect.bottom()
+        grid_bottom = footer_rect.top() - gap
+        grid_rect = QRect(content_left, grid_top, content_w, max(self.pf_metric(120, profile, 90, 180), grid_bottom - grid_top))
+
+        selected = self.channels[self.selected_index]
+        self.draw_pf_header(painter, header_rect, theme, profile)
+        self.draw_pf_current_program(painter, hero_rect, selected, theme, profile)
+
+        slot_count = 4 if content_w >= self.pf_metric(760, profile, 620, 980) else 3
+        channel_col = max(self.pf_metric(140, profile, 104, 210), min(int(content_w * 0.18), self.pf_metric(210, profile, 155, 260)))
+        timeline_rect = QRect(grid_rect.left() + channel_col, time_rect.top(), grid_rect.width() - channel_col, time_rect.height())
+        self.draw_pf_time_row(painter, time_rect, timeline_rect, slot_count, theme, profile)
+        self.draw_pf_grid(painter, grid_rect, channel_col, slot_count, theme, profile)
+        self.draw_pf_footer_controls(painter, footer_rect, theme, profile)
+        painter.restore()
+
+    def draw_pf_header(self, painter, rect, theme, profile):
+        self.pf_glossy_rect(painter, rect, theme["pf_header_top"], theme["pf_header_bottom"], theme["pf_grid_line"], radius=self.pf_metric(3, profile, 2, 6))
+        pad = self.pf_metric(12, profile, 8, 20)
+        logo_rect = QRect(rect.left() + pad, rect.top() + self.pf_metric(5, profile, 3, 8), self.pf_metric(280, profile, 190, 380), rect.height() - self.pf_metric(10, profile, 6, 14))
+        logo = load_brand_logo(logo_rect.width(), logo_rect.height())
+        if not logo.isNull():
+            painter.drawPixmap(logo_rect.left(), logo_rect.top() + max(0, (logo_rect.height() - logo.height()) // 2), logo)
+        else:
+            self.draw_pf_text(painter, logo_rect, APP_NAME, self.pf_font(24, profile, QFont.Bold, 18, 34), theme["pf_header_text"], Qt.AlignLeft | Qt.AlignVCenter, shadow=True)
+
+        section_rect = QRect(logo_rect.right() + self.pf_metric(18, profile, 10, 26), rect.top(), self.pf_metric(120, profile, 84, 160), rect.height())
+        self.draw_pf_text(painter, section_rect, "GUIDE", self.pf_font(14, profile, QFont.Bold, 10, 20), theme["pf_header_text"], Qt.AlignLeft | Qt.AlignVCenter, shadow=True)
+
+        clock_w = self.pf_metric(126, profile, 96, 174)
+        clock_h = min(rect.height() - self.pf_metric(14, profile, 8, 18), self.pf_metric(34, profile, 26, 44))
+        time_rect = QRect(rect.right() - clock_w - self.pf_metric(12, profile, 8, 18), rect.center().y() - clock_h // 2, clock_w, clock_h)
+        date_rect = QRect(time_rect.left() - self.pf_metric(174, profile, 116, 220), rect.top(), self.pf_metric(156, profile, 106, 200), rect.height())
+        self.draw_pf_text(painter, date_rect, time.strftime("%a, %b %d").upper(), self.pf_font(13, profile, QFont.Bold, 10, 18), theme["pf_header_text"], Qt.AlignRight | Qt.AlignVCenter, shadow=True)
+        self.draw_pf_led_clock(painter, time_rect, time.strftime("%I:%M%p").lstrip("0").lower(), theme, profile)
+
+    def draw_pf_led_clock(self, painter, rect, text, theme, profile):
+        painter.save()
+        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        grad.setColorAt(0.0, theme["pf_led_bg_top"])
+        grad.setColorAt(1.0, theme["pf_led_bg_bottom"])
+        painter.setPen(QPen(QColor(0, 0, 0, 170), 1))
+        painter.setBrush(grad)
+        radius = max(5, min(10, rect.height() // 3))
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.setPen(QPen(QColor(255, 255, 255, 34), 1))
+        painter.drawLine(rect.left() + radius, rect.top() + 1, rect.right() - radius, rect.top() + 1)
+
+        font = QFont(clock_font_family(), max(14, min(rect.height() - 7, self.pf_metric(26, profile, 17, 32))), QFont.Bold)
+        painter.setFont(font)
+        draw_rect = rect.adjusted(self.pf_metric(8, profile, 5, 12), 0, -self.pf_metric(8, profile, 5, 12), 0)
+        glow = theme["pf_led_text"]
+        for dx, dy, alpha in ((2, 2, 120), (1, 1, 92), (0, 0, 54)):
+            painter.setPen(QColor(glow.red(), 20, 20, alpha))
+            painter.drawText(draw_rect.translated(dx, dy), Qt.AlignRight | Qt.AlignVCenter, text)
+        painter.setPen(glow)
+        painter.drawText(draw_rect, Qt.AlignRight | Qt.AlignVCenter, text)
+        painter.setPen(QColor(255, 190, 190, 118))
+        painter.drawText(draw_rect.adjusted(0, -1, 0, -1), Qt.AlignRight | Qt.AlignVCenter, text)
+        painter.restore()
+
+    def draw_pf_current_program(self, painter, rect, item, theme, profile):
+        preview_w = max(self.pf_metric(260, profile, 188, 430), int(rect.width() * (0.40 if rect.width() > rect.height() * 3.5 else 0.35)))
+        preview_w = min(preview_w, rect.width() - self.pf_metric(250, profile, 184, 350))
+        preview_rect = QRect(rect.right() - preview_w, rect.top(), preview_w, rect.height())
+        info_rect = QRect(rect.left(), rect.top(), max(self.pf_metric(220, profile, 160, 360), preview_rect.left() - rect.left() - self.pf_metric(6, profile, 4, 10)), rect.height())
+
+        self.pf_glossy_rect(painter, info_rect, theme["pf_info_top"], theme["pf_info_bottom"], theme["pf_grid_line"], radius=self.pf_metric(6, profile, 4, 10))
+        self.draw_pf_preview(painter, preview_rect, theme, profile)
+
+        pad_x = self.pf_metric(18, profile, 12, 30)
+        pad_y = self.pf_metric(13, profile, 8, 22)
+        inner = info_rect.adjusted(pad_x, pad_y, -pad_x, -pad_y)
+        title = item.get("detail_title", item.get("now_title", ""))
+        slot = (item.get("slots") or [{}])[min(item.get("detail_slot_index", 0), max(0, len(item.get("slots", [])) - 1))] if item.get("slots") else {}
+        start_ts = slot.get("start")
+        end_ts = slot.get("end")
+        time_text = item.get("detail_time") or slot.get("time") or ""
+        if start_ts and end_ts:
+            time_text = f"{time.strftime('%I:%M %p', time.localtime(start_ts)).lstrip('0')} - {time.strftime('%I:%M %p', time.localtime(end_ts)).lstrip('0')}"
+        channel_text = f"CH {item['number']:02d}  {item['name']}"
+        title_font = self.pf_font(25 if info_rect.width() > self.pf_metric(460, profile, 340, 680) else 21, profile, QFont.Bold, 15, 34)
+        title_h = min(self.pf_metric(58, profile, 38, 82), max(self.pf_metric(30, profile, 24, 42), QFontMetrics(title_font).height() * 2))
+        channel_rect = QRect(inner.left(), inner.top(), inner.width(), self.pf_metric(20, profile, 15, 26))
+        title_rect = QRect(inner.left(), channel_rect.bottom() + self.pf_metric(6, profile, 4, 10), inner.width(), title_h)
+        meta_rect = QRect(inner.left(), title_rect.bottom() + self.pf_metric(4, profile, 2, 7), inner.width(), self.pf_metric(22, profile, 16, 28))
+        desc_rect = QRect(inner.left(), meta_rect.bottom() + self.pf_metric(7, profile, 4, 10), inner.width(), max(16, inner.bottom() - meta_rect.bottom() - self.pf_metric(6, profile, 4, 10)))
+
+        self.draw_pf_text(painter, channel_rect, channel_text, self.pf_font(11, profile, QFont.Bold, 9, 15), with_alpha(theme["pf_info_text"], 220), Qt.AlignLeft | Qt.AlignVCenter)
+        self.draw_pf_text(painter, title_rect, title, title_font, theme["pf_info_text"], Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap)
+        self.draw_pf_text(painter, meta_rect, time_text, self.pf_font(15, profile, QFont.Bold, 11, 22), theme["pf_info_text"], Qt.AlignLeft | Qt.AlignVCenter)
+        summary_font = self.pf_font(13, profile, QFont.Normal, 10, 19)
+        summary_line_h = QFontMetrics(summary_font).height()
+        if desc_rect.height() >= summary_line_h + 2:
+            summary_flags = Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap
+            if desc_rect.height() < (summary_line_h * 2) + 4:
+                summary_flags = Qt.AlignLeft | Qt.AlignVCenter
+            self.draw_pf_text(painter, desc_rect, item.get("detail_summary", item.get("summary", "")), summary_font, theme["pf_info_text"], summary_flags)
+
+    def draw_pf_preview(self, painter, rect, theme, profile):
+        self.pf_glossy_rect(painter, rect, theme["chrome_top"], theme["chrome_bottom"], theme["pf_grid_line"], radius=self.pf_metric(5, profile, 3, 8))
+        inner = rect.adjusted(self.pf_metric(5, profile, 3, 8), self.pf_metric(5, profile, 3, 8), -self.pf_metric(5, profile, 3, 8), -self.pf_metric(5, profile, 3, 8))
+        painter.fillRect(inner, QColor(0, 0, 0, 235))
+        if not self.preview_frame.isNull():
+            keep_mode = Qt.KeepAspectRatio if self.preview_mode in ("radiowave", "weatherstar") else Qt.KeepAspectRatioByExpanding
+            scaled = self.preview_frame.scaled(inner.size(), keep_mode, Qt.SmoothTransformation)
+            draw_rect = QRect(
+                inner.left() + max(0, (inner.width() - scaled.width()) // 2),
+                inner.top() + max(0, (inner.height() - scaled.height()) // 2),
+                scaled.width(),
+                scaled.height(),
+            )
+            painter.drawPixmap(draw_rect, scaled)
+
+    def draw_pf_time_row(self, painter, rect, timeline_rect, slot_count, theme, profile):
+        today_rect = QRect(rect.left(), rect.top(), timeline_rect.left() - rect.left(), rect.height())
+        self.pf_glossy_rect(painter, today_rect, theme["pf_time_top"], theme["pf_time_bottom"], theme["pf_grid_line"], radius=2)
+        self.draw_pf_text(painter, today_rect, "TODAY", self.pf_font(12, profile, QFont.Bold, 9, 16), theme["pf_time_text"], Qt.AlignCenter, shadow=True)
+        slot_seconds = 30 * 60
+        for i in range(slot_count):
+            slot_start = self.timeline_start + (i * slot_seconds)
+            slot_rect = QRect(timeline_rect.left() + int((i / slot_count) * timeline_rect.width()), rect.top(), int(timeline_rect.width() / slot_count) + 1, rect.height())
+            self.pf_glossy_rect(painter, slot_rect, theme["pf_time_top"], theme["pf_time_bottom"], theme["pf_grid_line"], radius=2)
+            label = time.strftime("%I:%M %p", time.localtime(slot_start)).lstrip("0")
+            self.draw_pf_text(painter, slot_rect, label, self.pf_font(12, profile, QFont.Bold, 9, 16), theme["pf_time_text"], Qt.AlignCenter, shadow=True)
+
+    def draw_pf_grid(self, painter, rect, channel_col, slot_count, theme, profile):
+        if rect.height() <= 12:
+            return
+        row_target = self.pf_metric(42, profile, 30, 50)
+        visible_rows = max(5, min(10, rect.height() // max(1, row_target)))
+        visible_rows = min(visible_rows, len(self.channels))
+        if visible_rows <= 0:
+            return
+        row_h = max(self.pf_metric(30, profile, 24, 38), min(row_target, rect.height() // visible_rows))
+        start = max(0, self.selected_index - visible_rows // 2)
+        end = min(len(self.channels), start + visible_rows)
+        start = max(0, end - visible_rows)
+        timeline_start = self.timeline_start
+        slot_seconds = 30 * 60
+        timeline_end = timeline_start + (slot_count * slot_seconds)
+        timeline_left = rect.left() + channel_col
+        timeline_w = rect.width() - channel_col
+
+        painter.save()
+        painter.setClipRect(rect)
+        for row, idx in enumerate(range(start, end)):
+            item = self.channels[idx]
+            row_rect = QRect(rect.left(), rect.top() + row * row_h, rect.width(), row_h + 1)
+            selected_row = idx == self.selected_index
+            channel_rect = QRect(row_rect.left(), row_rect.top(), channel_col, row_rect.height())
+            channel_active = selected_row and not self.settings_open and not self.nav_focus
+            ch_top = theme["pf_selected_top"] if channel_active else theme["pf_channel_top"]
+            ch_bottom = theme["pf_selected_bottom"] if channel_active else theme["pf_channel_bottom"]
+            self.pf_glossy_rect(painter, channel_rect, ch_top, ch_bottom, theme["pf_grid_line"], radius=1, highlight=False)
+            ch_text = theme["pf_selected_text"] if channel_active else theme["pf_channel_text"]
+            number_rect = QRect(channel_rect.left() + self.pf_metric(10, profile, 6, 16), channel_rect.top(), self.pf_metric(54, profile, 38, 72), channel_rect.height())
+            name_rect = QRect(number_rect.right() + self.pf_metric(8, profile, 5, 12), channel_rect.top(), channel_rect.right() - number_rect.right() - self.pf_metric(14, profile, 8, 18), channel_rect.height())
+            self.draw_pf_text(painter, number_rect, f"{item['number']:02d}", self.pf_font(17, profile, QFont.Bold, 13, 23), ch_text, Qt.AlignLeft | Qt.AlignVCenter, shadow=not channel_active and color_luminance(ch_text) > 0.5)
+            self.draw_pf_text(painter, name_rect, item["name"], self.pf_font(11, profile, QFont.Bold, 9, 15), ch_text, Qt.AlignLeft | Qt.AlignVCenter, shadow=not channel_active and color_luminance(ch_text) > 0.5)
+
+            row_timeline = QRect(timeline_left, row_rect.top(), timeline_w, row_rect.height())
+            for slot_index, slot in enumerate(item.get("slots", [])):
+                start_ts = slot.get("start", timeline_start)
+                end_ts = slot.get("end", start_ts + slot_seconds)
+                if end_ts <= timeline_start or start_ts >= timeline_end:
+                    continue
+                clamped_start = max(start_ts, timeline_start)
+                clamped_end = min(end_ts, timeline_end)
+                rel_start = (clamped_start - timeline_start) / max(1, timeline_end - timeline_start)
+                rel_end = (clamped_end - timeline_start) / max(1, timeline_end - timeline_start)
+                slot_left = row_timeline.left() + int(rel_start * row_timeline.width())
+                slot_right = row_timeline.left() + int(rel_end * row_timeline.width())
+                slot_rect = QRect(slot_left, row_rect.top(), max(8, slot_right - slot_left + 1), row_rect.height())
+                focused = selected_row and not self.nav_focus and not self.settings_open and item.get("detail_slot_index", 0) == slot_index
+                if focused:
+                    top = theme["pf_selected_top"]
+                    bottom = theme["pf_selected_bottom"]
+                    text_color = theme["pf_selected_text"]
+                else:
+                    top = theme["pf_program_top"] if row % 2 == 0 else theme["pf_program_alt_top"]
+                    bottom = theme["pf_program_bottom"] if row % 2 == 0 else theme["pf_program_alt_bottom"]
+                    text_color = theme["pf_program_text"]
+                self.pf_glossy_rect(painter, slot_rect, top, bottom, theme["pf_grid_line"], radius=1, highlight=False)
+                text_rect = slot_rect.adjusted(self.pf_metric(11, profile, 7, 15), 0, -self.pf_metric(9, profile, 6, 13), 0)
+                font = self.pf_font(12 if focused else 11, profile, QFont.Bold if focused else QFont.Normal, 9, 16)
+                self.draw_pf_text(painter, text_rect, slot.get("title", ""), font, text_color, Qt.AlignLeft | Qt.AlignVCenter, shadow=color_luminance(text_color) > 0.5 and not focused)
+        painter.restore()
+
+    def draw_pf_footer_controls(self, painter, rect, theme, profile):
+        self.pf_glossy_rect(painter, rect, theme["chrome_top"], theme["chrome_bottom"], theme["pf_grid_line"], radius=self.pf_metric(5, profile, 3, 9))
+        labels = ["BACK", "MENU", "GUIDE", "VAULT"]
+        gap = self.pf_metric(10, profile, 7, 15)
+        button_h = min(rect.height() - self.pf_metric(16, profile, 10, 20), self.pf_metric(36, profile, 28, 46))
+        button_w = min(self.pf_metric(142, profile, 104, 190), max(self.pf_metric(96, profile, 76, 130), int(rect.width() * 0.145)))
+        start_x = rect.left() + self.pf_metric(54, profile, 28, 92)
+        y = rect.center().y() - button_h // 2
+        rects = []
+        for idx, label in enumerate(labels):
+            button = QRect(start_x + idx * (button_w + gap), y, button_w, button_h)
+            rects.append(button)
+            active = self.nav_focus and self.nav_index == idx
+            top = theme["pf_button_selected_top"] if active else theme["pf_button_top"]
+            bottom = theme["pf_button_selected_bottom"] if active else theme["pf_button_bottom"]
+            text_color = theme["pf_button_selected_text"] if active else theme["pf_button_text"]
+            self.pf_glossy_rect(painter, button, top, bottom, theme["pf_grid_line"], radius=self.pf_metric(4, profile, 2, 7))
+            if active:
+                painter.save()
+                painter.setPen(QPen(theme["selected_background"].lighter(114), 2))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRoundedRect(button.adjusted(2, 2, -2, -2), self.pf_metric(4, profile, 2, 7), self.pf_metric(4, profile, 2, 7))
+                painter.restore()
+            self.draw_pf_text(painter, button, label, self.pf_font(13, profile, QFont.Bold, 10, 18), text_color, Qt.AlignCenter, shadow=color_luminance(text_color) > 0.5)
+        self.back_rect, self.menu_rect, self.guide_rect, self.vault_rect = rects
+        self.footer_button_rects = rects
+
     def draw_guide_scene(self, painter, panel, profile, theme):
+        if theme.get("sleek"):
+            self.draw_sleek_guide_scene(painter, panel, profile, theme)
+            return
+        if theme.get("promised_future"):
+            self.draw_promised_future_guide_scene(painter, panel, profile, theme)
+            return
+
         cable_skin = self.skin_style() == "cable"
         metrics = self.guide_metrics()
         cable = CLASSIC_CABLE_TUNING
         self.draw_xp_panel(painter, panel, theme, radius=2 if cable_skin else 16, inset=3)
+        if cable_skin and theme.get("starfield"):
+            draw_classic_cable_starfield(painter, panel.adjusted(5, 5, -5, -5), self.theme_name, seed_offset=71)
 
         scale = metrics["profile_scale"]
         guide_family = guide_font_family("primary") if cable_skin else theme.get("font_primary", "Trebuchet MS")
@@ -4455,15 +6294,19 @@ class GuideOverlay(QWidget):
         self.draw_info_panel(painter, info_rect, selected, title_font, body_font, small_font, theme)
         self.draw_preview_panel(painter, preview_rect, selected, title_font, theme)
 
-        header_y = top_y + preview_h + scaled_metric(6 if cable_skin else 14, self.ui_scale, 4)
+        header_y = top_y + preview_h + scaled_metric(4 if cable_skin else 14, self.ui_scale, 3)
         header_rect = QRect(panel.left() + metrics["panel_margin"], header_y, panel.width() - (metrics["panel_margin"] * 2), metrics["header_height"])
         footer_rect = QRect(panel.left() + metrics["panel_margin"], panel.bottom() - metrics["footer_y_offset"], panel.width() - (metrics["panel_margin"] * 2), metrics["footer_height"])
 
-        list_top = header_y + scaled_metric(28 if cable_skin else 42, self.ui_scale, 22)
-        row_h = max(metrics["row_height"], int((panel.height() // (14 if cable_skin else 13)) * profile["row_density"] * self.ui_scale))
+        list_top = header_rect.bottom() + scaled_metric(4 if cable_skin else 14, self.ui_scale, 3)
+        row_h = max(metrics["row_height"], int((panel.height() // (17 if cable_skin else 13)) * profile["row_density"] * self.ui_scale))
         rows_bottom = footer_rect.top() - scaled_metric(18 if cable_skin else 8, self.ui_scale, 8)
         available_rows_height = max(row_h, rows_bottom - list_top)
-        visible_rows = max(4 if cable_skin else 4, min(10 if cable_skin else 9, available_rows_height // row_h))
+        if cable_skin and len(self.channels) >= 5 and available_rows_height > 0:
+            target_row_h = max(1, available_rows_height // 5)
+            row_h = max(row_h, min(target_row_h, scaled_metric(74, self.ui_scale, 58)))
+            available_rows_height = max(row_h, rows_bottom - list_top)
+        visible_rows = max(5 if cable_skin and len(self.channels) >= 5 else 4, min(10 if cable_skin else 9, available_rows_height // row_h))
         start = max(0, self.selected_index - visible_rows // 2)
         end = min(len(self.channels), start + visible_rows)
         start = max(0, end - visible_rows)
@@ -4471,12 +6314,21 @@ class GuideOverlay(QWidget):
         table_rect = panel.adjusted(metrics["panel_margin"], 0, -metrics["panel_margin"], -scaled_metric(34 if cable_skin else 20, self.ui_scale, 18))
         channel_col = metrics["channel_col"]
         gap = metrics["grid_gap"]
-        timeline_rect = QRect(
-            table_rect.left() + channel_col + gap + scaled_metric(10, self.ui_scale, 6),
-            header_rect.top(),
-            table_rect.width() - channel_col - gap - scaled_metric(22, self.ui_scale, 14),
-            header_rect.height(),
-        )
+        if cable_skin:
+            timeline_left = table_rect.left() + channel_col
+            timeline_rect = QRect(
+                timeline_left,
+                header_rect.top(),
+                max(1, table_rect.right() - timeline_left + 1),
+                header_rect.height(),
+            )
+        else:
+            timeline_rect = QRect(
+                table_rect.left() + channel_col + gap + scaled_metric(10, self.ui_scale, 6),
+                header_rect.top(),
+                table_rect.width() - channel_col - gap - scaled_metric(22, self.ui_scale, 14),
+                header_rect.height(),
+            )
         timeline_start = self.timeline_start
         slot_seconds = 30 * 60
         slot_count = 4
@@ -4588,9 +6440,15 @@ class GuideOverlay(QWidget):
                         painter.setFont(body_font)
                         painter.setClipRect(text_rect)
                         wrapped = self.wrap_cable_lines(painter, slot["title"], text_rect.width(), 2)
-                        line_height = max(scaled_metric(8, self.ui_scale, 7), painter.fontMetrics().height() - 1)
-                        base_y = text_rect.top() + 1
-                        color = theme["guide_selected_text"] if (is_selected and slot_index == item.get("detail_slot_index", 0)) else theme["guide_program_cell_text"]
+                        line_height = max(scaled_metric(12, self.ui_scale, 10), painter.fontMetrics().height())
+                        total_text_h = min(text_rect.height(), line_height * len(wrapped))
+                        base_y = text_rect.top() + max(0, (text_rect.height() - total_text_h) // 2)
+                        if is_selected and slot_index == item.get("detail_slot_index", 0):
+                            color = theme["guide_selected_text"]
+                        elif slot_index >= 1:
+                            color = theme.get("guide_program_upcoming_text", theme["guide_program_cell_text"])
+                        else:
+                            color = theme["guide_program_cell_text"]
                         for line_index, line in enumerate(wrapped):
                             line_rect = QRect(text_rect.left(), base_y + line_index * line_height, text_rect.width(), line_height)
                             self.draw_cable_text(painter, line_rect, line, color, body_font, Qt.AlignLeft | Qt.AlignTop)
@@ -4608,9 +6466,7 @@ class GuideOverlay(QWidget):
     def draw_top_header(self, painter, panel, header_font, small_font, theme, metrics):
         if self.skin_style() == "cable":
             brand_rect = QRect(panel.left() + scaled_metric(12, self.ui_scale, 8), panel.top() + scaled_metric(8, self.ui_scale, 6), panel.width() - scaled_metric(24, self.ui_scale, 16), scaled_metric(22, self.ui_scale, 18))
-            painter.setPen(QPen(theme["guide_detail_panel_border"], metrics["cell_border"]))
-            painter.setBrush(with_alpha(theme["guide_header_bg"], 244))
-            painter.drawRect(brand_rect)
+            draw_classic_cable_bar(painter, brand_rect, theme, border_width=metrics["cell_border"], border_alpha=180)
 
             label_rect = QRect(brand_rect.left() + scaled_metric(8, self.ui_scale, 6), brand_rect.top(), scaled_metric(136, self.ui_scale, 104), brand_rect.height())
             label_font = QFont(guide_font_family("primary"), max(metrics["font_header"] - 1, small_font.pointSize() + 1), QFont.Bold)
@@ -4782,16 +6638,19 @@ class GuideOverlay(QWidget):
                 painter.drawText(rect, Qt.AlignCenter, label)
             rects.append(rect)
         self.back_rect, self.menu_rect, self.guide_rect, self.vault_rect = rects
+        self.footer_button_rects = rects
         return {"left": start_x, "rects": rects}
 
     def draw_schedule_header(self, painter, rect, timeline_rect, timeline_start, slot_count, slot_seconds, small_font, theme):
         if self.skin_style() == "cable":
             metrics = self.guide_metrics()
             header_font = QFont(guide_font_family("primary"), max(metrics["font_time"], small_font.pointSize()), QFont.Bold)
-            today_rect = QRect(rect.left() + scaled_metric(2, self.ui_scale, 1), rect.top(), scaled_metric(74, self.ui_scale, 58), rect.height())
-            painter.setPen(QPen(theme["guide_grid_line"], metrics["cell_border"]))
-            painter.setBrush(with_alpha(theme["guide_time_row_bg"], 236))
-            painter.drawRect(today_rect)
+            clock_w = max(
+                scaled_metric(84, self.ui_scale, 66),
+                timeline_rect.left() - rect.left(),
+            )
+            today_rect = QRect(rect.left(), rect.top(), clock_w, rect.height())
+            draw_classic_cable_slot_box(painter, today_rect, theme, active=False, border_width=metrics["cell_border"], border_alpha=170)
             self.draw_cable_text(
                 painter,
                 today_rect,
@@ -4811,9 +6670,7 @@ class GuideOverlay(QWidget):
                     int(slot_width),
                     rect.height(),
                 )
-                painter.setPen(QPen(theme["guide_grid_line"], metrics["cell_border"]))
-                painter.setBrush(with_alpha(theme["guide_header_bg"], 228))
-                painter.drawRect(slot_rect)
+                draw_classic_cable_slot_box(painter, slot_rect, theme, active=False, border_width=metrics["cell_border"], border_alpha=170)
                 self.draw_cable_text(painter, slot_rect, label, theme["guide_header_text"], header_font, Qt.AlignCenter)
             return
         if theme.get("sleek"):
@@ -4892,9 +6749,16 @@ class GuideOverlay(QWidget):
     def draw_channel_cell(self, painter, rect, is_selected, theme):
         if self.skin_style() == "cable":
             metrics = self.guide_metrics()
-            painter.setPen(QPen(theme["guide_grid_line"], metrics["cell_border"]))
-            painter.setBrush(with_alpha(theme["guide_selected_bg"] if is_selected else theme["guide_channel_cell_bg"], 236))
-            painter.drawRect(rect)
+            draw_classic_cable_beveled_rect(
+                painter,
+                rect,
+                with_alpha(theme["guide_selected_bg"] if is_selected else theme["guide_channel_cell_bg"], 238),
+                theme["guide_selected_border"] if is_selected else theme["guide_grid_line"],
+                theme.get("stb_bevel_light", QColor(255, 255, 255, 150)),
+                theme.get("stb_bevel_dark", QColor(0, 0, 0, 170)),
+                width=max(metrics["cell_border"], 2 if is_selected else 1),
+                raised=not is_selected,
+            )
             return
         if theme.get("sleek"):
             painter.save()
@@ -4922,13 +6786,25 @@ class GuideOverlay(QWidget):
     def draw_program_cell(self, painter, rect, is_selected, theme, primary, emphasis=0, focused=False):
         if self.skin_style() == "cable":
             metrics = self.guide_metrics()
-            fill = theme["guide_selected_bg"] if focused else (theme["guide_program_cell_bg"] if primary else theme["guide_program_cell_alt_bg"])
-            painter.save()
-            painter.setPen(QPen(theme["guide_grid_line"], metrics["cell_border"]))
-            painter.setBrush(with_alpha(fill, 240 if focused else 232))
-            painter.drawRect(rect)
             if focused:
-                painter.setPen(QPen(theme["guide_selected_border"], metrics["selected_border"]))
+                fill = theme["guide_selected_bg"]
+            elif emphasis >= 1:
+                fill = theme.get("guide_program_upcoming_bg", theme["guide_program_cell_alt_bg"])
+            else:
+                fill = theme["guide_program_cell_bg"] if primary else theme["guide_program_cell_alt_bg"]
+            painter.save()
+            draw_classic_cable_beveled_rect(
+                painter,
+                rect,
+                with_alpha(fill, 244 if focused else 236),
+                theme["guide_selected_border"] if focused else theme["guide_grid_line"],
+                theme.get("stb_bevel_light", QColor(255, 255, 255, 150)),
+                theme.get("stb_bevel_dark", QColor(0, 0, 0, 170)),
+                width=max(metrics["selected_border"] if focused else metrics["cell_border"], 2 if focused else 1),
+                raised=not focused,
+            )
+            if focused:
+                painter.setPen(QPen(theme["guide_selected_border"], max(2, metrics["selected_border"])))
                 painter.setBrush(Qt.NoBrush)
                 painter.drawRect(rect.adjusted(1, 1, -1, -1))
                 wedge = QPolygon(
@@ -5038,30 +6914,40 @@ class GuideOverlay(QWidget):
     def draw_info_panel(self, painter, rect, item, title_font, body_font, small_font, theme):
         if self.skin_style() == "cable":
             metrics = self.guide_metrics()
-            self.draw_xp_panel(painter, rect, theme, radius=1, inset=1)
-            pad_x = scaled_metric(16, self.ui_scale, 10)
+            draw_classic_cable_panel(painter, rect, theme, self.theme_name, inset=3, border_width=max(2, metrics["cell_border"]), border_alpha=180)
+            pad_x = scaled_metric(18, self.ui_scale, 12)
             pad_y = scaled_metric(14, self.ui_scale, 10)
             inner = rect.adjusted(pad_x, pad_y, -pad_x, -pad_y)
-            logo_h = scaled_metric(42, self.ui_scale, 28)
-            top_band_y = inner.top() + scaled_metric(6, self.ui_scale, 4)
-            logo_rect = QRect(inner.left(), top_band_y, int(inner.width() * 0.32), logo_h)
-            date_rect = QRect(inner.right() - int(inner.width() * 0.30), top_band_y, int(inner.width() * 0.30), scaled_metric(20, self.ui_scale, 15))
-            channel_rect = QRect(inner.left(), logo_rect.bottom() + scaled_metric(18, self.ui_scale, 12), inner.width(), scaled_metric(18, self.ui_scale, 14))
-            title_font = QFont(guide_font_family("primary"), max(metrics["font_info_title"], title_font.pointSize()), QFont.Bold)
-            title_line_height = max(scaled_metric(16, self.ui_scale, 12), QFontMetrics(title_font).height() + scaled_metric(2, self.ui_scale, 1))
-            title_bottom_gutter = scaled_metric(18, self.ui_scale, 14)
-            title_y = min(
-                channel_rect.bottom() + scaled_metric(12, self.ui_scale, 8),
-                inner.bottom() - title_bottom_gutter - title_line_height,
+            program_box_h = max(scaled_metric(74, self.ui_scale, 58), int(inner.height() * 0.48))
+            program_box_w = min(int(inner.width() * 0.68), inner.width() - scaled_metric(8, self.ui_scale, 6))
+            program_box = QRect(inner.left(), inner.bottom() - program_box_h, program_box_w, program_box_h)
+            hero_top = QRect(inner.left(), inner.top(), inner.width(), max(10, program_box.top() - inner.top() - scaled_metric(10, self.ui_scale, 7)))
+            logo_rect = QRect(
+                hero_top.left(),
+                hero_top.top() + scaled_metric(4, self.ui_scale, 3),
+                min(int(inner.width() * 0.40), scaled_metric(330, self.ui_scale, 220)),
+                max(scaled_metric(58, self.ui_scale, 42), int(hero_top.height() * 0.42)),
             )
-            title_rect = QRect(
-                inner.left(),
-                title_y,
-                inner.width(),
-                title_line_height,
+            date_rect = QRect(
+                inner.right() - int(inner.width() * 0.28),
+                hero_top.top() + scaled_metric(16, self.ui_scale, 10),
+                int(inner.width() * 0.28),
+                scaled_metric(28, self.ui_scale, 20),
+            )
+            channel_rect = QRect(
+                hero_top.left(),
+                min(logo_rect.bottom() + scaled_metric(16, self.ui_scale, 11), hero_top.bottom() - scaled_metric(38, self.ui_scale, 28)),
+                max(program_box_w, int(inner.width() * 0.52)),
+                scaled_metric(18, self.ui_scale, 14),
+            )
+            context_rect = QRect(
+                hero_top.left(),
+                channel_rect.bottom() + scaled_metric(6, self.ui_scale, 4),
+                max(program_box_w, int(inner.width() * 0.52)),
+                scaled_metric(20, self.ui_scale, 15),
             )
 
-            logo = load_brand_logo(logo_rect.width(), logo_rect.height(), CLASSIC_APP_LOGO_PATH)
+            logo = load_brand_logo(logo_rect.width(), logo_rect.height(), APP_LOGO_PATH)
             if not logo.isNull():
                 painter.drawPixmap(logo_rect.left(), logo_rect.top(), logo)
 
@@ -5070,12 +6956,12 @@ class GuideOverlay(QWidget):
                 date_rect,
                 format_long_date(),
                 theme["accent"],
-                QFont(guide_font_family("secondary"), max(metrics["font_info_meta"], small_font.pointSize()), QFont.DemiBold),
+                QFont(guide_font_family("secondary"), max(metrics["font_info_meta"] + 3, small_font.pointSize() + 2), QFont.Bold),
                 Qt.AlignRight | Qt.AlignTop,
             )
             painter.save()
             painter.setPen(QPen(with_alpha(theme["accent"], 210), 1))
-            underline_y = date_rect.top() + scaled_metric(18, self.ui_scale, 14)
+            underline_y = date_rect.top() + scaled_metric(23, self.ui_scale, 17)
             underline_left = date_rect.right() - int(date_rect.width() * 0.66)
             painter.drawLine(underline_left, underline_y, date_rect.right(), underline_y)
             painter.restore()
@@ -5085,16 +6971,17 @@ class GuideOverlay(QWidget):
                 f"CHANNEL {item['number']:02d}  {item['name'].upper()}",
                 theme["info_overlay_text"],
                 QFont(guide_font_family("primary"), max(metrics["font_info_meta"] + 1, small_font.pointSize()), QFont.Bold),
-                Qt.AlignLeft | Qt.AlignTop,
+                Qt.AlignLeft | Qt.AlignVCenter,
             )
-            self.draw_marquee_text_rect(
+            self.draw_cable_text(
                 painter,
-                title_rect,
-                item.get("detail_title", item["now_title"]).upper(),
-                title_font,
+                context_rect,
+                item.get("name", "").upper(),
                 theme["accent"],
-                speed=36.0,
+                QFont(guide_font_family("primary"), max(metrics["font_info_meta"] + 1, small_font.pointSize() + 1), QFont.Bold),
+                Qt.AlignLeft | Qt.AlignVCenter,
             )
+            self.draw_cable_program_info_box(painter, program_box, item, body_font, small_font, theme)
             return
         if theme.get("sleek"):
             self.draw_xp_panel(painter, rect, theme, radius=theme.get("border_radius", 10), inset=2)
@@ -5150,17 +7037,98 @@ class GuideOverlay(QWidget):
         painter.setPen(theme["dark_text"])
         painter.drawText(desc_rect, Qt.TextWordWrap, item.get("detail_summary", item["summary"]))
 
-    def draw_preview_panel(self, painter, rect, item, title_font, theme):
-        self.draw_xp_panel(painter, rect, theme, radius=1 if self.skin_style() == "cable" else 10, inset=3)
-        inner = rect.adjusted(3, 3, -3, -3)
-        painter.fillRect(
-            inner,
-            QColor(
-                max(0, theme["bg"].red() - 18),
-                max(0, theme["bg"].green() - 18),
-                max(0, theme["bg"].blue() - 18),
-            ),
+    def draw_cable_program_info_box(self, painter, rect, item, body_font, small_font, theme):
+        metrics = self.guide_metrics()
+        draw_classic_cable_beveled_rect(
+            painter,
+            rect,
+            with_alpha(theme["guide_detail_panel_bg"], 250),
+            theme["guide_grid_line"],
+            theme.get("stb_bevel_light", QColor(255, 255, 255, 150)),
+            theme.get("stb_bevel_dark", QColor(0, 0, 0, 170)),
+            width=2,
+            raised=False,
         )
+        header_h = min(max(scaled_metric(22, self.ui_scale, 18), int(rect.height() * 0.28)), rect.height() - scaled_metric(36, self.ui_scale, 28))
+        header = QRect(rect.left() + 2, rect.top() + 2, rect.width() - 4, header_h)
+        draw_classic_cable_slot_box(painter, header, theme, active=False, border_width=1, border_alpha=170)
+
+        slot_index = int(item.get("detail_slot_index", 0) or 0)
+        slots = item.get("slots", [])
+        slot = slots[slot_index] if 0 <= slot_index < len(slots) else (slots[0] if slots else {})
+        start_ts = slot.get("start")
+        end_ts = slot.get("end")
+        if start_ts and end_ts:
+            time_text = f"{time.strftime('%I:%M %p', time.localtime(start_ts)).lstrip('0')} - {time.strftime('%I:%M %p', time.localtime(end_ts)).lstrip('0')}"
+        else:
+            time_text = item.get("detail_status", "")
+        self.draw_cable_text(
+            painter,
+            header.adjusted(scaled_metric(12, self.ui_scale, 8), 0, -scaled_metric(58, self.ui_scale, 44), 0),
+            time_text,
+            theme["guide_header_text"],
+            QFont(guide_font_family("primary"), max(metrics["font_time"], small_font.pointSize() + 1), QFont.Bold),
+            Qt.AlignLeft | Qt.AlignVCenter,
+        )
+        cc_rect = QRect(header.right() - scaled_metric(42, self.ui_scale, 32), header.top() + 3, scaled_metric(32, self.ui_scale, 24), header.height() - 6)
+        painter.save()
+        painter.setPen(QPen(theme["guide_grid_line"], 1))
+        painter.setBrush(with_alpha(theme["guide_detail_panel_bg"], 235))
+        painter.drawRect(cc_rect)
+        painter.setFont(QFont(guide_font_family("primary"), max(8, small_font.pointSize() - 1), QFont.Bold))
+        painter.setPen(theme["guide_program_cell_text"])
+        painter.drawText(cc_rect, Qt.AlignCenter, "CC")
+        painter.restore()
+
+        body = rect.adjusted(scaled_metric(14, self.ui_scale, 9), header_h + scaled_metric(8, self.ui_scale, 5), -scaled_metric(14, self.ui_scale, 9), -scaled_metric(8, self.ui_scale, 5))
+        title = item.get("detail_title", item.get("now_title", "")).strip()
+        summary = item.get("detail_summary", item.get("summary", "")).strip()
+        title_font = QFont(guide_font_family("primary"), max(metrics["font_title"], body_font.pointSize()), QFont.Bold)
+        title_h = min(max(scaled_metric(20, self.ui_scale, 17), QFontMetrics(title_font).height() + 1), max(18, int(body.height() * 0.44)))
+        title_rect = QRect(body.left(), body.top(), body.width(), title_h)
+        self.draw_cable_text(
+            painter,
+            title_rect,
+            QFontMetrics(title_font).elidedText(title, Qt.ElideRight, title_rect.width()),
+            theme["guide_program_cell_text"],
+            title_font,
+            Qt.AlignLeft | Qt.AlignVCenter,
+        )
+        summary_rect = QRect(body.left(), title_rect.bottom() + scaled_metric(2, self.ui_scale, 1), body.width(), body.bottom() - title_rect.bottom() - scaled_metric(2, self.ui_scale, 1))
+        summary_font = QFont(guide_font_family("secondary"), max(metrics["font_body"] - 2, small_font.pointSize()), QFont.DemiBold)
+        painter.save()
+        painter.setFont(summary_font)
+        painter.setClipRect(summary_rect)
+        lines = self.wrap_cable_lines(painter, summary, summary_rect.width(), 2)
+        line_h = max(scaled_metric(13, self.ui_scale, 10), painter.fontMetrics().height())
+        for idx, line in enumerate(lines):
+            line_rect = QRect(summary_rect.left(), summary_rect.top() + idx * line_h, summary_rect.width(), line_h)
+            self.draw_cable_text(painter, line_rect, line, theme["info_overlay_text"], summary_font, Qt.AlignLeft | Qt.AlignTop)
+        painter.restore()
+
+    def draw_preview_panel(self, painter, rect, item, title_font, theme):
+        if self.skin_style() == "cable":
+            inner = draw_classic_cable_panel(painter, rect, theme, self.theme_name, inset=4, border_width=2, border_alpha=190)
+            if not theme.get("starfield"):
+                painter.fillRect(
+                    inner,
+                    QColor(
+                        max(0, theme["bg"].red() - 18),
+                        max(0, theme["bg"].green() - 18),
+                        max(0, theme["bg"].blue() - 18),
+                    ),
+                )
+        else:
+            self.draw_xp_panel(painter, rect, theme, radius=10, inset=3)
+            inner = rect.adjusted(3, 3, -3, -3)
+            painter.fillRect(
+                inner,
+                QColor(
+                    max(0, theme["bg"].red() - 18),
+                    max(0, theme["bg"].green() - 18),
+                    max(0, theme["bg"].blue() - 18),
+                ),
+            )
         if isinstance(item.get("detail_path"), str) and item["detail_path"].startswith("weatherstar://"):
             if not self.preview_frame.isNull():
                 scaled = self.preview_frame.scaled(inner.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
@@ -5477,11 +7445,24 @@ class GuideOverlay(QWidget):
                 self.catalogRequested.emit()
                 event.accept()
                 return
+            if self.diagnostic_action_rect.contains(pos):
+                self.diagnosticReadoutRequested.emit()
+                event.accept()
+                return
             if self.close_action_rect.contains(pos):
                 self.settings_open = False
                 self.update()
                 event.accept()
                 return
+
+        if not self.settings_open:
+            for index, rect in enumerate(self.footer_button_rects):
+                if rect.adjusted(-8, -8, 8, 8).contains(pos):
+                    self.nav_focus = True
+                    self.nav_index = index
+                    self.footerNavRequested.emit(index)
+                    event.accept()
+                    return
 
         super().mousePressEvent(event)
 
@@ -5494,6 +7475,8 @@ class OnDemandOverlay(QWidget):
     footerNavRequested = Signal(int)
     settingsCloseRequested = Signal()
     homeCardRequested = Signal(int, int)
+    heroActionRequested = Signal(str)
+    filterActionRequested = Signal(int)
     upRequested = Signal()
     downRequested = Signal()
     leftRequested = Signal()
@@ -5501,6 +7484,9 @@ class OnDemandOverlay(QWidget):
     selectRequested = Signal()
     backRequested = Signal()
     settingsToggleRequested = Signal()
+    diagnosticReadoutRequested = Signal()
+    guideShortcutRequested = Signal()
+    vaultShortcutRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -5510,6 +7496,7 @@ class OnDemandOverlay(QWidget):
         self.profile_name = "Auto"
         self.theme_name = DEFAULT_THEME_NAME
         self.skin_name = DEFAULT_SKIN_NAME
+        self.sleek_mode = "dark"
         self.ui_scale = GUIDE_UI_SCALE_DEFAULT
         self.state = {}
         self.settings_open = False
@@ -5527,22 +7514,26 @@ class OnDemandOverlay(QWidget):
         self.feature_transition = 1.0
         self.footer_button_rects = []
         self.home_card_hit_rects = []
+        self.hero_action_hit_rects = []
+        self.filter_hit_rects = []
         self.skin_prev_rect = QRect()
         self.skin_next_rect = QRect()
         self.theme_prev_rect = QRect()
         self.theme_next_rect = QRect()
         self.profile_prev_rect = QRect()
         self.profile_next_rect = QRect()
+        self.diagnostic_action_rect = QRect()
         self.close_action_rect = QRect()
         self.stream_anim_timer = QTimer(self)
         self.stream_anim_timer.setInterval(16)
         self.stream_anim_timer.timeout.connect(self.advance_stream_animation)
         self.hide()
 
-    def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT):
+    def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
         self.profile_name = profile_name if profile_name in GUIDE_PROFILES else "Auto"
         self.skin_name = normalize_skin_name(skin_name)
         self.theme_name = normalize_theme_for_skin(self.skin_name, theme_name)
+        self.sleek_mode = normalize_sleek_mode(sleek_mode)
         self.ui_scale = clamp_guide_ui_scale(ui_scale)
         if self.isVisible():
             self.update()
@@ -5581,7 +7572,10 @@ class OnDemandOverlay(QWidget):
             self.feature_current = new_feature or {}
             self.feature_previous = {}
             self.feature_transition = 1.0
-        self.settings_focus_index = max(0, min(int(self.state.get("settings_focus_index", 0)), 6))
+        self.settings_focus_index = max(
+            0,
+            min(int(self.state.get("settings_focus_index", 0)), len(build_in_app_menu_rows(self.settings_values)) - 1),
+        )
 
     def debug_vault_layout(self, message, **fields):
         write_vault_debug_log("VaultLayout", message, fields)
@@ -5635,7 +7629,10 @@ class OnDemandOverlay(QWidget):
                 int(rect.width() * 0.24),
             ),
         )
-        card_h = max(scaled_metric(164, self.ui_scale, 126), rect.height())
+        card_h = max(
+            scaled_metric(122, self.ui_scale, 98),
+            min(scaled_metric(176, self.ui_scale, 138), rect.height()),
+        )
         return card_w, card_h, gap
 
     def sync_home_view_targets(self, rows_rect, sections):
@@ -5643,8 +7640,8 @@ class OnDemandOverlay(QWidget):
         section_item_indices = self.state.get("section_item_indices", {})
         row_gap = scaled_metric(22, self.ui_scale, 16)
         row_height = max(
-            scaled_metric(198, self.ui_scale, 150),
-            min(scaled_metric(228, self.ui_scale, 176), int(rows_rect.height() * 0.34)),
+            scaled_metric(188, self.ui_scale, 146),
+            min(scaled_metric(218, self.ui_scale, 170), int(rows_rect.height() * 0.45)),
         )
         total_height = max(0, (len(sections) * row_height) + (max(0, len(sections) - 1) * row_gap))
         max_vertical = max(0.0, float(total_height - rows_rect.height()))
@@ -5728,7 +7725,7 @@ class OnDemandOverlay(QWidget):
         if not self.state:
             return
 
-        theme = app_theme(self.theme_name, self.skin_name)
+        theme = app_theme(self.theme_name, self.skin_name, mode=self.sleek_mode)
         profile = GUIDE_PROFILES[self.profile_name]
         painter = QPainter(self)
         panel = self.canvas_rect()
@@ -5763,7 +7760,7 @@ class OnDemandOverlay(QWidget):
             scaled = QPixmap.fromImage(surface).scaled(panel.size(), Qt.IgnoreAspectRatio, Qt.SmoothTransformation)
             self.draw_cable_composite(painter, panel, scaled)
             if self.settings_open:
-                painter.fillRect(panel.adjusted(3, 3, -3, -3), QColor(8, 10, 14, 152))
+                painter.fillRect(self.rect(), QColor(0, 0, 0, 166))
                 self.draw_settings_panel(painter, panel, body_font, small_font, theme)
             return
         if theme.get("sleek"):
@@ -5772,7 +7769,7 @@ class OnDemandOverlay(QWidget):
             painter.fillRect(self.rect(), QColor(theme["bg"].red(), theme["bg"].green(), theme["bg"].blue(), 176))
         self.draw_vault_scene(painter, panel, title_font, body_font, small_font, theme)
         if self.settings_open:
-            painter.fillRect(panel.adjusted(3, 3, -3, -3), QColor(8, 10, 14, 112))
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 148))
             self.draw_settings_panel(painter, panel, body_font, small_font, theme)
 
     def map_interactive_rect(self, rect):
@@ -5839,6 +7836,9 @@ class OnDemandOverlay(QWidget):
         painter.restore()
 
     def draw_vault_scene(self, painter, panel, title_font, body_font, small_font, theme):
+        if theme.get("sleek"):
+            self.draw_sleek_vault_scene(painter, panel, theme)
+            return
         self.draw_panel(painter, panel, theme, radius=16, inset=3)
         self.draw_header(painter, panel, title_font, small_font, theme)
 
@@ -5849,6 +7849,714 @@ class OnDemandOverlay(QWidget):
         else:
             self.draw_streaming_detail_view(painter, panel, footer_rect, title_font, body_font, small_font, theme)
         self.draw_footer(painter, footer_rect, small_font, theme)
+
+    def sleek_profile(self):
+        return GUIDE_PROFILES.get(self.profile_name, GUIDE_PROFILES["Auto"])
+
+    def sleek_scale_factor(self):
+        return max(0.82, min(1.45, float(self.sleek_profile().get("scale", 1.0)) * self.ui_scale))
+
+    def sleek_metric(self, value, minimum=1, maximum=None):
+        return scaled_metric(value, self.sleek_scale_factor(), minimum, maximum)
+
+    def sleek_font(self, theme, size, weight=QFont.Normal, minimum=8, maximum=42):
+        return QFont(theme.get("font_ui", ".AppleSystemUIFont"), self.sleek_metric(size, minimum, maximum), weight)
+
+    def draw_sleek_elided(self, painter, rect, text, font, color, flags=Qt.AlignLeft | Qt.AlignVCenter):
+        painter.save()
+        painter.setClipRect(rect)
+        painter.setFont(font)
+        painter.setPen(color)
+        painter.drawText(rect, flags | Qt.TextSingleLine, painter.fontMetrics().elidedText(str(text or ""), Qt.ElideRight, max(12, rect.width())))
+        painter.restore()
+
+    def draw_sleek_vault_chip(self, painter, rect, text, theme, active=False):
+        painter.save()
+        painter.setPen(QPen(theme["guide_card_selected_border"] if active else theme["guide_divider"], 1))
+        painter.setBrush(theme["guide_chip_selected_bg"] if active else theme["guide_chip_bg"])
+        radius = min(max(6, rect.height() // 2), theme.get("cell_radius", 8))
+        painter.drawRoundedRect(rect, radius, radius)
+        painter.setFont(self.sleek_font(theme, 9, QFont.Bold, 7, 11))
+        painter.setPen(theme["guide_chip_selected_text"] if active else theme["guide_chip_text"])
+        painter.drawText(rect.adjusted(8, 0, -8, 0), Qt.AlignCenter, str(text or "").upper())
+        painter.restore()
+
+    def draw_sleek_vault_scene(self, painter, panel, theme):
+        scale = self.sleek_scale_factor()
+        margin = scaled_metric(30, scale, 18, 58)
+        inner = panel.adjusted(margin, margin, -margin, -margin)
+        if inner.width() < 420 or inner.height() < 320:
+            inner = panel.adjusted(12, 12, -12, -12)
+
+        painter.save()
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(inner.adjusted(0, 0, -1, -1), theme.get("border_radius", 8), theme.get("border_radius", 8))
+        painter.restore()
+
+        header_h = self.sleek_metric(64, 48, 84)
+        header_rect = QRect(inner.left(), inner.top(), inner.width(), header_h)
+        nav_h = self.sleek_metric(58, 48, 68)
+        footer_w = min(inner.width() - self.sleek_metric(80, 42, 120), self.sleek_metric(560, 450, 650))
+        footer_rect = QRect(inner.center().x() - footer_w // 2, inner.bottom() - nav_h - self.sleek_metric(10, 8, 18), footer_w, nav_h)
+
+        self.draw_sleek_vault_header(painter, header_rect, theme)
+        view = self.state.get("view", "home")
+        if view == "home":
+            self.draw_sleek_vault_home(painter, inner, header_rect, footer_rect, theme)
+        else:
+            self.draw_sleek_vault_detail(painter, inner, header_rect, footer_rect, theme)
+
+        vault_nav_active_index = int(self.state.get("nav_index", 2)) if self.state.get("nav_focused", False) else -1
+        previous_nav_index, nav_transition_progress = sleek_focus_transition(self, "vault_nav_focus", vault_nav_active_index)
+        self.footer_button_rects = [
+            self.map_interactive_rect(rect)
+            for rect in draw_sleek_bottom_nav_bar(
+                painter,
+                footer_rect,
+                theme,
+                self.sleek_mode,
+                self.state.get("nav_focused", False),
+                self.state.get("nav_index", 2),
+                2,
+                scale,
+                previous_index=previous_nav_index,
+                transition_progress=nav_transition_progress,
+            )
+        ]
+
+    def draw_sleek_vault_header(self, painter, rect, theme):
+        painter.save()
+        painter.fillRect(rect, theme["guide_header_background"])
+        brand_x = rect.left() + self.sleek_metric(10, 6, 18)
+        brand_rect = QRect(brand_x, rect.top() + self.sleek_metric(9, 6, 14), self.sleek_metric(180, 142, 240), rect.height() - self.sleek_metric(18, 12, 24))
+        painter.setFont(self.sleek_font(theme, 19, QFont.Bold, 15, 24))
+        painter.setPen(theme["guide_primary_text"])
+        painter.drawText(brand_rect.adjusted(0, 0, 0, -self.sleek_metric(13, 10, 18)), Qt.AlignLeft | Qt.AlignVCenter, "MediaWave")
+        painter.setFont(self.sleek_font(theme, 9, QFont.DemiBold, 8, 12))
+        painter.setPen(theme["accent"])
+        painter.drawText(brand_rect.adjusted(2, self.sleek_metric(22, 16, 28), 0, 0), Qt.AlignLeft | Qt.AlignVCenter, "2000")
+
+        section_x = brand_rect.right() + self.sleek_metric(34, 24, 46)
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.drawLine(section_x - self.sleek_metric(18, 12, 24), rect.top() + self.sleek_metric(14, 10, 20), section_x - self.sleek_metric(18, 12, 24), rect.bottom() - self.sleek_metric(14, 10, 20))
+        painter.setFont(self.sleek_font(theme, 16, QFont.Bold, 12, 21))
+        painter.setPen(theme["guide_secondary_text"])
+        painter.drawText(QRect(section_x, rect.top(), self.sleek_metric(150, 108, 190), rect.height()), Qt.AlignLeft | Qt.AlignVCenter, "VAULT")
+
+        time_w = self.sleek_metric(120, 92, 150)
+        date_w = self.sleek_metric(130, 96, 170)
+        clock_rect = QRect(rect.right() - time_w - self.sleek_metric(10, 6, 16), rect.top(), time_w, rect.height())
+        date_rect = QRect(clock_rect.left() - date_w - self.sleek_metric(14, 8, 18), rect.top(), date_w, rect.height())
+        painter.setFont(self.sleek_font(theme, 12, QFont.DemiBold, 9, 16))
+        painter.setPen(theme["guide_secondary_text"])
+        painter.drawText(date_rect, Qt.AlignRight | Qt.AlignVCenter, time.strftime("%a, %b %d").upper())
+        painter.setFont(self.sleek_font(theme, 17, QFont.Bold, 13, 23))
+        painter.setPen(theme["guide_primary_text"])
+        painter.drawText(clock_rect, Qt.AlignRight | Qt.AlignVCenter, time.strftime("%I:%M %p").lstrip("0"))
+        painter.restore()
+
+    def draw_sleek_vault_home(self, painter, inner, header_rect, footer_rect, theme):
+        self.home_card_hit_rects = []
+        self.hero_action_hit_rects = []
+        self.filter_hit_rects = []
+        sections = self.state.get("sections", [])
+        gap = self.sleek_metric(18, 12, 28)
+        side = self.sleek_metric(18, 10, 28)
+        compact_hero = bool(self.state.get("hero_compact", False))
+        full_hero_h = max(self.sleek_metric(250, 190, 328), min(self.sleek_metric(364, 260, 430), int(inner.height() * 0.38)))
+        compact_hero_h = max(self.sleek_metric(112, 92, 148), min(self.sleek_metric(154, 118, 178), int(inner.height() * 0.18)))
+        hero_h = compact_hero_h if compact_hero else full_hero_h
+        hero_rect = QRect(inner.left() + side, header_rect.bottom() + gap, inner.width() - side * 2, hero_h)
+        self.draw_sleek_vault_hero(painter, hero_rect, self.state.get("hero", {}), theme, compact=compact_hero)
+
+        chips_h = self.sleek_metric(34, 28, 42)
+        chips_rect = QRect(hero_rect.left(), hero_rect.bottom() + self.sleek_metric(14, 10, 20), hero_rect.width(), chips_h)
+        self.draw_sleek_vault_filter_row(painter, chips_rect, sections, theme)
+
+        shelves_top = chips_rect.bottom() + self.sleek_metric(12, 8, 18)
+        safe_bottom = footer_rect.top() - self.sleek_metric(170, 124, 220)
+        shelves_rect = QRect(hero_rect.left(), shelves_top, hero_rect.width(), max(self.sleek_metric(150, 118, 190), safe_bottom - shelves_top))
+        if not sections:
+            self.draw_sleek_empty_vault(painter, shelves_rect, theme)
+            return
+        self.draw_sleek_vault_shelves(painter, shelves_rect, sections, theme)
+
+    def draw_sleek_vault_hero(self, painter, rect, detail, theme, compact=False):
+        painter.save()
+        painter.setPen(QPen(theme["guide_card_border"], 1))
+        painter.setBrush(theme["guide_hero_panel_bg"])
+        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+
+        pad = self.sleek_metric(24, 16, 36)
+        if compact:
+            pad = self.sleek_metric(14, 10, 20)
+            art_w = min(self.sleek_metric(136, 104, 180), max(self.sleek_metric(92, 72, 128), int(rect.width() * 0.14)))
+            art_rect = QRect(rect.left() + pad, rect.top() + pad, art_w, rect.height() - pad * 2)
+            copy_rect = QRect(art_rect.right() + self.sleek_metric(18, 12, 26), rect.top() + pad, rect.right() - art_rect.right() - self.sleek_metric(28, 20, 44) - pad, rect.height() - pad * 2)
+            self.draw_streaming_art_placeholder(
+                painter,
+                art_rect,
+                detail.get("title", ""),
+                detail.get("badge", ""),
+                theme,
+                detail.get("artwork_path", ""),
+                fit_mode="cover",
+                show_badge=False,
+            )
+            painter.setPen(QPen(theme["guide_card_selected_border"], 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(art_rect.adjusted(1, 1, -1, -1), theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+
+            painter.setFont(self.sleek_font(theme, 9, QFont.Bold, 7, 11))
+            painter.setPen(theme["accent"])
+            label_rect = QRect(copy_rect.left(), copy_rect.top(), min(copy_rect.width(), self.sleek_metric(190, 130, 260)), self.sleek_metric(18, 14, 22))
+            painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, "CONTINUE WATCHING")
+            title_rect = QRect(copy_rect.left(), label_rect.bottom() + self.sleek_metric(3, 2, 6), copy_rect.width(), self.sleek_metric(32, 24, 40))
+            self.draw_sleek_elided(painter, title_rect, detail.get("title", f"{APP_NAME} Vault"), self.sleek_font(theme, 20, QFont.Bold, 16, 28), theme["guide_primary_text"])
+            subtitle_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(2, 1, 5), copy_rect.width(), self.sleek_metric(20, 16, 24))
+            self.draw_sleek_elided(painter, subtitle_rect, detail.get("subtitle", ""), self.sleek_font(theme, 11, QFont.DemiBold, 9, 14), theme["guide_secondary_text"])
+
+            actions = detail.get("actions", [])
+            if actions:
+                selected_action = int(self.state.get("hero_action_selected", 0))
+                hero_focused = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
+                action = actions[min(selected_action, len(actions) - 1)]
+                label = str(action.get("label", action) if isinstance(action, dict) else action)
+                action_key = str(action.get("action", label.lower()) if isinstance(action, dict) else label.lower())
+                button_w = self.sleek_metric(122, 96, 156)
+                button = QRect(rect.right() - pad - button_w, rect.center().y() - self.sleek_metric(18, 15, 23), button_w, self.sleek_metric(36, 30, 46))
+                self.draw_sleek_vault_button(painter, button, label, theme, active=action_key in {"resume", "play"}, focused=hero_focused, icon=action_key)
+                self.hero_action_hit_rects.append((self.map_interactive_rect(button), action_key))
+
+            progress = max(0.0, min(1.0, float(detail.get("progress", 0.0) or 0.0)))
+            if progress > 0:
+                track = QRect(copy_rect.left(), rect.bottom() - pad - self.sleek_metric(4, 3, 5), max(60, min(copy_rect.width(), rect.width() // 3)), self.sleek_metric(4, 3, 5))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(theme["guide_progress_track"])
+                painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
+                painter.setBrush(theme["guide_progress_fill"])
+                painter.drawRoundedRect(QRect(track.left(), track.top(), int(track.width() * progress), track.height()), track.height() // 2, track.height() // 2)
+            painter.restore()
+            return
+
+        art_w = max(self.sleek_metric(360, 260, 560), min(int(rect.width() * 0.38), self.sleek_metric(620, 420, 720)))
+        art_rect = QRect(rect.left() + pad, rect.top() + pad, art_w, rect.height() - pad * 2)
+        copy_rect = QRect(art_rect.right() + self.sleek_metric(26, 18, 38), art_rect.top(), rect.right() - art_rect.right() - self.sleek_metric(26, 18, 38) - pad, art_rect.height())
+
+        accent = theme["selected_background"]
+        glow = QRadialGradient(art_rect.center(), max(rect.width(), rect.height()) * 0.62)
+        glow.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 58 if self.sleek_mode == "dark" else 42))
+        glow.setColorAt(0.42, QColor(accent.red(), accent.green(), accent.blue(), 16 if self.sleek_mode == "dark" else 12))
+        glow.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(glow)
+        painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), theme.get("border_radius", 8), theme.get("border_radius", 8))
+
+        self.draw_streaming_art_placeholder(
+            painter,
+            art_rect,
+            detail.get("title", ""),
+            detail.get("badge", ""),
+            theme,
+            detail.get("artwork_path", ""),
+            fit_mode="cover",
+            show_badge=False,
+        )
+        painter.setPen(QPen(theme["guide_glow"], self.sleek_metric(5, 3, 7)))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(art_rect.adjusted(2, 2, -2, -2), theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+
+        chip_y = copy_rect.top() + self.sleek_metric(4, 2, 8)
+        x = copy_rect.left()
+        chip_labels = []
+        for label in (detail.get("badge", "FEATURED"), detail.get("media_label", "")):
+            label = str(label or "").strip()
+            if not label or label.casefold() in {item.casefold() for item in chip_labels}:
+                continue
+            chip_labels.append(label)
+        for idx, label in enumerate(chip_labels[:3]):
+            width = min(copy_rect.width() // 2, max(self.sleek_metric(96, 76, 138), QFontMetrics(self.sleek_font(theme, 9, QFont.Bold, 7, 11)).horizontalAdvance(label.upper()) + self.sleek_metric(28, 20, 34)))
+            chip = QRect(x, chip_y, width, self.sleek_metric(26, 20, 32))
+            self.draw_sleek_vault_chip(painter, chip, label, theme, active=idx == 0)
+            x = chip.right() + self.sleek_metric(10, 7, 14)
+            if x > copy_rect.right() - self.sleek_metric(80, 60, 100):
+                break
+
+        title_top = chip_y + self.sleek_metric(44, 32, 54)
+        title_font = self.sleek_font(theme, 36, QFont.Bold, 26, 48)
+        title_rect = QRect(copy_rect.left(), title_top, copy_rect.width(), min(self.sleek_metric(96, 70, 116), copy_rect.height() // 3))
+        painter.setFont(title_font)
+        painter.setPen(theme["guide_primary_text"])
+        painter.setClipRect(title_rect)
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, str(detail.get("title", f"{APP_NAME} Vault") or ""))
+        painter.setClipping(False)
+
+        subtitle_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(6, 4, 10), copy_rect.width(), self.sleek_metric(24, 18, 30))
+        self.draw_sleek_elided(painter, subtitle_rect, detail.get("subtitle", ""), self.sleek_font(theme, 13, QFont.DemiBold, 10, 16), theme["guide_secondary_text"])
+        summary_rect = QRect(copy_rect.left(), subtitle_rect.bottom() + self.sleek_metric(10, 7, 14), copy_rect.width(), max(0, copy_rect.bottom() - subtitle_rect.bottom() - self.sleek_metric(72, 58, 86)))
+        if summary_rect.height() >= self.sleek_metric(30, 22, 42):
+            painter.setClipRect(summary_rect)
+            painter.setFont(self.sleek_font(theme, 13, QFont.Normal, 10, 17))
+            painter.setPen(theme["guide_secondary_text"])
+            painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, detail.get("summary", ""))
+            painter.setClipping(False)
+
+        actions = detail.get("actions", [])
+        if actions:
+            button_y = copy_rect.bottom() - self.sleek_metric(46, 38, 56)
+            x = copy_rect.left()
+            selected_action = int(self.state.get("hero_action_selected", 0))
+            hero_focused = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
+            previous, transition = sleek_focus_transition(self, "vault_hero_actions", selected_action if hero_focused else -1)
+            for index, action in enumerate(actions[:5]):
+                label = str(action.get("label", action) if isinstance(action, dict) else action)
+                action_key = str(action.get("action", label.lower()) if isinstance(action, dict) else label.lower())
+                font = self.sleek_font(theme, 11, QFont.Bold, 9, 14)
+                width = min(self.sleek_metric(190, 128, 230), max(self.sleek_metric(118, 92, 146), QFontMetrics(font).horizontalAdvance(label) + self.sleek_metric(66, 48, 78)))
+                button = QRect(x, button_y, width, self.sleek_metric(40, 32, 48))
+                amount = 0.0
+                if hero_focused and index == selected_action:
+                    amount = 1.0 if previous == selected_action else transition
+                elif index == previous:
+                    amount = 1.0 - transition
+                active = action_key in {"resume", "play"} and not hero_focused
+                self.draw_sleek_vault_button(painter, button, label, theme, active=active, focused=amount > 0.01, icon=action_key)
+                self.hero_action_hit_rects.append((self.map_interactive_rect(button), action_key))
+                x = button.right() + self.sleek_metric(10, 7, 14)
+                if x > copy_rect.right() - self.sleek_metric(80, 60, 100):
+                    break
+
+        progress = max(0.0, min(1.0, float(detail.get("progress", 0.0) or 0.0)))
+        if progress > 0:
+            track = QRect(copy_rect.left(), copy_rect.bottom() - self.sleek_metric(6, 4, 8), min(copy_rect.width(), self.sleek_metric(360, 220, 470)), self.sleek_metric(4, 3, 5))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(theme["guide_progress_track"])
+            painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
+            fill = QRect(track.left(), track.top(), int(track.width() * progress), track.height())
+            painter.setBrush(theme["guide_progress_fill"])
+            painter.drawRoundedRect(fill, fill.height() // 2, fill.height() // 2)
+        painter.restore()
+
+    def draw_sleek_action_icon(self, painter, rect, action, color):
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setPen(QPen(color, max(1, rect.width() // 10), Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+        painter.setBrush(Qt.NoBrush)
+        action = str(action or "").lower()
+        c = rect.center()
+        r = max(5, min(rect.width(), rect.height()) // 2 - 2)
+        if action in {"resume", "play"}:
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(color)
+            painter.drawPolygon(QPolygon([
+                QPoint(c.x() - r // 2, c.y() - r),
+                QPoint(c.x() - r // 2, c.y() + r),
+                QPoint(c.x() + r, c.y()),
+            ]))
+        elif action in {"start_over", "restart"}:
+            arc_rect = QRect(c.x() - r, c.y() - r, r * 2, r * 2)
+            painter.drawArc(arc_rect, 35 * 16, 270 * 16)
+            painter.setBrush(color)
+            painter.drawPolygon(QPolygon([
+                QPoint(c.x() - r, c.y() - r // 2),
+                QPoint(c.x() - r, c.y() + r // 3),
+                QPoint(c.x() - r - r // 2, c.y() - r // 8),
+            ]))
+        elif action in {"random", "random_episode"}:
+            y1 = c.y() - r // 2
+            y2 = c.y() + r // 2
+            painter.drawLine(rect.left() + 2, y1, c.x(), y1)
+            painter.drawLine(c.x(), y1, rect.right() - 4, y2)
+            painter.drawLine(rect.left() + 2, y2, c.x(), y2)
+            painter.drawLine(c.x(), y2, rect.right() - 4, y1)
+            painter.setBrush(color)
+            for y in (y1, y2):
+                painter.drawPolygon(QPolygon([
+                    QPoint(rect.right() - 2, y),
+                    QPoint(rect.right() - 8, y - 4),
+                    QPoint(rect.right() - 8, y + 4),
+                ]))
+        elif action == "info":
+            painter.drawEllipse(c, r, r)
+            painter.drawPoint(c.x(), c.y() - r // 2)
+            painter.drawLine(c.x(), c.y() - r // 5, c.x(), c.y() + r // 2)
+        elif action == "toggle_watchlist":
+            painter.drawLine(c.x() - r, c.y(), c.x() + r, c.y())
+            painter.drawLine(c.x(), c.y() - r, c.x(), c.y() + r)
+        elif action == "remove_watchlist":
+            painter.drawLine(c.x() - r, c.y(), c.x() - r // 4, c.y() + r)
+            painter.drawLine(c.x() - r // 4, c.y() + r, c.x() + r, c.y() - r)
+        else:
+            painter.drawEllipse(c, max(3, r // 2), max(3, r // 2))
+        painter.restore()
+
+    def draw_sleek_vault_button(self, painter, rect, label, theme, active=False, focused=False, meta="", icon=""):
+        painter.save()
+        radius = min(theme.get("cell_radius", 8), max(6, rect.height() // 4))
+        if focused:
+            painter.setPen(QPen(theme["guide_glow"], self.sleek_metric(5, 3, 7)))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), radius, radius)
+        painter.setPen(QPen(theme["guide_card_selected_border"] if active or focused else theme["guide_card_border"], 1 if not focused else 2))
+        painter.setBrush(theme["guide_bottom_nav_selected_bg"] if active or focused else with_alpha(theme["guide_card_bg"], 210))
+        painter.drawRoundedRect(rect, radius, radius)
+        text_color = theme["guide_card_selected_text"] if active or focused else theme["guide_primary_text"]
+        painter.setFont(self.sleek_font(theme, 11, QFont.Bold, 9, 14))
+        left_pad = self.sleek_metric(14, 10, 18)
+        icon_w = 0
+        if icon:
+            icon_w = min(self.sleek_metric(24, 18, 30), max(14, rect.height() - self.sleek_metric(18, 12, 24)))
+            icon_rect = QRect(rect.left() + left_pad, rect.center().y() - icon_w // 2, icon_w, icon_w)
+            self.draw_sleek_action_icon(painter, icon_rect, icon, text_color)
+            left_pad += icon_w + self.sleek_metric(8, 5, 10)
+        label_rect = rect.adjusted(left_pad, 0, -self.sleek_metric(14, 10, 18), 0)
+        if meta:
+            label_rect.setHeight(rect.height() // 2 + 2)
+            painter.setPen(text_color)
+            painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignBottom | Qt.TextSingleLine, QFontMetrics(painter.font()).elidedText(label, Qt.ElideRight, label_rect.width()))
+            painter.setFont(self.sleek_font(theme, 8, QFont.DemiBold, 7, 10))
+            painter.setPen(theme["guide_secondary_text"])
+            meta_rect = QRect(label_rect.left(), label_rect.bottom(), label_rect.width(), rect.bottom() - label_rect.bottom())
+            painter.drawText(meta_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextSingleLine, QFontMetrics(painter.font()).elidedText(meta, Qt.ElideRight, meta_rect.width()))
+        else:
+            painter.setPen(text_color)
+            painter.drawText(label_rect, Qt.AlignCenter | Qt.TextSingleLine, QFontMetrics(painter.font()).elidedText(label, Qt.ElideRight, label_rect.width()))
+        painter.restore()
+
+    def draw_sleek_vault_filter_row(self, painter, rect, sections, theme):
+        options = self.state.get("filter_options", []) or [
+            {"key": "featured", "label": "Featured"},
+            {"key": "movies", "label": "Movies"},
+            {"key": "series", "label": "Series"},
+            {"key": "my-vault", "label": "My Vault"},
+            {"key": "random", "label": "Random"},
+        ]
+        current_key = self.state.get("home_filter", "featured")
+        focused_index = int(self.state.get("filter_selected", 0))
+        row_focused = self.state.get("home_focus") == "filters" and not self.state.get("nav_focused", False) and not self.settings_open
+        painter.save()
+        x = rect.left()
+        for index, option in enumerate(options):
+            label = option.get("label", "")
+            key = option.get("key", "")
+            font = self.sleek_font(theme, 10, QFont.Bold, 8, 12)
+            width = min(self.sleek_metric(190, 118, 230), max(self.sleek_metric(96, 76, 128), QFontMetrics(font).horizontalAdvance(label.upper()) + self.sleek_metric(34, 24, 42)))
+            chip = QRect(x, rect.top() + max(0, (rect.height() - self.sleek_metric(28, 22, 34)) // 2), width, self.sleek_metric(28, 22, 34))
+            active = key == current_key or (row_focused and index == focused_index)
+            self.draw_sleek_vault_chip(painter, chip, label, theme, active=active)
+            self.filter_hit_rects.append((self.map_interactive_rect(chip), index))
+            x = chip.right() + self.sleek_metric(10, 7, 14)
+            if x > rect.right() - self.sleek_metric(80, 60, 100):
+                break
+        painter.restore()
+
+    def draw_sleek_empty_vault(self, painter, rect, theme):
+        painter.save()
+        painter.setPen(QPen(theme["guide_card_border"], 1))
+        painter.setBrush(theme["guide_card_bg"])
+        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+        painter.setFont(self.sleek_font(theme, 18, QFont.Bold, 14, 24))
+        painter.setPen(theme["guide_primary_text"])
+        painter.drawText(rect.adjusted(20, 0, -20, 0), Qt.AlignCenter, "Load a catalog to build your Vault.")
+        painter.restore()
+
+    def draw_sleek_vault_shelves(self, painter, rect, sections, theme):
+        selected_section = max(0, min(int(self.state.get("selected_section", 0)), len(sections) - 1))
+        section_item_indices = self.state.get("section_item_indices", {})
+        selected_item_for_focus = max(0, int(section_item_indices.get(selected_section, 0)))
+        row_has_focus = self.state.get("home_focus") == "rows" and not self.state.get("nav_focused", False) and not self.settings_open
+        active_card_index = (selected_section * 1000 + selected_item_for_focus) if row_has_focus else -1
+        previous_card_index, card_transition_progress = sleek_focus_transition(self, "vault_card_focus", active_card_index)
+        row_gap = self.sleek_metric(24, 16, 32)
+        card_w = max(self.sleek_metric(210, 168, 284), min(self.sleek_metric(326, 236, 386), int(rect.width() * 0.22)))
+        card_h = self.sleek_metric(152, 122, 190)
+        row_h = card_h + self.sleek_metric(58, 44, 72)
+        total_height = len(sections) * row_h + max(0, len(sections) - 1) * row_gap
+        max_vertical = max(0.0, float(total_height - rect.height()))
+        target = max(0.0, min(max_vertical, float(selected_section * (row_h + row_gap))))
+        if abs(target - self.home_vertical_target) > 0.5:
+            self.home_vertical_target = target
+        self.home_vertical_offset = target
+
+        painter.save()
+        painter.setClipRect(rect)
+        base_y = rect.top() - int(round(target))
+        for section_index, section in enumerate(sections):
+            row_rect = QRect(rect.left(), base_y + section_index * (row_h + row_gap), rect.width(), row_h)
+            if row_rect.bottom() < rect.top() - row_gap or row_rect.top() > rect.bottom() + row_gap:
+                continue
+            self.draw_sleek_vault_row(
+                painter,
+                row_rect,
+                section,
+                section_index,
+                row_has_focus and section_index == selected_section,
+                section_item_indices.get(section_index, 0),
+                card_w,
+                card_h,
+                theme,
+                active_card_index,
+                previous_card_index,
+                card_transition_progress,
+            )
+        painter.restore()
+
+    def draw_sleek_vault_row(self, painter, rect, section, section_index, focused_row, selected_item, card_w, card_h, theme, active_card_index=-1, previous_card_index=-1, transition_progress=1.0):
+        title_font = self.sleek_font(theme, 18, QFont.Bold, 14, 24)
+        sub_font = self.sleek_font(theme, 10, QFont.DemiBold, 8, 13)
+        title_rect = QRect(rect.left(), rect.top(), rect.width(), self.sleek_metric(28, 22, 34))
+        self.draw_sleek_elided(painter, title_rect, section.get("title", ""), title_font, theme["guide_primary_text"])
+        subtitle_rect = QRect(rect.left(), title_rect.bottom(), rect.width(), self.sleek_metric(20, 16, 24))
+        self.draw_sleek_elided(painter, subtitle_rect, section.get("subtitle", ""), sub_font, theme["guide_muted_text"])
+
+        items = section.get("items", [])
+        if not items:
+            return
+        gap = self.sleek_metric(14, 10, 20)
+        viewport = QRect(rect.left(), subtitle_rect.bottom() + self.sleek_metric(10, 8, 14), rect.width(), card_h + self.sleek_metric(16, 10, 20))
+        total_width = max(0, len(items) * (card_w + gap) - gap)
+        max_offset = max(0.0, float(total_width - viewport.width()))
+        row_key = self.stream_row_key(section, section_index)
+        selected_item = max(0, min(int(selected_item), len(items) - 1))
+        selected_left = selected_item * (card_w + gap)
+        target_offset = max(0.0, min(max_offset, float(selected_left - self.sleek_metric(42, 28, 58))))
+        if abs(target_offset - self.home_row_targets.get(row_key, 0.0)) > 0.5:
+            self.home_row_targets[row_key] = target_offset
+            self.start_stream_animation()
+        offset = self.home_row_offsets.get(row_key, target_offset)
+
+        painter.save()
+        painter.setClipRect(viewport)
+        for item_index, item in enumerate(items):
+            card_rect = QRect(viewport.left() + item_index * (card_w + gap) - int(round(offset)), viewport.top(), card_w, card_h)
+            if card_rect.right() < viewport.left() or card_rect.left() > viewport.right():
+                continue
+            card_index = section_index * 1000 + item_index
+            if card_index == active_card_index:
+                focus_amount = 1.0 if previous_card_index == active_card_index else transition_progress
+            elif card_index == previous_card_index:
+                focus_amount = 1.0 - transition_progress
+            else:
+                focus_amount = 0.0
+            focused = focused_row and item_index == selected_item or focus_amount > 0.01
+            self.draw_sleek_vault_card(painter, card_rect, item, focused, theme, focus_amount=focus_amount)
+            self.home_card_hit_rects.append((self.map_interactive_rect(card_rect), section_index, item_index))
+        painter.restore()
+
+    def draw_sleek_vault_card(self, painter, rect, item, focused, theme, focus_amount=1.0):
+        painter.save()
+        focus_amount = max(0.0, min(1.0, float(focus_amount if focused else 0.0)))
+        lift = int(round(self.sleek_metric(10, 3, 12) - (self.sleek_metric(5, 3, 12) * focus_amount)))
+        draw_rect = rect.adjusted(0, lift, 0, 0)
+        radius = theme.get("cell_radius", 8)
+        if focus_amount > 0.01:
+            painter.setOpacity(focus_amount)
+            painter.setPen(QPen(theme["guide_glow"], self.sleek_metric(7, 4, 9)))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(draw_rect.adjusted(3, 3, -3, -3), radius, radius)
+            painter.setOpacity(1.0)
+        painter.setPen(QPen(blend_color(theme["guide_card_border"], theme["guide_card_selected_border"], focus_amount), 2 if focus_amount > 0.55 else 1))
+        painter.setBrush(blend_color(theme["guide_card_bg"], theme["guide_card_selected_bg"], focus_amount))
+        painter.drawRoundedRect(draw_rect, radius, radius)
+
+        pad = self.sleek_metric(10, 8, 14)
+        art_h = min(int(draw_rect.width() * 0.56), draw_rect.height() - self.sleek_metric(56, 44, 68))
+        art_rect = QRect(draw_rect.left() + pad, draw_rect.top() + pad, draw_rect.width() - pad * 2, max(self.sleek_metric(66, 52, 92), art_h))
+        self.draw_streaming_art_placeholder(painter, art_rect, item.get("title", ""), item.get("badge", ""), theme, item.get("artwork_path", ""), show_badge=False)
+        badge = str(item.get("badge", "") or "").upper()
+        if badge:
+            badge_w = min(art_rect.width() - 14, max(self.sleek_metric(62, 50, 86), QFontMetrics(self.sleek_font(theme, 8, QFont.Bold, 7, 10)).horizontalAdvance(badge) + self.sleek_metric(18, 14, 24)))
+            self.draw_sleek_vault_chip(painter, QRect(art_rect.left() + 8, art_rect.top() + 8, badge_w, self.sleek_metric(20, 16, 24)), badge, theme, active=focus_amount > 0.5)
+
+        title_rect = QRect(draw_rect.left() + pad, art_rect.bottom() + self.sleek_metric(8, 5, 10), draw_rect.width() - pad * 2, self.sleek_metric(24, 18, 30))
+        self.draw_sleek_elided(painter, title_rect, item.get("title", ""), self.sleek_font(theme, 13, QFont.Bold, 10, 17), blend_color(theme["guide_primary_text"], theme["guide_card_selected_text"], focus_amount))
+        sub_rect = QRect(draw_rect.left() + pad, title_rect.bottom() + self.sleek_metric(3, 2, 5), draw_rect.width() - pad * 2, self.sleek_metric(18, 14, 22))
+        self.draw_sleek_elided(painter, sub_rect, item.get("subtitle", "") or item.get("meta", ""), self.sleek_font(theme, 9, QFont.DemiBold, 8, 12), blend_color(theme["guide_muted_text"], theme["guide_card_selected_text"], focus_amount))
+        progress = max(0.0, min(1.0, float(item.get("progress", 0.0) or 0.0)))
+        if progress > 0:
+            track = QRect(art_rect.left(), art_rect.bottom() - self.sleek_metric(6, 4, 7), art_rect.width(), self.sleek_metric(4, 3, 5))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(theme["guide_progress_track"])
+            painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
+            painter.setBrush(theme["guide_progress_fill"])
+            painter.drawRoundedRect(QRect(track.left(), track.top(), int(track.width() * progress), track.height()), track.height() // 2, track.height() // 2)
+        painter.restore()
+
+    def draw_sleek_vault_detail(self, painter, inner, header_rect, footer_rect, theme):
+        detail = self.state.get("detail", {})
+        media_type = self.state.get("media_type", detail.get("media_type", "tv"))
+        if media_type == "movie":
+            self.draw_sleek_vault_movie_detail(painter, inner, header_rect, footer_rect, theme)
+        else:
+            self.draw_sleek_vault_show_detail(painter, inner, header_rect, footer_rect, theme)
+
+    def draw_sleek_vault_detail_header(self, painter, poster_rect, copy_rect, detail, theme):
+        self.draw_streaming_art_placeholder(
+            painter,
+            poster_rect,
+            detail.get("title", ""),
+            detail.get("badge", ""),
+            theme,
+            detail.get("artwork_path", ""),
+            fit_mode="cover",
+            show_badge=False,
+        )
+        painter.setPen(QPen(theme["guide_card_selected_border"], 1))
+        painter.setBrush(Qt.NoBrush)
+        painter.drawRoundedRect(poster_rect, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+
+        chip_rect = QRect(copy_rect.left(), copy_rect.top(), self.sleek_metric(112, 82, 142), self.sleek_metric(26, 20, 32))
+        self.draw_sleek_vault_chip(painter, chip_rect, detail.get("badge", "VAULT"), theme, active=True)
+        title_rect = QRect(copy_rect.left(), chip_rect.bottom() + self.sleek_metric(12, 8, 16), copy_rect.width(), self.sleek_metric(76, 54, 96))
+        painter.setFont(self.sleek_font(theme, 36, QFont.Bold, 25, 48))
+        painter.setPen(theme["guide_primary_text"])
+        painter.setClipRect(title_rect)
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, str(detail.get("title", "")))
+        painter.setClipping(False)
+        meta_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(6, 4, 10), copy_rect.width(), self.sleek_metric(28, 22, 34))
+        self.draw_sleek_elided(painter, meta_rect, detail.get("subtitle", ""), self.sleek_font(theme, 13, QFont.DemiBold, 10, 16), theme["guide_secondary_text"])
+        summary_rect = QRect(copy_rect.left(), meta_rect.bottom() + self.sleek_metric(12, 8, 16), copy_rect.width(), self.sleek_metric(58, 42, 76))
+        painter.setClipRect(summary_rect)
+        painter.setFont(self.sleek_font(theme, 13, QFont.Normal, 10, 17))
+        painter.setPen(theme["guide_secondary_text"])
+        painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, detail.get("summary", ""))
+        painter.setClipping(False)
+
+    def draw_sleek_vault_actions(self, painter, rect, actions, selected_index, focused, theme):
+        if not actions:
+            return
+        gap = self.sleek_metric(12, 8, 18)
+        x = rect.left()
+        previous, progress = sleek_focus_transition(self, "vault_detail_actions", selected_index if focused else -1)
+        for index, action in enumerate(actions):
+            label = action.get("label", "")
+            meta = action.get("meta", "")
+            width = self.sleek_metric(156, 118, 220)
+            if label in {"Random Episode", "Add to My Vault", "Remove from My Vault"}:
+                width = self.sleek_metric(190, 145, 250)
+            if x + width > rect.right():
+                break
+            button = QRect(x, rect.top(), width, rect.height())
+            amount = 0.0
+            if focused and index == selected_index:
+                amount = 1.0 if previous == selected_index else progress
+            elif index == previous:
+                amount = 1.0 - progress
+            icon_key = action.get("action", "")
+            if icon_key == "toggle_watchlist" and label.lower().startswith("remove"):
+                icon_key = "remove_watchlist"
+            self.draw_sleek_vault_button(painter, button, label, theme, active=index == 0 and not focused, focused=amount > 0.01, meta=meta, icon=icon_key)
+            x = button.right() + gap
+
+    def draw_sleek_vault_show_detail(self, painter, inner, header_rect, footer_rect, theme):
+        detail = self.state.get("detail", {})
+        actions = self.state.get("actions", [])
+        seasons = self.state.get("seasons", [])
+        episodes = self.state.get("episode_items", [])
+        episode_detail = self.state.get("episode_detail", {})
+        side = self.sleek_metric(28, 18, 42)
+        top = header_rect.bottom() + self.sleek_metric(24, 16, 34)
+        bottom = footer_rect.top() - self.sleek_metric(22, 14, 30)
+        poster_w = max(self.sleek_metric(260, 190, 360), min(self.sleek_metric(360, 260, 440), int(inner.width() * 0.25)))
+        poster_h = self.sleek_metric(390, 292, 500)
+        poster_rect = QRect(inner.left() + side, top, poster_w, min(poster_h, max(180, bottom - top - self.sleek_metric(260, 210, 300))))
+        copy_rect = QRect(poster_rect.right() + self.sleek_metric(34, 24, 48), top + self.sleek_metric(10, 6, 16), inner.right() - poster_rect.right() - side - self.sleek_metric(34, 24, 48), self.sleek_metric(245, 188, 310))
+        self.draw_sleek_vault_detail_header(painter, poster_rect, copy_rect, detail, theme)
+        actions_rect = QRect(copy_rect.left(), copy_rect.top() + self.sleek_metric(210, 160, 258), copy_rect.width(), self.sleek_metric(54, 42, 64))
+        self.draw_sleek_vault_actions(painter, actions_rect, actions, self.state.get("action_selected", 0), self.state.get("detail_focus") == "actions", theme)
+
+        seasons_rect = QRect(copy_rect.left(), actions_rect.bottom() + self.sleek_metric(22, 16, 28), copy_rect.width(), self.sleek_metric(42, 32, 52))
+        x = seasons_rect.left()
+        for index, season in enumerate(seasons[:6]):
+            focused = self.state.get("detail_focus") == "seasons" and index == self.state.get("season_selected", 0)
+            label = f"{season.get('label', 'Season')}   {season.get('count', '')}"
+            w = min(self.sleek_metric(168, 118, 210), max(self.sleek_metric(110, 86, 134), QFontMetrics(self.sleek_font(theme, 11, QFont.Bold, 9, 14)).horizontalAdvance(label) + self.sleek_metric(32, 24, 40)))
+            self.draw_sleek_vault_chip(painter, QRect(x, seasons_rect.top(), w, seasons_rect.height()), label, theme, active=focused or index == self.state.get("season_selected", 0))
+            x += w + self.sleek_metric(10, 7, 14)
+
+        list_top = max(poster_rect.bottom() + self.sleek_metric(26, 18, 34), seasons_rect.bottom() + self.sleek_metric(18, 12, 26))
+        list_rect = QRect(inner.left() + side, list_top, int(inner.width() * 0.68), max(self.sleek_metric(210, 160, 270), bottom - list_top))
+        now_rect = QRect(list_rect.right() + self.sleek_metric(18, 12, 24), list_rect.top(), inner.right() - list_rect.right() - side - self.sleek_metric(18, 12, 24), list_rect.height())
+        self.draw_sleek_episode_panel(painter, list_rect, episodes, theme)
+        self.draw_sleek_now_playing_panel(painter, now_rect, episode_detail, theme)
+
+    def draw_sleek_episode_panel(self, painter, rect, episodes, theme):
+        painter.save()
+        painter.setPen(QPen(theme["guide_card_border"], 1))
+        painter.setBrush(with_alpha(theme["guide_card_bg"], 176))
+        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+        title_rect = QRect(rect.left() + 18, rect.top() + 12, rect.width() - 36, self.sleek_metric(30, 22, 36))
+        self.draw_sleek_elided(painter, title_rect, "Episodes", self.sleek_font(theme, 18, QFont.Bold, 14, 24), theme["guide_primary_text"])
+        if not episodes:
+            empty_rect = rect.adjusted(24, title_rect.bottom() + self.sleek_metric(18, 12, 24), -24, -24)
+            painter.setFont(self.sleek_font(theme, 13, QFont.DemiBold, 10, 17))
+            painter.setPen(theme["guide_secondary_text"])
+            painter.drawText(empty_rect, Qt.AlignCenter | Qt.TextWordWrap, "No episodes found for this show.")
+            painter.restore()
+            return
+        selected = max(0, int(self.state.get("episode_selected", 0)))
+        row_h = self.sleek_metric(78, 62, 96)
+        gap = self.sleek_metric(8, 6, 10)
+        y = title_rect.bottom() + self.sleek_metric(10, 8, 14)
+        for index, item in enumerate(episodes[:max(1, (rect.bottom() - y) // max(1, row_h + gap))]):
+            row = QRect(rect.left() + 18, y, rect.width() - 36, row_h)
+            focused = self.state.get("detail_focus") == "episodes" and index == selected
+            painter.setPen(QPen(theme["guide_card_selected_border"] if focused else theme["guide_card_border"], 2 if focused else 1))
+            painter.setBrush(theme["guide_card_selected_bg"] if focused else with_alpha(theme["guide_program_bg"], 166))
+            painter.drawRoundedRect(row, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
+            thumb = QRect(row.left(), row.top(), min(self.sleek_metric(160, 118, 190), row.width() // 4), row.height())
+            self.draw_streaming_art_placeholder(painter, thumb.adjusted(1, 1, -1, -1), item.get("label", ""), "EPISODE", theme, item.get("artwork_path", ""), show_badge=False)
+            text_left = thumb.right() + self.sleek_metric(14, 10, 18)
+            ep_rect = QRect(text_left, row.top() + self.sleek_metric(8, 6, 10), row.width() - thumb.width() - self.sleek_metric(30, 20, 38), self.sleek_metric(18, 14, 22))
+            self.draw_sleek_elided(painter, ep_rect, item.get("meta", ""), self.sleek_font(theme, 9, QFont.Bold, 8, 12), theme["accent"])
+            title = QRect(text_left, ep_rect.bottom() + 2, ep_rect.width(), self.sleek_metric(24, 18, 30))
+            self.draw_sleek_elided(painter, title, item.get("label", ""), self.sleek_font(theme, 14, QFont.Bold, 11, 18), theme["guide_primary_text"])
+            summary = QRect(text_left, title.bottom() + 1, ep_rect.width(), self.sleek_metric(20, 16, 24))
+            self.draw_sleek_elided(painter, summary, item.get("summary", ""), self.sleek_font(theme, 10, QFont.Normal, 8, 13), theme["guide_secondary_text"])
+            runtime = item.get("runtime", "")
+            if runtime:
+                self.draw_sleek_elided(painter, QRect(row.right() - self.sleek_metric(82, 62, 94), row.top() + 8, self.sleek_metric(70, 52, 82), 22), runtime, self.sleek_font(theme, 10, QFont.Bold, 8, 13), theme["guide_secondary_text"], Qt.AlignRight | Qt.AlignVCenter)
+            y += row_h + gap
+        painter.restore()
+
+    def draw_sleek_now_playing_panel(self, painter, rect, episode_detail, theme):
+        if rect.width() < self.sleek_metric(210, 160, 250):
+            return
+        painter.save()
+        painter.setPen(QPen(theme["guide_card_border"], 1))
+        painter.setBrush(with_alpha(theme["guide_card_bg"], 150))
+        painter.drawRoundedRect(rect, theme.get("border_radius", 8), theme.get("border_radius", 8))
+        pad = self.sleek_metric(16, 12, 22)
+        self.draw_sleek_elided(painter, QRect(rect.left() + pad, rect.top() + pad, rect.width() - pad * 2, self.sleek_metric(28, 22, 34)), "Now Playing", self.sleek_font(theme, 14, QFont.Bold, 11, 18), theme["accent"])
+        art = QRect(rect.left() + pad, rect.top() + self.sleek_metric(52, 40, 64), rect.width() - pad * 2, min(self.sleek_metric(170, 120, 220), rect.height() // 2))
+        pixmap = episode_detail.get("thumbnail")
+        if isinstance(pixmap, QPixmap) and not pixmap.isNull():
+            painter.drawPixmap(art, pixmap.scaled(art.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation), QRect(0, 0, art.width(), art.height()))
+        else:
+            self.draw_streaming_art_placeholder(painter, art, episode_detail.get("title", ""), "NOW", theme, "", show_badge=False)
+        title = QRect(rect.left() + pad, art.bottom() + self.sleek_metric(14, 10, 18), rect.width() - pad * 2, self.sleek_metric(28, 22, 34))
+        self.draw_sleek_elided(painter, title, episode_detail.get("title", ""), self.sleek_font(theme, 13, QFont.Bold, 10, 17), theme["guide_primary_text"])
+        summary = QRect(rect.left() + pad, title.bottom() + self.sleek_metric(8, 6, 12), rect.width() - pad * 2, rect.bottom() - title.bottom() - pad)
+        painter.setClipRect(summary)
+        painter.setFont(self.sleek_font(theme, 10, QFont.Normal, 8, 13))
+        painter.setPen(theme["guide_secondary_text"])
+        painter.drawText(summary, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, episode_detail.get("summary", ""))
+        painter.restore()
+
+    def draw_sleek_vault_movie_detail(self, painter, inner, header_rect, footer_rect, theme):
+        detail = self.state.get("detail", {})
+        side = self.sleek_metric(34, 22, 50)
+        top = header_rect.bottom() + self.sleek_metric(28, 18, 40)
+        bottom = footer_rect.top() - self.sleek_metric(22, 14, 30)
+        poster_w = max(self.sleek_metric(250, 190, 360), min(self.sleek_metric(350, 250, 430), int(inner.width() * 0.24)))
+        poster_rect = QRect(inner.left() + side, top, poster_w, min(self.sleek_metric(440, 320, 560), bottom - top - self.sleek_metric(220, 170, 270)))
+        copy_rect = QRect(poster_rect.right() + self.sleek_metric(40, 28, 56), top + self.sleek_metric(6, 4, 10), inner.right() - poster_rect.right() - side - self.sleek_metric(40, 28, 56), self.sleek_metric(300, 230, 380))
+        self.draw_sleek_vault_detail_header(painter, poster_rect, copy_rect, detail, theme)
+        actions_rect = QRect(copy_rect.left(), copy_rect.top() + self.sleek_metric(220, 170, 280), copy_rect.width(), self.sleek_metric(54, 42, 64))
+        self.draw_sleek_vault_actions(painter, actions_rect, self.state.get("actions", []), self.state.get("action_selected", 0), self.state.get("detail_focus") == "actions", theme)
+        rows_rect = QRect(inner.left() + side, poster_rect.bottom() + self.sleek_metric(28, 20, 36), inner.width() - side * 2, bottom - poster_rect.bottom() - self.sleek_metric(28, 20, 36))
+        self.draw_sleek_vault_shelves(painter, rows_rect, self.state.get("related_sections", []), theme)
 
     def canvas_rect(self):
         margin = scaled_metric(10, self.ui_scale, 8)
@@ -6072,12 +8780,14 @@ class OnDemandOverlay(QWidget):
 
     def draw_streaming_home_view(self, painter, panel, footer_rect, title_font, body_font, small_font, theme):
         self.home_card_hit_rects = []
-        hero_height = max(scaled_metric(166, self.ui_scale, 132), min(scaled_metric(208, self.ui_scale, 170), int(panel.height() * 0.23)))
-        hero_rect = QRect(panel.left() + 18, panel.top() + 52, panel.width() - 36, hero_height)
+        header_clearance = scaled_metric(74, self.ui_scale, 58)
+        side_margin = scaled_metric(18, self.ui_scale, 12)
+        hero_height = max(scaled_metric(150, self.ui_scale, 124), min(scaled_metric(194, self.ui_scale, 158), int(panel.height() * 0.21)))
+        hero_rect = QRect(panel.left() + side_margin, panel.top() + header_clearance, panel.width() - (side_margin * 2), hero_height)
 
-        rows_top = hero_rect.bottom() + scaled_metric(64, self.ui_scale, 48)
+        rows_top = hero_rect.bottom() + scaled_metric(24, self.ui_scale, 18)
         rows_bottom = footer_rect.top() - scaled_metric(22, self.ui_scale, 16)
-        rows_rect = QRect(panel.left() + 18, rows_top, panel.width() - 36, max(80, rows_bottom - rows_top))
+        rows_rect = QRect(panel.left() + side_margin, rows_top, panel.width() - (side_margin * 2), max(80, rows_bottom - rows_top))
         sections = self.state.get("sections", [])
         layout_signature = (
             self.state.get("selected_section", 0),
@@ -6102,8 +8812,8 @@ class OnDemandOverlay(QWidget):
 
         row_gap = scaled_metric(22, self.ui_scale, 16)
         row_height = max(
-            scaled_metric(198, self.ui_scale, 150),
-            min(scaled_metric(228, self.ui_scale, 176), int(rows_rect.height() * 0.34)),
+            scaled_metric(188, self.ui_scale, 146),
+            min(scaled_metric(218, self.ui_scale, 170), int(rows_rect.height() * 0.45)),
         )
         self.sync_home_view_targets(rows_rect, sections)
         section_item_indices = self.state.get("section_item_indices", {})
@@ -6153,17 +8863,19 @@ class OnDemandOverlay(QWidget):
         painter.restore()
         painter.save()
         painter.setPen(Qt.NoPen)
-        gap_cover = QRect(panel.left() + 18, hero_rect.bottom() + 2, panel.width() - 36, max(0, rows_rect.top() - hero_rect.bottom() - 2))
+        gap_cover = QRect(panel.left() + side_margin, hero_rect.bottom() + 2, panel.width() - (side_margin * 2), max(0, rows_rect.top() - hero_rect.bottom() - 2))
         painter.setBrush(QColor(theme["panel"].red(), theme["panel"].green(), theme["panel"].blue(), 252))
         painter.drawRect(gap_cover)
         painter.restore()
         self.draw_streaming_hero_transition(painter, hero_rect, self.state.get("hero", {}), title_font, body_font, small_font, theme)
 
     def draw_streaming_detail_view(self, painter, panel, footer_rect, title_font, body_font, small_font, theme):
-        hero_rect = QRect(panel.left() + 18, panel.top() + 52, panel.width() - 36, max(scaled_metric(164, self.ui_scale, 136), min(scaled_metric(194, self.ui_scale, 156), int(panel.height() * 0.2))))
+        header_clearance = scaled_metric(74, self.ui_scale, 58)
+        side_margin = scaled_metric(18, self.ui_scale, 12)
+        hero_rect = QRect(panel.left() + side_margin, panel.top() + header_clearance, panel.width() - (side_margin * 2), max(scaled_metric(150, self.ui_scale, 126), min(scaled_metric(184, self.ui_scale, 150), int(panel.height() * 0.19))))
         self.draw_streaming_hero_transition(painter, hero_rect, self.state.get("detail", {}), title_font, body_font, small_font, theme, large=True)
 
-        actions_rect = QRect(panel.left() + 18, hero_rect.bottom() + 12, panel.width() - 36, scaled_metric(54, self.ui_scale, 42))
+        actions_rect = QRect(panel.left() + side_margin, hero_rect.bottom() + 12, panel.width() - (side_margin * 2), scaled_metric(68, self.ui_scale, 54))
         self.draw_streaming_action_row(
             painter,
             actions_rect,
@@ -6175,7 +8887,7 @@ class OnDemandOverlay(QWidget):
             theme,
         )
 
-        seasons_rect = QRect(panel.left() + 18, actions_rect.bottom() + 10, panel.width() - 36, scaled_metric(44, self.ui_scale, 34))
+        seasons_rect = QRect(panel.left() + side_margin, actions_rect.bottom() + 10, panel.width() - (side_margin * 2), scaled_metric(44, self.ui_scale, 34))
         self.draw_streaming_season_row(
             painter,
             seasons_rect,
@@ -6189,8 +8901,8 @@ class OnDemandOverlay(QWidget):
 
         content_top = seasons_rect.bottom() + 12
         content_bottom = footer_rect.top() - scaled_metric(18, self.ui_scale, 14)
-        content_rect = QRect(panel.left() + 18, content_top, panel.width() - 36, max(96, content_bottom - content_top))
-        detail_w = max(scaled_metric(240, self.ui_scale, 196), int(content_rect.width() * 0.28))
+        content_rect = QRect(panel.left() + side_margin, content_top, panel.width() - (side_margin * 2), max(96, content_bottom - content_top))
+        detail_w = max(scaled_metric(250, self.ui_scale, 200), min(int(content_rect.width() * 0.31), scaled_metric(340, self.ui_scale, 270)))
         detail_rect = QRect(content_rect.left(), content_rect.top(), detail_w, content_rect.height())
         episodes_rect = QRect(detail_rect.right() + 12, content_rect.top(), content_rect.width() - detail_w - 12, content_rect.height())
         self.draw_streaming_detail_side_panel(
@@ -6304,14 +9016,22 @@ class OnDemandOverlay(QWidget):
                 painter.restore()
 
         painter.setPen(QColor(250, 252, 255))
-        title_size = title_font.pointSize() + (5 if large else 3)
+        title_size = title_font.pointSize() + (3 if large else 2)
         painter.setFont(QFont(title_font.family(), title_size, QFont.Bold))
-        title_rect = QRect(content_rect.left(), title_top, content_rect.width(), scaled_metric(70 if large else 54, self.ui_scale, 52))
-        painter.drawText(title_rect, Qt.TextWordWrap, detail.get("title", ""))
+        text_bottom = content_rect.bottom() - scaled_metric(8, self.ui_scale, 6)
+        reserved_meta_h = scaled_metric(54, self.ui_scale, 44)
+        max_title_h = max(scaled_metric(30, self.ui_scale, 24), text_bottom - title_top - reserved_meta_h)
+        title_rect = QRect(content_rect.left(), title_top, content_rect.width(), min(scaled_metric(64 if large else 52, self.ui_scale, 44), max_title_h))
+        title_text = detail.get("title", "")
+        title_flags = Qt.TextWordWrap if title_rect.height() >= (QFontMetrics(painter.font()).height() * 2 - 2) else Qt.TextSingleLine
+        painter.drawText(title_rect, title_flags, title_text if title_flags == Qt.TextWordWrap else self.elide(painter, title_text, title_rect.width()))
 
-        subtitle_rect = QRect(content_rect.left(), title_rect.bottom() + 6, content_rect.width(), scaled_metric(22, self.ui_scale, 18))
-        meta_rect = QRect(content_rect.left(), subtitle_rect.bottom() + 8, content_rect.width(), scaled_metric(22, self.ui_scale, 18))
-        summary_rect = QRect(content_rect.left(), meta_rect.bottom() + 10, content_rect.width(), content_rect.bottom() - meta_rect.bottom() - scaled_metric(8, self.ui_scale, 6))
+        subtitle_h = max(scaled_metric(22, self.ui_scale, 18), QFontMetrics(body_font).height() + 2)
+        meta_h = max(scaled_metric(20, self.ui_scale, 16), QFontMetrics(small_font).height() + 2)
+        subtitle_rect = QRect(content_rect.left(), title_rect.bottom() + 5, content_rect.width(), subtitle_h)
+        meta_rect = QRect(content_rect.left(), subtitle_rect.bottom() + 4, content_rect.width(), meta_h)
+        summary_top = meta_rect.bottom() + scaled_metric(8, self.ui_scale, 6)
+        summary_rect = QRect(content_rect.left(), summary_top, content_rect.width(), max(0, text_bottom - summary_top))
         if self.skin_style() == "cable":
             cable_body_font = QFont(body_font.family(), max(body_font.pointSize() + 1, small_font.pointSize() + 1), QFont.DemiBold)
             self.draw_cable_text(painter, subtitle_rect, self.elide(painter, detail.get("subtitle", ""), subtitle_rect.width()), QColor(248, 248, 240), cable_body_font, Qt.AlignLeft | Qt.AlignVCenter)
@@ -6325,7 +9045,7 @@ class OnDemandOverlay(QWidget):
             painter.setPen(theme["muted"])
             painter.drawText(meta_rect, Qt.TextSingleLine, self.elide(painter, detail.get("meta", ""), meta_rect.width()))
             painter.setFont(body_font)
-            painter.setPen(theme["dark_text"])
+            painter.setPen(readable_text_color(theme["panel"]))
             painter.drawText(summary_rect, Qt.TextWordWrap, detail.get("summary", ""))
 
         if progress > 0:
@@ -6358,19 +9078,21 @@ class OnDemandOverlay(QWidget):
         else:
             painter.setBrush(QColor(255, 220, 112, 235) if is_selected_section else QColor(theme["header"].red(), theme["header"].green(), theme["header"].blue(), 190))
         painter.drawRoundedRect(accent_rect, max(2, accent_rect.width() // 2), max(2, accent_rect.width() // 2))
-        label_rect = QRect(accent_rect.right() + 12, rect.top() + 10, rect.width() - 34, scaled_metric(24, self.ui_scale, 19))
-        sub_rect = QRect(accent_rect.right() + 12, label_rect.bottom() + 3, rect.width() - 36, scaled_metric(18, self.ui_scale, 15))
-        painter.setFont(QFont(title_font.family(), max(title_font.pointSize() - 1, body_font.pointSize() + 1), QFont.Bold))
+        row_title_font = QFont(title_font.family(), max(body_font.pointSize() + 1, title_font.pointSize() - 3), QFont.Bold)
+        row_title_h = max(scaled_metric(28, self.ui_scale, 22), QFontMetrics(row_title_font).height() + 2)
+        label_rect = QRect(accent_rect.right() + 12, rect.top() + 8, rect.width() - 34, row_title_h)
+        sub_rect = QRect(accent_rect.right() + 12, label_rect.bottom() + 1, rect.width() - 36, max(scaled_metric(18, self.ui_scale, 15), QFontMetrics(small_font).height() + 1))
+        painter.setFont(row_title_font)
         if theme.get("sleek"):
             painter.setPen(theme["primary_text"])
         else:
-            painter.setPen(QColor(255, 248, 232) if self.skin_style() == "cable" else (QColor(52, 36, 12) if is_selected_section else theme["dark_text"]))
-        painter.drawText(label_rect, Qt.TextSingleLine, section.get("title", ""))
+            painter.setPen(QColor(255, 248, 232) if self.skin_style() == "cable" else readable_text_color(theme["panel"]))
+        painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, section.get("title", ""), label_rect.width()))
         painter.setFont(small_font)
         painter.setPen(QColor(theme["text"].red(), theme["text"].green(), theme["text"].blue(), 215) if self.skin_style() == "cable" else theme["muted"])
         painter.drawText(sub_rect, Qt.TextSingleLine, self.elide(painter, section.get("subtitle", ""), sub_rect.width()))
 
-        cards_rect = QRect(accent_rect.right() + 12, sub_rect.bottom() + 10, rect.width() - (accent_rect.width() + 28), rect.bottom() - sub_rect.bottom() - 16)
+        cards_rect = QRect(accent_rect.right() + 12, sub_rect.bottom() + 8, rect.width() - (accent_rect.width() + 28), max(96, rect.bottom() - sub_rect.bottom() - 14))
         self.draw_stream_card_strip(
             painter,
             cards_rect,
@@ -6453,7 +9175,13 @@ class OnDemandOverlay(QWidget):
                 painter.drawRoundedRect(draw_rect.adjusted(4, 4, -4, -4), radius, radius)
             painter.restore()
 
-        art_rect = QRect(draw_rect.left() + 12, draw_rect.top() + 12, draw_rect.width() - 24, max(scaled_metric(82, self.ui_scale, 64), int(draw_rect.height() * 0.48)))
+        pad = scaled_metric(12, self.ui_scale, 9)
+        title_h = scaled_metric(26, self.ui_scale, 22)
+        subtitle_h = scaled_metric(18, self.ui_scale, 15)
+        text_block_h = title_h + scaled_metric(4, self.ui_scale, 3) + subtitle_h
+        available_art_h = draw_rect.height() - (pad * 2) - scaled_metric(10, self.ui_scale, 8) - text_block_h
+        art_h = max(scaled_metric(48, self.ui_scale, 40), min(scaled_metric(84, self.ui_scale, 66), available_art_h))
+        art_rect = QRect(draw_rect.left() + pad, draw_rect.top() + pad, draw_rect.width() - (pad * 2), art_h)
         self.draw_streaming_art_placeholder(
             painter,
             art_rect,
@@ -6463,12 +9191,13 @@ class OnDemandOverlay(QWidget):
             item.get("artwork_path", ""),
         )
 
-        title_rect = QRect(draw_rect.left() + 14, art_rect.bottom() + 10, draw_rect.width() - 28, scaled_metric(46, self.ui_scale, 36))
-        painter.setFont(QFont(body_font.family(), body_font.pointSize() + 3, QFont.Bold))
+        title_rect = QRect(draw_rect.left() + 14, art_rect.bottom() + scaled_metric(8, self.ui_scale, 6), draw_rect.width() - 28, title_h)
+        card_title_font = QFont(body_font.family(), max(small_font.pointSize() + 1, body_font.pointSize()), QFont.Bold)
+        painter.setFont(card_title_font)
         painter.setPen(theme["selected_text"] if focused and theme.get("sleek") else (theme["dark_text"] if focused else theme["primary_text"] if theme.get("sleek") else QColor(248, 250, 244)))
-        painter.drawText(title_rect, Qt.TextWordWrap, item.get("title", ""))
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, item.get("title", ""), title_rect.width()))
 
-        subtitle_rect = QRect(draw_rect.left() + 14, title_rect.bottom() + 4, draw_rect.width() - 28, scaled_metric(18, self.ui_scale, 15))
+        subtitle_rect = QRect(draw_rect.left() + 14, title_rect.bottom() + scaled_metric(3, self.ui_scale, 2), draw_rect.width() - 28, subtitle_h)
         painter.setFont(small_font)
         painter.setPen(theme["selected_text"] if focused and theme.get("sleek") else (theme["muted_text"] if theme.get("sleek") else (theme["dark_text"] if focused else theme["text"])))
         painter.drawText(subtitle_rect, Qt.TextSingleLine, self.elide(painter, item.get("subtitle", ""), subtitle_rect.width()))
@@ -6527,23 +9256,22 @@ class OnDemandOverlay(QWidget):
         path.addRoundedRect(rect, 10, 10)
         painter.save()
         painter.setClipPath(path)
-        pixmap = load_ui_pixmap(artwork_path)
+        aspect_mode = Qt.KeepAspectRatio if fit_mode == "fit" else Qt.KeepAspectRatioByExpanding
+        pixmap = load_scaled_ui_pixmap(artwork_path, rect.size(), aspect_mode)
         if not pixmap.isNull():
-            aspect_mode = Qt.KeepAspectRatio if fit_mode == "fit" else Qt.KeepAspectRatioByExpanding
-            scaled = pixmap.scaled(rect.size(), aspect_mode, Qt.SmoothTransformation)
             if fit_mode == "fit":
                 draw_rect = QRect(
-                    rect.left() + max(0, (rect.width() - scaled.width()) // 2),
-                    rect.top() + max(0, (rect.height() - scaled.height()) // 2),
-                    scaled.width(),
-                    scaled.height(),
+                    rect.left() + max(0, (rect.width() - pixmap.width()) // 2),
+                    rect.top() + max(0, (rect.height() - pixmap.height()) // 2),
+                    pixmap.width(),
+                    pixmap.height(),
                 )
                 painter.fillRect(rect, QColor(8, 12, 18, 190))
-                painter.drawPixmap(draw_rect, scaled)
+                painter.drawPixmap(draw_rect, pixmap)
             else:
-                src_x = max(0, (scaled.width() - rect.width()) // 2)
-                src_y = max(0, (scaled.height() - rect.height()) // 2)
-                painter.drawPixmap(rect, scaled, QRect(src_x, src_y, rect.width(), rect.height()))
+                src_x = max(0, (pixmap.width() - rect.width()) // 2)
+                src_y = max(0, (pixmap.height() - rect.height()) // 2)
+                painter.drawPixmap(rect, pixmap, QRect(src_x, src_y, rect.width(), rect.height()))
             overlay = QLinearGradient(rect.topLeft(), rect.bottomRight())
             overlay.setColorAt(0.0, QColor(8, 12, 32, 32))
             overlay.setColorAt(1.0, QColor(4, 6, 20, 118))
@@ -6552,16 +9280,71 @@ class OnDemandOverlay(QWidget):
             painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
             painter.setBrush(grad)
             painter.drawRoundedRect(rect, 10, 10)
-            initials = "".join(ch for ch in re.findall(r"[A-Za-z0-9]", title.upper())[:2]) or "MW"
             placeholder_family = theme.get("font_primary", "Trebuchet MS") if theme.get("sleek") else guide_font_family("primary")
-            painter.setFont(QFont(placeholder_family, max(scaled_metric(26, self.ui_scale, 20), rect.height() // 3), QFont.Bold))
-            painter.setPen(QColor(255, 255, 255, 210))
-            painter.drawText(rect, Qt.AlignCenter, initials)
+            if theme.get("sleek"):
+                shine = QRadialGradient(rect.center(), max(rect.width(), rect.height()) * 0.7)
+                accent = theme.get("accent", QColor(160, 176, 112))
+                shine.setColorAt(0.0, QColor(accent.red(), accent.green(), accent.blue(), 42))
+                shine.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(shine)
+                painter.drawRoundedRect(rect, 10, 10)
+                label_rect = QRect()
+                label = (badge or "").upper()
+                if show_badge and label:
+                    label_font = QFont(theme.get("font_ui", placeholder_family), max(7, min(11, rect.height() // 12)), QFont.Bold)
+                    label_w = min(rect.width() - 22, max(46, QFontMetrics(label_font).horizontalAdvance(label) + 18))
+                    label_rect = QRect(rect.left() + 12, rect.top() + 12, label_w, max(18, min(26, rect.height() // 7)))
+                    painter.setPen(QPen(QColor(255, 255, 255, 42), 1))
+                    painter.setBrush(QColor(0, 0, 0, 54))
+                    painter.drawRoundedRect(label_rect, 5, 5)
+                    painter.setFont(label_font)
+                    painter.setPen(theme.get("guide_primary_text", QColor(245, 245, 238)))
+                    painter.drawText(label_rect, Qt.AlignCenter | Qt.TextSingleLine, label)
+
+                text_top = label_rect.bottom() + 8 if not label_rect.isNull() else rect.top() + max(16, rect.height() // 9)
+                text_rect = QRect(rect.left() + 18, text_top, rect.width() - 36, rect.bottom() - text_top - 18)
+                words = [part for part in re.split(r"\s+", str(title or APP_NAME).upper()) if part]
+                max_lines = 3 if text_rect.height() >= 88 else 2
+                if len(words) > max_lines:
+                    midpoint = max(1, math.ceil(len(words) / max_lines))
+                    lines = [
+                        " ".join(words[index:index + midpoint])
+                        for index in range(0, len(words), midpoint)
+                    ][:max_lines]
+                    if len(words) > midpoint * max_lines:
+                        lines[-1] = f"{lines[-1]} {' '.join(words[midpoint * max_lines:])}".strip()
+                else:
+                    lines = words[:]
+                lines = lines[:max_lines] or ["MEDIAWAVE"]
+                font_size = max(12, min(rect.height() // (max_lines + 3), rect.width() // 10, 30))
+                title_font = QFont(placeholder_family, font_size, QFont.DemiBold)
+                fm = QFontMetrics(title_font)
+                while font_size > 11 and (
+                    fm.height() * len(lines) + 4 * (len(lines) - 1) > text_rect.height()
+                    or max(fm.horizontalAdvance(line) for line in lines) > text_rect.width()
+                ):
+                    font_size -= 1
+                    title_font.setPointSize(font_size)
+                    fm = QFontMetrics(title_font)
+                painter.setFont(title_font)
+                painter.setPen(QColor(theme.get("accent", QColor(190, 202, 128)).red(), theme.get("accent", QColor(190, 202, 128)).green(), theme.get("accent", QColor(190, 202, 128)).blue(), 224))
+                block_h = fm.height() * len(lines) + 4 * (len(lines) - 1)
+                y = text_rect.top() + max(0, (text_rect.height() - block_h) // 2)
+                for line in lines:
+                    line_rect = QRect(text_rect.left(), y, text_rect.width(), fm.height() + 2)
+                    painter.drawText(line_rect, Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(line, Qt.ElideRight, text_rect.width()))
+                    y += fm.height() + 4
+            else:
+                initials = "".join(ch for ch in re.findall(r"[A-Za-z0-9]", title.upper())[:2]) or "MW"
+                painter.setFont(QFont(placeholder_family, max(scaled_metric(26, self.ui_scale, 20), rect.height() // 3), QFont.Bold))
+                painter.setPen(QColor(255, 255, 255, 210))
+                painter.drawText(rect, Qt.AlignCenter, initials)
         painter.restore()
         painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(rect, 10, 10)
-        if badge and show_badge:
+        if badge and show_badge and not theme.get("sleek"):
             badge_rect = QRect(rect.left() + 8, rect.top() + 8, min(rect.width() - 16, scaled_metric(92, self.ui_scale, 72)), scaled_metric(18, self.ui_scale, 16))
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(255, 244, 188, 220))
@@ -6601,18 +9384,22 @@ class OnDemandOverlay(QWidget):
                 painter.setPen(QPen(theme["focus_ring"] if theme.get("sleek") else QColor(255, 255, 240, 220), 3))
                 painter.drawRoundedRect(button_rect.adjusted(1, 1, -1, -1), 12, 12)
                 painter.restore()
-            painter.setFont(QFont(body_font.family(), body_font.pointSize() + 1, QFont.Bold))
+            label_font = QFont(body_font.family(), max(small_font.pointSize() + 1, body_font.pointSize()), QFont.Bold)
+            meta_font = QFont(small_font.family(), max(8, small_font.pointSize() - 1), QFont.DemiBold)
+            painter.setFont(label_font)
             painter.setPen(theme["selected_text"] if active and theme.get("sleek") else (theme["dark_text"] if active else theme["text"]))
-            painter.drawText(button_rect.adjusted(14, 0, -14, -button_rect.height() // 2 + 2), Qt.AlignLeft | Qt.AlignVCenter, action.get("label", ""))
-            painter.setFont(small_font)
-            painter.drawText(button_rect.adjusted(14, button_rect.height() // 2 - 4, -14, 0), Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, action.get("meta", ""), button_rect.width() - 28))
+            label_rect = QRect(button_rect.left() + 14, button_rect.top() + 4, button_rect.width() - 28, max(1, button_rect.height() // 2 - 2))
+            painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, action.get("label", ""), label_rect.width()))
+            painter.setFont(meta_font)
+            meta_rect = QRect(button_rect.left() + 14, label_rect.bottom() + 1, button_rect.width() - 28, max(1, button_rect.bottom() - label_rect.bottom() - 5))
+            painter.drawText(meta_rect, Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, action.get("meta", ""), meta_rect.width()))
 
     def draw_streaming_season_row(self, painter, rect, seasons, selected_index, focused, body_font, small_font, theme):
         self.draw_panel(painter, rect, theme, radius=12, inset=2)
         inner = rect.adjusted(12, 8, -12, -8)
         x = inner.left()
         for index, season in enumerate(seasons):
-            width = max(scaled_metric(118, self.ui_scale, 88), QFontMetrics(body_font).horizontalAdvance(season.get("label", "")) + scaled_metric(42, self.ui_scale, 34))
+            width = max(scaled_metric(176, self.ui_scale, 132), QFontMetrics(body_font).horizontalAdvance(season.get("label", "")) + scaled_metric(72, self.ui_scale, 54))
             pill_rect = QRect(x, inner.top(), width, inner.height())
             active = focused and index == selected_index
             self.draw_rounded_gradient_box(
@@ -6625,7 +9412,9 @@ class OnDemandOverlay(QWidget):
             )
             painter.setFont(body_font)
             painter.setPen(theme["dark_text"] if active else theme["text"])
-            painter.drawText(pill_rect.adjusted(16, 0, -16, 0), Qt.AlignLeft | Qt.AlignVCenter, season.get("label", ""))
+            count_w = max(scaled_metric(28, self.ui_scale, 22), QFontMetrics(small_font).horizontalAdvance(str(season.get("count", ""))) + 8)
+            label_rect = pill_rect.adjusted(16, 0, -(count_w + 12), 0)
+            painter.drawText(label_rect, Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, season.get("label", ""), label_rect.width()))
             painter.setFont(small_font)
             painter.drawText(pill_rect.adjusted(0, 0, -14, 0), Qt.AlignRight | Qt.AlignVCenter, str(season.get("count", "")))
             x = pill_rect.right() + scaled_metric(10, self.ui_scale, 8)
@@ -6637,15 +9426,23 @@ class OnDemandOverlay(QWidget):
         inner = rect.adjusted(14, 14, -14, -14)
         title_color = QColor(244, 246, 255) if self.skin_style() == "cable" else readable_text_color(theme["panel"])
         meta_color = QColor(220, 228, 242) if self.skin_style() == "cable" else readable_text_color(theme["panel"], light=QColor(220, 228, 242), dark=QColor(72, 64, 36), threshold=0.42)
-        title_rect = QRect(inner.left(), inner.top(), inner.width(), scaled_metric(52, self.ui_scale, 40))
-        painter.setFont(QFont(title_font.family(), title_font.pointSize() + 2, QFont.Bold))
+        title_font_local = QFont(title_font.family(), max(body_font.pointSize() + 1, title_font.pointSize() - 2), QFont.Bold)
+        painter.setFont(title_font_local)
+        title_max_h = min(scaled_metric(88, self.ui_scale, 66), max(scaled_metric(44, self.ui_scale, 34), int(inner.height() * 0.22)))
+        title_rect = QRect(inner.left(), inner.top(), inner.width(), title_max_h)
         painter.setPen(title_color)
         painter.drawText(title_rect, Qt.TextWordWrap, detail.get("title", ""))
         meta_rect = QRect(inner.left(), title_rect.bottom() + 4, inner.width(), scaled_metric(20, self.ui_scale, 16))
         painter.setFont(small_font)
         painter.setPen(meta_color)
         painter.drawText(meta_rect, Qt.TextSingleLine, self.elide(painter, detail.get("meta", ""), meta_rect.width()))
-        thumb_rect = QRect(inner.left(), meta_rect.bottom() + 10, inner.width(), max(scaled_metric(116, self.ui_scale, 90), int(inner.height() * 0.28)))
+        remaining_after_meta = max(0, inner.bottom() - meta_rect.bottom() - scaled_metric(10, self.ui_scale, 8))
+        min_summary_h = scaled_metric(72, self.ui_scale, 58)
+        thumb_h = min(
+            max(scaled_metric(82, self.ui_scale, 68), int(inner.height() * 0.30)),
+            max(scaled_metric(70, self.ui_scale, 56), remaining_after_meta - min_summary_h),
+        )
+        thumb_rect = QRect(inner.left(), meta_rect.bottom() + scaled_metric(10, self.ui_scale, 8), inner.width(), max(scaled_metric(70, self.ui_scale, 56), thumb_h))
         pixmap = detail.get("thumbnail", QPixmap())
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             self.draw_streaming_art_placeholder(painter, thumb_rect, detail.get("title", ""), "", theme, artwork_path="", fit_mode="cover", show_badge=False)
@@ -6663,10 +9460,11 @@ class OnDemandOverlay(QWidget):
             painter.drawRoundedRect(thumb_rect, 10, 10)
         else:
             self.draw_streaming_art_placeholder(painter, thumb_rect, detail.get("title", ""), "", theme, fit_mode="cover", show_badge=False)
-        body_rect = QRect(inner.left(), thumb_rect.bottom() + 10, inner.width(), inner.bottom() - thumb_rect.bottom() - 10)
-        painter.setFont(body_font)
-        painter.setPen(meta_color)
-        painter.drawText(body_rect, Qt.TextWordWrap, detail.get("summary", ""))
+        body_rect = QRect(inner.left(), thumb_rect.bottom() + scaled_metric(10, self.ui_scale, 8), inner.width(), max(0, inner.bottom() - thumb_rect.bottom() - scaled_metric(10, self.ui_scale, 8)))
+        if body_rect.height() > 0:
+            painter.setFont(body_font)
+            painter.setPen(meta_color)
+            painter.drawText(body_rect, Qt.TextWordWrap, detail.get("summary", ""))
 
     def draw_streaming_episode_list(self, painter, rect, items, selected_index, focused, title_font, body_font, small_font, theme):
         self.draw_panel(painter, rect, theme, radius=12, inset=2)
@@ -6680,8 +9478,8 @@ class OnDemandOverlay(QWidget):
         painter.setFont(small_font)
         painter.setPen(inactive_meta)
         painter.drawText(header_rect, Qt.AlignRight | Qt.AlignVCenter, f"{len(items)} available")
-        list_rect = rect.adjusted(12, 40, -12, -12)
-        row_h = max(scaled_metric(86, self.ui_scale, 70), min(scaled_metric(102, self.ui_scale, 82), list_rect.height() // 4 if list_rect.height() > 0 else scaled_metric(86, self.ui_scale, 70)))
+        list_rect = rect.adjusted(12, 42, -12, -12)
+        row_h = max(scaled_metric(104, self.ui_scale, 86), min(scaled_metric(122, self.ui_scale, 96), list_rect.height() // 3 if list_rect.height() > 0 else scaled_metric(104, self.ui_scale, 86)))
         total_height = max(0, len(items) * row_h)
         max_offset = max(0.0, float(total_height - list_rect.height()))
         focus_band = max(row_h, int(list_rect.height() * 0.24))
@@ -6718,11 +9516,15 @@ class OnDemandOverlay(QWidget):
                 painter.restore()
             top_line = QRect(row_rect.left() + 14, row_rect.top() + 8, row_rect.width() - 28, scaled_metric(18, self.ui_scale, 15))
             title_line = QRect(row_rect.left() + 14, top_line.bottom() + 4, row_rect.width() - 28, scaled_metric(24, self.ui_scale, 20))
-            summary_line = QRect(row_rect.left() + 14, title_line.bottom() + 4, row_rect.width() - 28, scaled_metric(18, self.ui_scale, 16))
+            summary_line = QRect(row_rect.left() + 14, title_line.bottom() + 4, row_rect.width() - 28, scaled_metric(20, self.ui_scale, 16))
             painter.setFont(small_font)
             painter.setPen(active_text if active else inactive_meta)
-            painter.drawText(top_line, Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, item.get("meta", ""), int(top_line.width() * 0.58)))
-            painter.drawText(top_line, Qt.AlignRight | Qt.AlignVCenter, self.elide(painter, item.get("runtime", ""), int(top_line.width() * 0.36)))
+            runtime_text = item.get("runtime", "")
+            runtime_w = min(int(top_line.width() * 0.36), max(scaled_metric(58, self.ui_scale, 46), QFontMetrics(small_font).horizontalAdvance(runtime_text) + 12))
+            meta_line = QRect(top_line.left(), top_line.top(), max(0, top_line.width() - runtime_w - 10), top_line.height())
+            runtime_line = QRect(top_line.right() - runtime_w, top_line.top(), runtime_w, top_line.height())
+            painter.drawText(meta_line, Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, item.get("meta", ""), meta_line.width()))
+            painter.drawText(runtime_line, Qt.AlignRight | Qt.AlignVCenter, self.elide(painter, runtime_text, runtime_line.width()))
             painter.setFont(QFont(body_font.family(), body_font.pointSize() + 2, QFont.Bold))
             painter.setPen(active_text if active else inactive_title)
             painter.drawText(title_line, Qt.AlignLeft | Qt.AlignVCenter, self.elide(painter, item.get("label", ""), title_line.width()))
@@ -6777,6 +9579,10 @@ class OnDemandOverlay(QWidget):
                 self.profileStepRequested.emit(1)
                 event.accept()
                 return
+            if self.diagnostic_action_rect.contains(pos):
+                self.diagnosticReadoutRequested.emit()
+                event.accept()
+                return
             if self.close_action_rect.contains(pos):
                 self.settingsCloseRequested.emit()
                 event.accept()
@@ -6787,6 +9593,16 @@ class OnDemandOverlay(QWidget):
                 event.accept()
                 return
         if self.state.get("view") == "home":
+            for rect, action_key in self.hero_action_hit_rects:
+                if rect.contains(pos):
+                    self.heroActionRequested.emit(action_key)
+                    event.accept()
+                    return
+            for rect, filter_index in self.filter_hit_rects:
+                if rect.contains(pos):
+                    self.filterActionRequested.emit(filter_index)
+                    event.accept()
+                    return
             for rect, section_index, item_index in self.home_card_hit_rects:
                 if rect.contains(pos):
                     self.homeCardRequested.emit(section_index, item_index)
@@ -6795,8 +9611,30 @@ class OnDemandOverlay(QWidget):
         super().mousePressEvent(event)
 
     def keyPressEvent(self, event):
-        event.ignore()
-        super().keyPressEvent(event)
+        key = event.key()
+        if key == Qt.Key_Left:
+            self.leftRequested.emit()
+        elif key == Qt.Key_Right:
+            self.rightRequested.emit()
+        elif key == Qt.Key_Up:
+            self.upRequested.emit()
+        elif key == Qt.Key_Down:
+            self.downRequested.emit()
+        elif key in (Qt.Key_Return, Qt.Key_Enter):
+            self.selectRequested.emit()
+        elif key == Qt.Key_Escape:
+            self.backRequested.emit()
+        elif key == Qt.Key_M:
+            self.settingsToggleRequested.emit()
+        elif key == Qt.Key_G:
+            self.guideShortcutRequested.emit()
+        elif key == Qt.Key_V:
+            self.vaultShortcutRequested.emit()
+        else:
+            event.ignore()
+            super().keyPressEvent(event)
+            return
+        event.accept()
 
     def draw_feature_panel(self, painter, rect, detail, title_font, body_font, small_font, theme, compact=False, show_logo=True):
         if self.skin_style() == "cable":
@@ -7225,16 +10063,18 @@ class InfoOverlay(QWidget):
         self.profile_name = "Auto"
         self.theme_name = DEFAULT_THEME_NAME
         self.skin_name = DEFAULT_SKIN_NAME
+        self.sleek_mode = "dark"
         self.ui_scale = GUIDE_UI_SCALE_DEFAULT
         self.state = {}
         self.settings_open = False
         self.settings_values = {}
         self.hide()
 
-    def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT):
+    def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
         self.profile_name = profile_name if profile_name in GUIDE_PROFILES else "Auto"
         self.skin_name = normalize_skin_name(skin_name)
         self.theme_name = normalize_theme_for_skin(self.skin_name, theme_name)
+        self.sleek_mode = normalize_sleek_mode(sleek_mode)
         self.ui_scale = clamp_guide_ui_scale(ui_scale)
         if self.isVisible():
             self.update()
@@ -7261,233 +10101,16 @@ class InfoOverlay(QWidget):
         if not self.state:
             return
 
-        theme = app_theme(self.theme_name, self.skin_name)
+        theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
         if self.skin_style() == "cable":
-            target = overlay_target_rect(self)
-            panel_h = min(max(scaled_metric(256, self.ui_scale, 208), target.height() // 3), target.height() - scaled_metric(44, self.ui_scale, 30))
-            panel = QRect(
-                target.left() + scaled_metric(16, self.ui_scale, 10),
-                target.bottom() - panel_h - scaled_metric(16, self.ui_scale, 10),
-                target.width() - scaled_metric(32, self.ui_scale, 20),
-                panel_h,
-            )
-            panel_base = theme["app_background"] if theme.get("starfield") else theme["bg"]
-            panel_fill = QColor(panel_base.red(), panel_base.green(), panel_base.blue(), 255)
-            painter.fillRect(panel, panel_fill)
-            if theme.get("starfield"):
-                self.draw_starfield(painter, panel.adjusted(2, 2, -2, -2), theme)
-            painter.setPen(QPen(theme["info_overlay_border"], 1))
-            painter.drawRect(panel)
-
-            small_font = QFont(guide_font_family("primary"), max(scaled_metric(9, self.ui_scale, 7), 9), QFont.Bold)
-            body_font = QFont(guide_font_family("secondary"), max(scaled_metric(10, self.ui_scale, 8), 10), QFont.DemiBold)
-            title_font = QFont(guide_font_family("primary"), max(scaled_metric(13, self.ui_scale, 10), 13), QFont.Bold)
-
-            show_action = self.state.get("is_on_demand", False)
-            footer_labels = ["BACK", "MENU", "GUIDE", "VAULT"] + (["START OVER"] if show_action else [])
-            footer_h = scaled_metric(30, self.ui_scale, 24)
-            footer_margin = scaled_metric(18, self.ui_scale, 12)
-            footer = QRect(
-                panel.left() + footer_margin,
-                panel.bottom() - footer_h - footer_margin,
-                panel.width() - (footer_margin * 2),
-                footer_h,
-            )
-
-            outer_margin = scaled_metric(22, self.ui_scale, 16)
-            label_rect = QRect(panel.left() + outer_margin, panel.top() + outer_margin, scaled_metric(136, self.ui_scale, 104), scaled_metric(24, self.ui_scale, 20))
-            painter.setPen(QPen(theme["menu_panel_border"], 1))
-            painter.setBrush(with_alpha(theme["guide_header_bg"], 255))
-            painter.drawRect(label_rect)
-            painter.setFont(small_font)
-            painter.setPen(theme["guide_header_text"])
-            painter.drawText(label_rect.adjusted(6, 0, -6, 0), Qt.AlignLeft | Qt.AlignVCenter, self.state.get("header", "PROGRAM INFO"))
-
-            clock_rect = QRect(
-                panel.right() - outer_margin - scaled_metric(108, self.ui_scale, 86),
-                panel.top() + outer_margin,
-                scaled_metric(108, self.ui_scale, 86),
-                scaled_metric(22, self.ui_scale, 18),
-            )
-            self.draw_digital_clock_box(painter, clock_rect, time.strftime("%I:%M%p").lstrip("0").upper())
-
-            content_top = label_rect.bottom() + scaled_metric(12, self.ui_scale, 10)
-            left_col_x = panel.left() + scaled_metric(48, self.ui_scale, 36)
-            left_col_w = max(scaled_metric(232, self.ui_scale, 176), panel.width() // 5)
-            logo_rect = QRect(left_col_x, content_top, min(scaled_metric(220, self.ui_scale, 160), left_col_w - 16), scaled_metric(42, self.ui_scale, 30))
-            self.draw_logo_watermark(painter, logo_rect, opacity=0.96)
-
-            channel_rect = QRect(left_col_x, logo_rect.bottom() + scaled_metric(18, self.ui_scale, 12), left_col_w, scaled_metric(70, self.ui_scale, 52))
-            painter.setFont(QFont(guide_font_family("primary"), max(scaled_metric(12, self.ui_scale, 10), 12), QFont.Bold))
-            painter.setPen(theme["info_overlay_text"])
-            painter.drawText(channel_rect.adjusted(0, 0, 0, -22), Qt.TextWordWrap, self.state.get("channel_line", "").upper())
-            painter.setFont(small_font)
-            playback_line = self.state.get("time_line", "")
-            if self.state.get("is_on_demand", False):
-                playback_line = "ON DEMAND PLAYBACK"
-            painter.drawText(channel_rect.adjusted(0, 30, 0, 0), Qt.TextWordWrap, playback_line)
-
-            title_left = left_col_x + left_col_w + scaled_metric(76, self.ui_scale, 58)
-            title_right = panel.right() - scaled_metric(28, self.ui_scale, 20)
-            title_text = self.state.get("title", "").upper()
-            progress_top = footer.top() - scaled_metric(82, self.ui_scale, 64)
-            title_measure_rect = QRect(
-                title_left,
-                content_top + scaled_metric(10, self.ui_scale, 8),
-                max(180, title_right - title_left),
-                max(
-                    scaled_metric(76, self.ui_scale, 58),
-                    progress_top - (content_top + scaled_metric(10, self.ui_scale, 8)) - scaled_metric(16, self.ui_scale, 12),
-                ),
-            )
-            painter.setFont(title_font)
-            title_bounds = painter.boundingRect(title_measure_rect, Qt.TextWordWrap, title_text)
-            title_rect = QRect(
-                title_measure_rect.left(),
-                title_measure_rect.top(),
-                title_measure_rect.width(),
-                max(scaled_metric(32, self.ui_scale, 24), min(title_measure_rect.height(), title_bounds.height())),
-            )
-            painter.setPen(theme["accent"])
-            painter.drawText(title_rect, Qt.TextWordWrap, title_text)
-
-            progress_box = QRect(
-                title_left,
-                progress_top,
-                panel.right() - title_left - scaled_metric(28, self.ui_scale, 20),
-                scaled_metric(28, self.ui_scale, 22),
-            )
-            painter.setFont(small_font)
-            painter.setPen(theme["info_overlay_text"])
-            remain_w = min(max(scaled_metric(122, self.ui_scale, 96), progress_box.width() // 4), progress_box.width() - scaled_metric(56, self.ui_scale, 42))
-            remain_rect = QRect(progress_box.left(), progress_box.top(), remain_w, progress_box.height())
-            painter.drawText(remain_rect, Qt.AlignLeft | Qt.AlignVCenter, self.state.get("remaining_line", ""))
-            track_left = remain_rect.right() + scaled_metric(18, self.ui_scale, 14)
-            track = QRect(
-                track_left,
-                progress_box.center().y() - scaled_metric(5, self.ui_scale, 4),
-                max(20, progress_box.right() - track_left - scaled_metric(10, self.ui_scale, 8)),
-                scaled_metric(10, self.ui_scale, 8),
-            )
-            painter.setPen(QPen(theme["info_overlay_text"], 1))
-            painter.drawRect(track)
-            progress = max(0.0, min(1.0, self.state.get("progress", 0.0)))
-            fill = QRect(track.left() + 1, track.top() + 1, max(6, int((track.width() - 2) * progress)), max(1, track.height() - 2))
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(theme["info_progress_fill"])
-            painter.drawRect(fill)
-
-            self.draw_footer_nav(painter, footer, small_font, theme, footer_labels)
-            if self.settings_open:
-                painter.fillRect(self.rect(), QColor(8, 10, 14, 120))
-                self.draw_settings_panel(painter, panel, body_font, small_font, theme)
+            self.draw_set_top_box_info_overlay(painter, theme)
             return
         if theme.get("sleek"):
-            target = overlay_target_rect(self)
-            panel_w = min(target.width() - scaled_metric(34, self.ui_scale, 24), scaled_metric(1180, self.ui_scale, 900))
-            panel_h = min(max(scaled_metric(232, self.ui_scale, 188), target.height() // 4), target.height() - scaled_metric(42, self.ui_scale, 28))
-            panel = QRect(
-                target.left() + (target.width() - panel_w) // 2,
-                target.bottom() - panel_h - scaled_metric(22, self.ui_scale, 16),
-                panel_w,
-                panel_h,
-            )
-            radius = theme.get("border_radius", 8)
-            painter.save()
-            painter.setRenderHint(QPainter.Antialiasing, True)
-            shadow = panel.adjusted(0, scaled_metric(6, self.ui_scale, 4), 0, scaled_metric(8, self.ui_scale, 6))
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(theme["glass_shadow"])
-            painter.drawRoundedRect(shadow, radius, radius)
-            painter.setPen(QPen(theme["info_overlay_border"], 1))
-            painter.setBrush(theme["info_overlay_bg"])
-            painter.drawRoundedRect(panel, radius, radius)
-            painter.setPen(QPen(theme["glass_highlight"], 1))
-            painter.drawLine(panel.left() + radius, panel.top() + 1, panel.right() - radius, panel.top() + 1)
-
-            inner = panel.adjusted(scaled_metric(24, self.ui_scale, 18), scaled_metric(20, self.ui_scale, 14), -scaled_metric(24, self.ui_scale, 18), -scaled_metric(20, self.ui_scale, 14))
-            small_font = QFont(theme.get("font_ui", ".AppleSystemUIFont"), max(scaled_metric(10, self.ui_scale, 8), 10), QFont.DemiBold)
-            body_font = QFont(theme.get("font_ui", ".AppleSystemUIFont"), max(scaled_metric(12, self.ui_scale, 10), 12), QFont.Normal)
-            title_font = QFont(theme.get("font_ui", ".AppleSystemUIFont"), max(scaled_metric(18, self.ui_scale, 14), 18), QFont.DemiBold)
-
-            header_rect = QRect(inner.left(), inner.top(), inner.width(), scaled_metric(30, self.ui_scale, 24))
-            painter.setFont(small_font)
-            painter.setPen(theme["secondary_text"])
-            painter.drawText(header_rect, Qt.AlignLeft | Qt.AlignVCenter, self.state.get("header", "PROGRAM INFO").upper())
-
-            clock_rect = QRect(inner.right() - scaled_metric(116, self.ui_scale, 92), inner.top(), scaled_metric(116, self.ui_scale, 92), scaled_metric(30, self.ui_scale, 24))
-            painter.setPen(QPen(theme["subtle_border"], 1))
-            painter.setBrush(theme["menu_button_bg"])
-            painter.drawRoundedRect(clock_rect, theme.get("cell_radius", 6), theme.get("cell_radius", 6))
-            painter.setPen(theme["secondary_text"])
-            painter.drawText(clock_rect, Qt.AlignCenter, time.strftime("%I:%M %p").lstrip("0"))
-
-            footer_h = scaled_metric(34, self.ui_scale, 26)
-            footer = QRect(inner.left(), inner.bottom() - footer_h, min(scaled_metric(420, self.ui_scale, 320), inner.width()), footer_h)
-            progress_top = footer.top() - scaled_metric(28, self.ui_scale, 22)
-            left_w = min(scaled_metric(250, self.ui_scale, 190), inner.width() // 4)
-            logo_rect = QRect(inner.left(), header_rect.bottom() + scaled_metric(10, self.ui_scale, 8), left_w, scaled_metric(62, self.ui_scale, 46))
-            self.draw_logo_watermark(painter, logo_rect, opacity=0.86)
-
-            channel_rect = QRect(inner.left(), logo_rect.bottom() + scaled_metric(12, self.ui_scale, 8), left_w, max(footer.top() - logo_rect.bottom() - scaled_metric(16, self.ui_scale, 10), scaled_metric(46, self.ui_scale, 36)))
-            painter.setFont(QFont(theme.get("font_ui", ".AppleSystemUIFont"), max(scaled_metric(12, self.ui_scale, 10), 12), QFont.DemiBold))
-            painter.setPen(theme["primary_text"])
-            painter.drawText(channel_rect.adjusted(0, 0, 0, -scaled_metric(24, self.ui_scale, 18)), Qt.TextWordWrap, self.state.get("channel_line", ""))
-            painter.setFont(small_font)
-            painter.setPen(theme["secondary_text"])
-            painter.drawText(channel_rect.adjusted(0, scaled_metric(32, self.ui_scale, 24), 0, 0), Qt.TextWordWrap, self.state.get("time_line", ""))
-
-            info_left = inner.left() + left_w + scaled_metric(42, self.ui_scale, 30)
-            info_right = inner.right()
-            info_rect = QRect(info_left, header_rect.bottom() + scaled_metric(16, self.ui_scale, 10), max(160, info_right - info_left), max(60, progress_top - header_rect.bottom() - scaled_metric(22, self.ui_scale, 16)))
-            painter.setFont(title_font)
-            painter.setPen(theme["primary_text"])
-            title_text = self.state.get("title", "")
-            title_rect = QRect(info_rect.left(), info_rect.top(), info_rect.width(), scaled_metric(56, self.ui_scale, 42))
-            title_bounds = painter.boundingRect(title_rect, Qt.TextWordWrap, title_text)
-            title_draw_rect = QRect(title_rect.left(), title_rect.top(), title_rect.width(), min(title_rect.height(), max(scaled_metric(26, self.ui_scale, 20), title_bounds.height())))
-            painter.drawText(title_draw_rect, Qt.TextWordWrap, title_text)
-            painter.setFont(body_font)
-            painter.setPen(theme["muted_text"])
-            summary_top = title_draw_rect.bottom() + scaled_metric(10, self.ui_scale, 8)
-            summary_rect = QRect(info_rect.left(), summary_top, info_rect.width(), max(scaled_metric(24, self.ui_scale, 18), info_rect.bottom() - summary_top))
-            painter.drawText(summary_rect, Qt.TextWordWrap, self.state.get("summary", ""))
-
-            actions = self.state.get("actions", ["VIEW SHOW VAULT"])
-            action_index = self.state.get("action_index", -1)
-            action_gap = scaled_metric(10, self.ui_scale, 8)
-            action_width = scaled_metric(190, self.ui_scale, 150)
-            action_h = scaled_metric(34, self.ui_scale, 28)
-            action_left = max(info_rect.left(), info_rect.right() - ((action_width * len(actions)) + (action_gap * max(0, len(actions) - 1))))
-            for idx, label in enumerate(actions):
-                rect = QRect(action_left + idx * (action_width + action_gap), header_rect.top(), action_width, action_h)
-                focused = action_index == idx
-                painter.setPen(QPen(theme["focus_ring"] if focused else theme["subtle_border"], 1))
-                painter.setBrush(theme["menu_button_selected_bg"] if focused else theme["menu_button_bg"])
-                painter.drawRoundedRect(rect, theme.get("cell_radius", 6), theme.get("cell_radius", 6))
-                painter.setFont(small_font)
-                painter.setPen(theme["selected_text"] if focused else theme["primary_text"])
-                painter.drawText(rect, Qt.AlignCenter, label)
-
-            footer_nav = self.draw_footer_nav(painter, footer, small_font, theme)
-            remain_rect = QRect(max(footer_nav["right"] + scaled_metric(20, self.ui_scale, 14), info_rect.left()), progress_top - scaled_metric(18, self.ui_scale, 14), inner.right() - info_rect.left(), scaled_metric(18, self.ui_scale, 14))
-            painter.setFont(small_font)
-            painter.setPen(theme["secondary_text"])
-            painter.drawText(remain_rect, Qt.AlignLeft | Qt.AlignVCenter, self.state.get("remaining_line", ""))
-            track_left = max(footer_nav["right"] + scaled_metric(20, self.ui_scale, 14), info_rect.left())
-            track = QRect(track_left, progress_top, inner.right() - track_left, scaled_metric(8, self.ui_scale, 6))
-            painter.setPen(Qt.NoPen)
-            painter.setBrush(with_alpha(theme["panel_background_alt"], 120))
-            painter.drawRoundedRect(track, 3, 3)
-            progress = max(0.0, min(1.0, self.state.get("progress", 0.0)))
-            fill = QRect(track.left(), track.top(), max(8, int(track.width() * progress)), track.height())
-            painter.setBrush(theme["info_progress_fill"])
-            painter.drawRoundedRect(fill, 3, 3)
-            painter.restore()
-            if self.settings_open:
-                painter.fillRect(panel.adjusted(6, 12, -6, -12), theme["overlay_scrim"])
-                self.draw_settings_panel(painter, panel, body_font, small_font, theme)
+            self.draw_sleek_info_overlay(painter, theme)
+            return
+        if theme.get("promised_future"):
+            self.draw_promised_future_info_overlay(painter, theme)
             return
         panel_w = min(self.width() - scaled_metric(36, self.ui_scale, 24), scaled_metric(1120, self.ui_scale, 860))
         panel_h = scaled_metric(254, self.ui_scale, 210)
@@ -7611,8 +10234,827 @@ class InfoOverlay(QWidget):
         painter.drawRoundedRect(fill, 4, 4)
 
         if self.settings_open:
-            painter.fillRect(panel.adjusted(6, 12, -6, -12), QColor(8, 10, 14, 120))
-            self.draw_settings_panel(painter, panel, body_font, small_font, theme)
+            painter.fillRect(self.rect(), QColor(8, 10, 14, 150))
+            self.draw_settings_panel(painter, self.rect(), body_font, small_font, theme)
+
+    def stb_info_metric(self, value, minimum=None, maximum=None):
+        return scaled_metric(value, self.ui_scale, minimum, maximum)
+
+    def stb_info_font(self, size, weight=QFont.Normal, minimum=None, maximum=None):
+        return QFont(guide_font_family("primary"), self.stb_info_metric(size, minimum or max(8, int(size * 0.75)), maximum), weight)
+
+    def draw_stb_block(self, painter, rect, fill, border, inner=None, width=2):
+        draw_classic_cable_beveled_rect(
+            painter,
+            rect,
+            fill,
+            border,
+            self.current_theme.get("stb_bevel_light", QColor(255, 255, 255, 150)) if hasattr(self, "current_theme") else QColor(255, 255, 255, 150),
+            self.current_theme.get("stb_bevel_dark", QColor(0, 0, 0, 170)) if hasattr(self, "current_theme") else QColor(0, 0, 0, 170),
+            width=max(1, width),
+            raised=True,
+        )
+        if inner is not None:
+            painter.setPen(QPen(inner, 1))
+            painter.drawRect(rect.adjusted(2, 2, -2, -2))
+
+    def draw_set_top_box_info_overlay(self, painter, theme):
+        self.current_theme = theme
+        target = overlay_target_rect(self)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, False)
+
+        panel_w = min(target.width() - self.stb_info_metric(92, 48, 130), self.stb_info_metric(1160, 860, 1360))
+        panel_h = min(
+            max(self.stb_info_metric(202, 170, 268), int(target.height() * 0.30)),
+            max(self.stb_info_metric(178, 148, 236), target.height() - self.stb_info_metric(70, 46, 100)),
+        )
+        panel = QRect(
+            target.left() + (target.width() - panel_w) // 2,
+            target.bottom() - panel_h - self.stb_info_metric(34, 22, 50),
+            panel_w,
+            panel_h,
+        )
+        shadow = panel.adjusted(self.stb_info_metric(6, 4, 10), self.stb_info_metric(7, 4, 12), self.stb_info_metric(6, 4, 10), self.stb_info_metric(8, 5, 12))
+        painter.fillRect(shadow, QColor(0, 0, 0, 150))
+
+        outer_border = theme["info_overlay_border"]
+        inner_border = with_alpha(theme["info_overlay_highlight"], 150)
+        self.draw_stb_block(painter, panel, theme["info_overlay_bg"], outer_border, inner_border, width=2)
+
+        inset = self.stb_info_metric(12, 8, 18)
+        inner = panel.adjusted(inset, inset, -inset, -inset)
+        header_h = self.stb_info_metric(32, 25, 42)
+        header = QRect(inner.left(), inner.top(), inner.width(), header_h)
+        self.draw_stb_block(painter, header, theme["guide_header_bg"], theme["guide_grid_line"], with_alpha(theme["info_overlay_highlight"], 92), width=1)
+
+        label_font = self.stb_info_font(15, QFont.Black, 11, 21)
+        painter.setFont(label_font)
+        painter.setPen(theme["guide_header_text"])
+        painter.drawText(header.adjusted(self.stb_info_metric(14, 9, 18), 0, -self.stb_info_metric(150, 112, 190), 0), Qt.AlignLeft | Qt.AlignVCenter, "PROGRAM INFO")
+
+        clock_rect = QRect(
+            header.right() - self.stb_info_metric(138, 104, 176),
+            header.top() + self.stb_info_metric(4, 3, 6),
+            self.stb_info_metric(124, 94, 160),
+            header.height() - self.stb_info_metric(8, 5, 12),
+        )
+        self.draw_digital_clock_box(painter, clock_rect, time.strftime("%I:%M%p").lstrip("0").upper())
+
+        body = QRect(inner.left(), header.bottom() + self.stb_info_metric(10, 7, 14), inner.width(), inner.bottom() - header.bottom() - self.stb_info_metric(10, 7, 14))
+        if theme.get("starfield"):
+            body_starfield = body.adjusted(1, 1, -1, -1)
+            draw_classic_cable_starfield(painter, body_starfield, self.theme_name, seed_offset=131)
+            painter.fillRect(body_starfield, QColor(0, 0, 0, 78))
+        left_w = min(max(self.stb_info_metric(270, 205, 340), int(body.width() * 0.25)), int(body.width() * 0.33))
+        left = QRect(body.left() + self.stb_info_metric(10, 6, 14), body.top(), left_w, body.height())
+        footer_h = self.stb_info_metric(34, 28, 42)
+        footer = QRect(left.left(), left.bottom() - footer_h, min(left.width() + self.stb_info_metric(330, 240, 410), body.width()), footer_h)
+        card_h = max(self.stb_info_metric(78, 60, 108), footer.top() - left.top() - self.stb_info_metric(34, 26, 42))
+        card = QRect(left.left(), left.top(), left.width(), min(card_h, self.stb_info_metric(116, 86, 152)))
+        channel_text = QRect(left.left(), card.bottom() + self.stb_info_metric(6, 4, 10), left.width(), max(self.stb_info_metric(24, 19, 32), footer.top() - card.bottom() - self.stb_info_metric(9, 6, 12)))
+        self.draw_stb_channel_identity(painter, card, channel_text, theme)
+
+        detail_left = left.right() + self.stb_info_metric(28, 18, 40)
+        detail = QRect(detail_left, body.top() + self.stb_info_metric(4, 2, 8), body.right() - detail_left - self.stb_info_metric(12, 8, 18), footer.top() - body.top() - self.stb_info_metric(12, 8, 16))
+        self.draw_stb_program_details(painter, detail, theme)
+        self.draw_stb_footer_buttons(painter, footer, theme)
+
+        if self.settings_open:
+            painter.fillRect(self.rect(), QColor(0, 0, 0, 160))
+            self.draw_settings_panel(painter, self.rect(), self.stb_info_font(11, QFont.DemiBold, 9, 15), self.stb_info_font(10, QFont.Black, 8, 14), theme)
+        painter.restore()
+
+    def draw_stb_channel_identity(self, painter, card, text_rect, theme):
+        number, name, line = self.pf_info_channel_parts()
+        self.draw_stb_block(painter, card, theme["info_channel_card_bottom"], theme["info_channel_card_border"], with_alpha(theme["info_overlay_highlight"], 86), width=2)
+        logo = load_ui_pixmap(self.pf_info_channel_logo_path())
+        logo_box = card.adjusted(self.stb_info_metric(10, 7, 14), self.stb_info_metric(8, 6, 12), -self.stb_info_metric(10, 7, 14), -self.stb_info_metric(8, 6, 12))
+        if not logo.isNull():
+            scaled = logo.scaled(logo_box.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            draw_rect = QRect(logo_box.left() + (logo_box.width() - scaled.width()) // 2, logo_box.top() + (logo_box.height() - scaled.height()) // 2, scaled.width(), scaled.height())
+            painter.drawPixmap(draw_rect, scaled)
+        else:
+            painter.fillRect(logo_box, with_alpha(theme["bg"], 210))
+            painter.setPen(QPen(with_alpha(theme["selected"], 150), 1))
+            painter.drawRect(logo_box.adjusted(1, 1, -1, -1))
+            words = self.stb_channel_fallback_lines(name, number)
+            font = self.stb_info_font(17, QFont.Black, 11, 24)
+            metrics = QFontMetrics(font)
+            max_w = max(20, logo_box.width() - self.stb_info_metric(12, 8, 18))
+            while font.pointSize() > 9 and any(metrics.horizontalAdvance(word) > max_w for word in words):
+                font.setPointSize(font.pointSize() - 1)
+                metrics = QFontMetrics(font)
+            painter.setFont(font)
+            painter.setPen(theme["info_channel_text"])
+            total_h = len(words) * metrics.height()
+            y = logo_box.center().y() - total_h // 2
+            for word in words:
+                row = QRect(logo_box.left() + 3, y, logo_box.width() - 6, metrics.height())
+                painter.drawText(row, Qt.AlignCenter, word)
+                y += metrics.height()
+
+        painter.setFont(self.stb_info_font(10, QFont.Black, 8, 14))
+        painter.setPen(theme["info_channel_text"])
+        channel_line = line or (f"CH {number}  •  {name}" if number else name)
+        painter.drawText(text_rect, Qt.AlignCenter | Qt.TextWordWrap, channel_line.upper())
+
+    def stb_channel_fallback_lines(self, name, number):
+        cleaned = re.sub(r"[^A-Za-z0-9+ ]+", " ", name or "").strip().upper()
+        if "WEATHERSTAR" in cleaned:
+            return ["WEATHERSTAR", "4000+"]
+        if "RADIOWAVE" in cleaned:
+            return ["RADIOWAVE", "TV"]
+        if "NETTV" in cleaned:
+            return ["NETTV"]
+        words = [word for word in cleaned.split() if word]
+        if words:
+            return words[:3]
+        return [f"CH {number}" if number else "TV"]
+
+    def draw_stb_program_details(self, painter, rect, theme):
+        title = (self.state.get("title") or "NOW PLAYING").strip().upper()
+        summary = (self.state.get("summary") or "").strip()
+        title_font = self.stb_info_font(20, QFont.Black, 14, 30)
+        meta_font = self.stb_info_font(11, QFont.Black, 9, 15)
+        small_font = self.stb_info_font(10, QFont.Black, 8, 14)
+
+        progress_h = self.stb_info_metric(32, 26, 40)
+        progress = QRect(rect.left(), rect.bottom() - progress_h, rect.width(), progress_h)
+        title_rect = QRect(rect.left(), rect.top(), rect.width(), max(self.stb_info_metric(42, 32, 62), rect.height() - progress_h - self.stb_info_metric(34, 24, 44)))
+        painter.setFont(title_font)
+        title_metrics = QFontMetrics(title_font)
+        title_text = title_metrics.elidedText(title, Qt.ElideRight, title_rect.width())
+        painter.setPen(theme["accent"])
+        painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop, title_text)
+
+        meta_text = summary or self.state.get("time_line", "")
+        meta_rect = QRect(rect.left(), title_rect.bottom() - self.stb_info_metric(4, 2, 6), rect.width(), self.stb_info_metric(24, 18, 30))
+        painter.setFont(meta_font)
+        painter.setPen(theme["info_body_text"])
+        painter.drawText(meta_rect, Qt.AlignLeft | Qt.AlignVCenter, QFontMetrics(meta_font).elidedText(meta_text.upper(), Qt.ElideRight, meta_rect.width()))
+
+        self.draw_stb_progress(painter, progress, theme, small_font)
+
+    def draw_stb_progress(self, painter, rect, theme, font):
+        left_text = (self.state.get("remaining_line") or "").upper()
+        right_text = (self.state.get("end_line") or "").upper()
+        if right_text.startswith("ENDS "):
+            right_label = right_text
+        elif right_text:
+            right_label = f"ENDS {right_text}"
+        else:
+            right_label = ""
+        painter.setFont(font)
+        painter.setPen(theme["info_body_text"])
+        metrics = QFontMetrics(font)
+        left_w = min(max(self.stb_info_metric(142, 108, 184), metrics.horizontalAdvance(left_text) + 10), rect.width() // 3)
+        right_w = min(max(self.stb_info_metric(128, 94, 172), metrics.horizontalAdvance(right_label) + 10), rect.width() // 3)
+        left = QRect(rect.left(), rect.top(), left_w, rect.height())
+        right = QRect(rect.right() - right_w, rect.top(), right_w, rect.height())
+        painter.drawText(left, Qt.AlignLeft | Qt.AlignVCenter, left_text)
+        painter.drawText(right, Qt.AlignRight | Qt.AlignVCenter, right_label)
+
+        track_left = left.right() + self.stb_info_metric(16, 10, 22)
+        track_right = right.left() - self.stb_info_metric(16, 10, 22)
+        track_h = self.stb_info_metric(15, 11, 19)
+        track = QRect(track_left, rect.center().y() - track_h // 2, max(24, track_right - track_left), track_h)
+        self.draw_stb_block(painter, track, with_alpha(theme["info_progress_track"], 245), theme["info_overlay_border"], None, width=2)
+        progress = max(0.0, min(1.0, float(self.state.get("progress", 0.0) or 0.0)))
+        fill = QRect(track.left() + 3, track.top() + 3, max(4, int((track.width() - 6) * progress)), max(1, track.height() - 6))
+        painter.fillRect(fill, theme["info_progress_fill"])
+
+    def draw_stb_footer_buttons(self, painter, footer, theme):
+        labels = ["BACK", "MENU", "GUIDE", "VAULT"]
+        nav_focused = bool(self.state.get("nav_focused"))
+        nav_index = int(self.state.get("nav_index", -1))
+        gap = self.stb_info_metric(8, 6, 12)
+        button_w = self.stb_info_metric(108, 82, 138)
+        x = footer.left()
+        font = self.stb_info_font(11, QFont.Black, 9, 15)
+        for idx, label in enumerate(labels):
+            rect = QRect(x, footer.top(), button_w, footer.height())
+            active = nav_focused and nav_index == idx
+            fill = theme["menu_button_selected_bg"] if active else theme["menu_button_bg"]
+            border = theme["focus_ring"] if active else theme["info_overlay_border"]
+            self.draw_stb_block(painter, rect, fill, border, with_alpha(theme["info_overlay_highlight"], 96 if active else 42), width=2 if active else 1)
+            painter.setFont(font)
+            painter.setPen(theme["settings_value_selected_text"] if active else theme["info_button_text"])
+            painter.drawText(rect, Qt.AlignCenter, label)
+            x += button_w + gap
+
+    def sleek_info_metric(self, value, minimum=None, maximum=None):
+        return scaled_metric(value, self.ui_scale, minimum, maximum)
+
+    def sleek_info_font(self, size, weight=QFont.Normal, minimum=None, maximum=None):
+        return QFont(".AppleSystemUIFont", self.sleek_info_metric(size, minimum or max(8, int(size * 0.72)), maximum), weight)
+
+    def draw_sleek_info_overlay(self, painter, theme):
+        target = overlay_target_rect(self)
+        mode = normalize_sleek_mode(self.sleek_mode)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        panel_w = min(target.width() - self.sleek_info_metric(76, 42, 120), self.sleek_info_metric(1280, 920, 1500))
+        panel_h = min(max(self.sleek_info_metric(250, 210, 330), int(target.height() * 0.34)), max(self.sleek_info_metric(218, 178, 290), target.height() - self.sleek_info_metric(74, 46, 108)))
+        panel = QRect(
+            target.left() + (target.width() - panel_w) // 2,
+            target.bottom() - panel_h - self.sleek_info_metric(30, 18, 44),
+            panel_w,
+            panel_h,
+        )
+        radius = self.sleek_info_metric(18, 12, 26)
+        shadow = panel.adjusted(0, self.sleek_info_metric(10, 6, 15), 0, self.sleek_info_metric(14, 8, 20))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(theme["glass_shadow"])
+        painter.drawRoundedRect(shadow, radius, radius)
+
+        bg = QLinearGradient(panel.topLeft(), panel.bottomLeft())
+        if mode == "light":
+            bg.setColorAt(0.0, QColor(255, 255, 255, 235))
+            bg.setColorAt(0.55, QColor(theme["info_overlay_bg"].red(), theme["info_overlay_bg"].green(), theme["info_overlay_bg"].blue(), 238))
+            bg.setColorAt(1.0, QColor(230, 232, 224, 226))
+        else:
+            bg.setColorAt(0.0, QColor(28, 34, 37, 238))
+            bg.setColorAt(0.62, QColor(theme["info_overlay_bg"].red(), theme["info_overlay_bg"].green(), theme["info_overlay_bg"].blue(), 242))
+            bg.setColorAt(1.0, QColor(9, 13, 16, 236))
+        painter.setPen(QPen(theme["info_overlay_border"], 1))
+        painter.setBrush(bg)
+        painter.drawRoundedRect(panel, radius, radius)
+        painter.setPen(QPen(theme["info_overlay_edge_highlight"], 1))
+        painter.drawLine(panel.left() + radius, panel.top() + 1, panel.right() - radius, panel.top() + 1)
+
+        inner = panel.adjusted(self.sleek_info_metric(26, 18, 36), self.sleek_info_metric(22, 15, 30), -self.sleek_info_metric(26, 18, 36), -self.sleek_info_metric(18, 13, 26))
+        footer_h = self.sleek_info_metric(44, 36, 56)
+        footer_y = inner.bottom() - footer_h
+        card_w = min(max(self.sleek_info_metric(176, 132, 236), int(inner.width() * 0.18)), int(inner.width() * 0.24))
+        card_h = min(self.sleek_info_metric(148, 108, 198), footer_y - inner.top() - self.sleek_info_metric(34, 24, 44))
+        card = QRect(inner.left(), inner.top(), card_w, max(self.sleek_info_metric(104, 82, 142), card_h))
+        channel_line = QRect(card.left(), card.bottom() + self.sleek_info_metric(12, 8, 16), card.width(), max(0, footer_y - card.bottom() - self.sleek_info_metric(18, 12, 24)))
+        self.draw_sleek_info_channel_card(painter, card, channel_line, theme)
+
+        divider_x = card.right() + self.sleek_info_metric(24, 16, 32)
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.drawLine(divider_x, inner.top(), divider_x, footer_y - self.sleek_info_metric(10, 6, 14))
+
+        content_left = divider_x + self.sleek_info_metric(26, 18, 36)
+        content = QRect(content_left, inner.top() + self.sleek_info_metric(4, 2, 8), inner.right() - content_left, footer_y - inner.top() - self.sleek_info_metric(18, 12, 26))
+        self.draw_sleek_info_content(painter, content, theme)
+
+        rule_y = footer_y - self.sleek_info_metric(14, 9, 20)
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.drawLine(inner.left(), rule_y, inner.right(), rule_y)
+        self.draw_sleek_info_controls(painter, QRect(inner.left(), footer_y, inner.width(), footer_h), theme)
+
+        if self.settings_open:
+            painter.fillRect(self.rect(), with_alpha(theme["overlay_scrim"], 164))
+            self.draw_settings_panel(painter, self.rect(), self.sleek_info_font(12, QFont.Normal, 10, 18), self.sleek_info_font(10, QFont.Bold, 8, 15), theme)
+        painter.restore()
+
+    def draw_sleek_info_channel_card(self, painter, card, text_rect, theme):
+        number, name, line = self.pf_info_channel_parts()
+        grad = QLinearGradient(card.topLeft(), card.bottomRight())
+        grad.setColorAt(0.0, QColor(theme["info_overlay_surface"].red(), theme["info_overlay_surface"].green(), theme["info_overlay_surface"].blue(), 222))
+        grad.setColorAt(0.62, QColor(theme["panel_background_alt"].red(), theme["panel_background_alt"].green(), theme["panel_background_alt"].blue(), 204))
+        grad.setColorAt(1.0, QColor(theme["info_overlay_bg"].red(), theme["info_overlay_bg"].green(), theme["info_overlay_bg"].blue(), 214))
+        painter.setPen(QPen(theme["info_channel_card_border"], 1))
+        painter.setBrush(grad)
+        painter.drawRoundedRect(card, self.sleek_info_metric(13, 9, 18), self.sleek_info_metric(13, 9, 18))
+
+        logo = load_ui_pixmap(self.pf_info_channel_logo_path())
+        logo_box = card.adjusted(self.sleek_info_metric(14, 10, 20), self.sleek_info_metric(14, 10, 20), -self.sleek_info_metric(14, 10, 20), -self.sleek_info_metric(14, 10, 20))
+        if not logo.isNull():
+            scaled = logo.scaled(logo_box.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            draw_rect = QRect(logo_box.left() + (logo_box.width() - scaled.width()) // 2, logo_box.top() + (logo_box.height() - scaled.height()) // 2, scaled.width(), scaled.height())
+            painter.drawPixmap(draw_rect, scaled)
+        else:
+            accent = theme["guide_card_selected_border"]
+            fallback = QLinearGradient(logo_box.topLeft(), logo_box.bottomRight())
+            fallback.setColorAt(0.0, QColor(theme["panel_background_alt"].red(), theme["panel_background_alt"].green(), theme["panel_background_alt"].blue(), 226))
+            fallback.setColorAt(0.58, QColor(theme["info_overlay_surface"].red(), theme["info_overlay_surface"].green(), theme["info_overlay_surface"].blue(), 218))
+            fallback.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 82))
+            painter.setPen(QPen(with_alpha(accent, 96), 1))
+            painter.setBrush(fallback)
+            painter.drawRoundedRect(logo_box, self.sleek_info_metric(12, 8, 16), self.sleek_info_metric(12, 8, 16))
+            shine = QLinearGradient(logo_box.topLeft(), logo_box.bottomLeft())
+            shine.setColorAt(0.0, QColor(255, 255, 255, 34))
+            shine.setColorAt(0.5, QColor(255, 255, 255, 4))
+            shine.setColorAt(1.0, QColor(0, 0, 0, 22))
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(shine)
+            painter.drawRoundedRect(logo_box.adjusted(1, 1, -1, -1), self.sleek_info_metric(11, 7, 15), self.sleek_info_metric(11, 7, 15))
+
+            lines = self.sleek_info_channel_fallback_lines(name, number)
+            line_font = self.sleek_info_font(15, QFont.Black, 11, 22)
+            metrics = QFontMetrics(line_font)
+            max_w = max(20, logo_box.width() - self.sleek_info_metric(12, 8, 18))
+            while line_font.pointSize() > 10 and any(metrics.horizontalAdvance(text) > max_w for text in lines):
+                line_font.setPointSize(line_font.pointSize() - 1)
+                metrics = QFontMetrics(line_font)
+            painter.setFont(line_font)
+            painter.setPen(theme["info_channel_text"])
+            total_h = len(lines) * metrics.height()
+            y = logo_box.center().y() - total_h // 2
+            for text in lines:
+                rect = QRect(logo_box.left(), y, logo_box.width(), metrics.height())
+                painter.drawText(rect, Qt.AlignCenter, text)
+                y += metrics.height()
+
+        painter.setFont(self.sleek_info_font(10, QFont.DemiBold, 8, 13))
+        painter.setPen(theme["info_metadata_text"])
+        channel_line = line or (f"CH {number}  •  {name}" if number else name)
+        painter.drawText(text_rect, Qt.AlignCenter | Qt.TextWordWrap, channel_line)
+
+    def sleek_info_channel_fallback_lines(self, name, number):
+        compact = re.sub(r"[^A-Za-z0-9+ ]+", " ", name or "").strip()
+        lower = compact.casefold()
+        if "weatherstar" in lower:
+            return ["WEATHER", "STAR", "4000+"]
+        if "radiowave" in lower:
+            return ["RADIOWAVE", "TV"]
+        if "nettv" in lower:
+            return ["NETTV"]
+        words = [word.upper() for word in compact.split() if word]
+        if not words:
+            return [f"CH {number}" if number else "TV"]
+        if len(words) == 1 and len(words[0]) > 9:
+            return [words[0][:9]]
+        return words[:3]
+
+    def draw_sleek_info_content(self, painter, rect, theme):
+        title = (self.state.get("title") or "Now Playing").strip()
+        summary = (self.state.get("summary") or "").strip()
+        meta_parts = [part for part in (self.state.get("channel_line", ""), self.state.get("time_line", "")) if part]
+        meta = "  •  ".join(meta_parts)
+        title_font = self.sleek_info_font(23, QFont.DemiBold, 17, 34)
+        body_font = self.sleek_info_font(12, QFont.Normal, 10, 18)
+        meta_font = self.sleek_info_font(11, QFont.DemiBold, 9, 15)
+
+        actions = self.state.get("actions", [])
+        action_index = self.state.get("action_index", -1)
+        action_w = 0
+        action_h = self.sleek_info_metric(34, 28, 42)
+        if actions:
+            action_w = min(self.sleek_info_metric(178, 136, 220), max(self.sleek_info_metric(128, 104, 160), QFontMetrics(meta_font).horizontalAdvance(actions[0]) + self.sleek_info_metric(28, 22, 36)))
+            action_rect = QRect(rect.right() - action_w, rect.top(), action_w, action_h)
+            self.draw_sleek_info_action_button(painter, action_rect, actions[0], theme, action_index == 0)
+
+        progress_h = self.sleek_info_metric(34, 28, 44)
+        progress = QRect(rect.left(), rect.bottom() - progress_h, rect.width(), progress_h)
+        rule_y = progress.top() - self.sleek_info_metric(14, 9, 18)
+        meta_h = self.sleek_info_metric(24, 18, 30)
+        meta_rect = QRect(rect.left(), rule_y - meta_h - self.sleek_info_metric(8, 5, 12), rect.width(), meta_h)
+        title_rect = QRect(
+            rect.left(),
+            rect.top() + self.sleek_info_metric(6, 3, 10),
+            max(80, rect.width() - action_w - self.sleek_info_metric(18, 12, 26)),
+            max(self.sleek_info_metric(36, 28, 48), meta_rect.top() - rect.top() - self.sleek_info_metric(56, 42, 72)),
+        )
+        painter.setFont(title_font)
+        title_metrics = QFontMetrics(title_font)
+        title_bounds = painter.boundingRect(title_rect, Qt.TextWordWrap, title)
+        max_title_h = min(title_rect.height(), title_metrics.height() * 2 + self.sleek_info_metric(4, 2, 6))
+        title_draw = QRect(title_rect.left(), title_rect.top(), title_rect.width(), min(max_title_h, max(title_metrics.height(), title_bounds.height())))
+        painter.setPen(theme["info_title_text"])
+        painter.drawText(title_draw, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, title)
+
+        summary_top = title_draw.bottom() + self.sleek_info_metric(8, 5, 12)
+        summary_rect = QRect(rect.left(), summary_top, rect.width(), max(self.sleek_info_metric(22, 16, 34), meta_rect.top() - summary_top - self.sleek_info_metric(6, 4, 10)))
+        painter.setFont(body_font)
+        painter.setPen(theme["info_description_text"])
+        painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, summary)
+
+        painter.setFont(meta_font)
+        painter.setPen(theme["info_metadata_text"])
+        painter.drawText(meta_rect, Qt.AlignLeft | Qt.AlignVCenter, QFontMetrics(meta_font).elidedText(meta, Qt.ElideRight, meta_rect.width()))
+
+        painter.setPen(QPen(theme["guide_divider"], 1))
+        painter.drawLine(rect.left(), rule_y, rect.right(), rule_y)
+        self.draw_sleek_info_progress(painter, progress, theme)
+
+    def draw_sleek_info_action_button(self, painter, rect, label, theme, active):
+        painter.setPen(QPen(theme["info_button_focused_border"] if active else theme["info_button_border"], 1))
+        painter.setBrush(theme["info_button_focused_bg"] if active else theme["info_button_bg"])
+        painter.drawRoundedRect(rect, rect.height() // 2, rect.height() // 2)
+        painter.setFont(self.sleek_info_font(10, QFont.Bold, 8, 13))
+        painter.setPen(theme["selected_text"] if active else theme["info_button_text"])
+        painter.drawText(rect.adjusted(10, 0, -10, 0), Qt.AlignCenter, label)
+
+    def draw_sleek_info_progress(self, painter, rect, theme):
+        label_font = self.sleek_info_font(11, QFont.DemiBold, 9, 15)
+        painter.setFont(label_font)
+        painter.setPen(theme["info_overlay_text"])
+        left_text = self.state.get("remaining_line", "")
+        left_w = min(max(self.sleek_info_metric(128, 100, 170), QFontMetrics(label_font).horizontalAdvance(left_text) + 12), rect.width() // 3)
+        right_text = self.state.get("end_line", "")
+        if right_text.startswith("Ends "):
+            right_text = right_text[5:]
+        right_w = min(max(self.sleek_info_metric(78, 62, 112), QFontMetrics(label_font).horizontalAdvance(right_text) + 12), rect.width() // 4)
+        left = QRect(rect.left(), rect.top(), left_w, rect.height())
+        right = QRect(rect.right() - right_w, rect.top(), right_w, rect.height())
+        painter.drawText(left, Qt.AlignLeft | Qt.AlignVCenter, left_text)
+        painter.drawText(right, Qt.AlignRight | Qt.AlignVCenter, right_text)
+
+        track_h = self.sleek_info_metric(7, 5, 10)
+        track_left = left.right() + self.sleek_info_metric(18, 12, 26)
+        track_right = right.left() - self.sleek_info_metric(18, 12, 26)
+        track = QRect(track_left, rect.center().y() - track_h // 2, max(20, track_right - track_left), track_h)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(theme["info_progress_track"])
+        painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
+        progress = max(0.0, min(1.0, float(self.state.get("progress", 0.0) or 0.0)))
+        fill = QRect(track.left(), track.top(), max(track.height(), int(track.width() * progress)), track.height())
+        painter.setBrush(theme["info_progress_fill"])
+        painter.drawRoundedRect(fill, fill.height() // 2, fill.height() // 2)
+        knob_size = self.sleek_info_metric(12, 8, 16)
+        knob = QRect(track.left() + int(track.width() * progress) - knob_size // 2, track.center().y() - knob_size // 2, knob_size, knob_size)
+        painter.setPen(QPen(theme["info_overlay_bg"], 1))
+        painter.setBrush(theme["info_progress_knob"])
+        painter.drawEllipse(knob)
+
+    def draw_sleek_info_controls(self, painter, rect, theme):
+        labels = [("back", "Back"), ("menu", "Menu"), ("guide", "Guide"), ("vault", "Vault")]
+        nav_focused = bool(self.state.get("nav_focused"))
+        nav_index = int(self.state.get("nav_index", -1))
+        gap = self.sleek_info_metric(10, 7, 14)
+        button_h = min(rect.height(), self.sleek_info_metric(38, 30, 46))
+        y = rect.center().y() - button_h // 2
+        x = rect.left()
+        font = self.sleek_info_font(11, QFont.DemiBold, 9, 14)
+        icon_size = self.sleek_info_metric(20, 16, 24)
+        for idx, (kind, label) in enumerate(labels):
+            w = self.sleek_info_metric(116 if label != "Back" else 108, 88, 138)
+            button = QRect(x, y, w, button_h)
+            active = nav_focused and nav_index == idx
+            self.draw_sleek_info_icon_button(painter, button, kind, label, theme, active, font, icon_size)
+            x += w + gap
+
+        toggle_size = min(button_h + self.sleek_info_metric(6, 4, 8), self.sleek_info_metric(46, 36, 54))
+        toggle = QRect(rect.right() - toggle_size, rect.center().y() - toggle_size // 2, toggle_size, toggle_size)
+        toggle_active = nav_focused and nav_index == 4
+        painter.setPen(QPen(theme["info_button_focused_border"] if toggle_active else theme["info_button_border"], 2 if toggle_active else 1))
+        painter.setBrush(theme["info_toggle_focused_bg"] if toggle_active else theme["info_toggle_bg"])
+        painter.drawEllipse(toggle)
+        icon_pad = self.sleek_info_metric(11, 8, 14)
+        icon_rect = toggle.adjusted(icon_pad, icon_pad, -icon_pad, -icon_pad)
+        toggle_kind = "light" if normalize_sleek_mode(self.sleek_mode) == "dark" else "dark"
+        draw_sleek_nav_icon_shape(painter, icon_rect, toggle_kind, theme["selected_text"] if toggle_active else theme["info_toggle_icon"])
+
+    def draw_sleek_info_icon_button(self, painter, rect, kind, label, theme, active, font, icon_size):
+        painter.setPen(QPen(theme["info_button_focused_border"] if active else theme["info_button_border"], 1))
+        painter.setBrush(theme["info_button_focused_bg"] if active else theme["info_button_bg"])
+        painter.drawRoundedRect(rect, self.sleek_info_metric(7, 5, 10), self.sleek_info_metric(7, 5, 10))
+        painter.setFont(font)
+        metrics = QFontMetrics(font)
+        text_w = min(metrics.horizontalAdvance(label), max(12, rect.width() - icon_size - self.sleek_info_metric(28, 20, 36)))
+        total_w = icon_size + self.sleek_info_metric(8, 6, 11) + text_w
+        icon = QRect(rect.center().x() - total_w // 2, rect.center().y() - icon_size // 2, icon_size, icon_size)
+        color = theme["selected_text"] if active else theme["info_button_icon"]
+        draw_sleek_nav_icon_shape(painter, icon, kind, color)
+        painter.setPen(color)
+        text_rect = QRect(icon.right() + self.sleek_info_metric(8, 6, 11), rect.top(), text_w + 2, rect.height())
+        painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, metrics.elidedText(label, Qt.ElideRight, text_rect.width()))
+
+    def pf_info_metric(self, value, minimum=None, maximum=None):
+        return scaled_metric(value, self.ui_scale, minimum, maximum)
+
+    def pf_info_font(self, size, weight=QFont.Normal, minimum=None, maximum=None):
+        return QFont("Trebuchet MS", self.pf_info_metric(size, minimum or max(8, int(size * 0.72)), maximum), weight)
+
+    def draw_promised_future_info_overlay(self, painter, theme):
+        target = overlay_target_rect(self)
+        painter.save()
+        painter.setRenderHint(QPainter.Antialiasing, True)
+
+        panel_w = min(target.width() - self.pf_info_metric(64, 38, 96), self.pf_info_metric(1340, 980, 1540))
+        panel_h = min(max(self.pf_info_metric(246, 204, 316), int(target.height() * 0.34)), max(self.pf_info_metric(214, 176, 270), target.height() - self.pf_info_metric(68, 46, 96)))
+        panel = QRect(
+            target.left() + (target.width() - panel_w) // 2,
+            target.bottom() - panel_h - self.pf_info_metric(28, 18, 42),
+            panel_w,
+            panel_h,
+        )
+        radius = self.pf_info_metric(18, 12, 24)
+        shadow = panel.adjusted(0, self.pf_info_metric(9, 5, 14), 0, self.pf_info_metric(12, 8, 18))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(theme["info_overlay_shadow"])
+        painter.drawRoundedRect(shadow, radius, radius)
+
+        outer = QLinearGradient(panel.topLeft(), panel.bottomLeft())
+        outer.setColorAt(0.0, theme["info_overlay_highlight"])
+        outer.setColorAt(0.08, theme["pf_outer_top"])
+        outer.setColorAt(1.0, theme["pf_outer_bottom"])
+        painter.setPen(QPen(theme["pf_bevel_shadow"], 1))
+        painter.setBrush(outer)
+        painter.drawRoundedRect(panel, radius, radius)
+        painter.setPen(QPen(theme["pf_bevel_highlight"], 2))
+        painter.drawRoundedRect(panel.adjusted(2, 2, -2, -2), max(2, radius - 2), max(2, radius - 2))
+
+        inner = panel.adjusted(self.pf_info_metric(10, 6, 14), self.pf_info_metric(10, 6, 14), -self.pf_info_metric(10, 6, 14), -self.pf_info_metric(10, 6, 14))
+        header_h = self.pf_info_metric(38, 30, 48)
+        header = QRect(inner.left(), inner.top(), inner.width(), header_h)
+        self.draw_pf_info_glossy_rect(painter, header, theme["info_overlay_header_top"], theme["info_overlay_header_bottom"], theme["info_overlay_border"], radius=self.pf_info_metric(10, 7, 14))
+
+        label_font = self.pf_info_font(17, QFont.Bold, 13, 24)
+        painter.setFont(label_font)
+        painter.setPen(theme["info_overlay_header_text"])
+        painter.drawText(header.adjusted(self.pf_info_metric(26, 16, 34), 0, -self.pf_info_metric(180, 132, 230), 0), Qt.AlignLeft | Qt.AlignVCenter, self.state.get("header", "PROGRAM INFO").upper())
+
+        clock_rect = QRect(
+            header.right() - self.pf_info_metric(178, 136, 228),
+            header.top() + self.pf_info_metric(5, 3, 7),
+            self.pf_info_metric(150, 116, 190),
+            header.height() - self.pf_info_metric(10, 6, 14),
+        )
+        self.draw_pf_info_led_clock(painter, clock_rect, time.strftime("%I:%M%p").lstrip("0").upper())
+
+        body = QRect(inner.left(), header.bottom() + self.pf_info_metric(4, 2, 7), inner.width(), inner.bottom() - header.bottom() - self.pf_info_metric(4, 2, 7))
+        self.draw_pf_info_glossy_rect(painter, body, theme["info_overlay_body_top"], theme["info_overlay_body_bottom"], theme["info_overlay_border"], radius=self.pf_info_metric(9, 6, 13))
+
+        pad = self.pf_info_metric(18, 12, 26)
+        footer_h = self.pf_info_metric(34, 26, 44)
+        left_w = min(max(self.pf_info_metric(312, 238, 390), int(body.width() * 0.27)), int(body.width() * 0.34))
+        left = QRect(body.left() + pad, body.top() + pad, left_w, body.height() - (pad * 2))
+        footer = QRect(left.left(), left.bottom() - footer_h, left.width(), footer_h)
+        channel_line_h = self.pf_info_metric(28, 22, 38)
+        card_h = max(
+            self.pf_info_metric(92, 72, 126),
+            footer.top() - left.top() - channel_line_h - self.pf_info_metric(14, 9, 20),
+        )
+        card = QRect(left.left(), left.top(), left.width(), min(card_h, footer.top() - left.top() - self.pf_info_metric(8, 5, 12)))
+        channel_text_rect = QRect(
+            left.left(),
+            card.bottom() + self.pf_info_metric(5, 3, 8),
+            left.width(),
+            max(channel_line_h, footer.top() - card.bottom() - self.pf_info_metric(7, 4, 10)),
+        )
+        self.draw_pf_info_channel_identity(painter, card, channel_text_rect, theme)
+
+        detail_left = left.right() + self.pf_info_metric(28, 18, 42)
+        detail = QRect(detail_left, body.top() + pad, body.right() - detail_left - pad, body.height() - (pad * 2))
+        self.draw_pf_info_details(painter, detail, footer, theme)
+        self.draw_pf_info_footer_buttons(painter, footer, theme)
+
+        if self.settings_open:
+            painter.fillRect(self.rect(), QColor(8, 10, 14, 150))
+            body_font = self.pf_info_font(12, QFont.Normal, 10, 18)
+            small_font = self.pf_info_font(10, QFont.Bold, 8, 15)
+            self.draw_settings_panel(painter, self.rect(), body_font, small_font, theme)
+        painter.restore()
+
+    def draw_pf_info_glossy_rect(self, painter, rect, top, bottom, border, radius=8):
+        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        grad.setColorAt(0.0, top.lighter(112))
+        grad.setColorAt(0.18, top)
+        grad.setColorAt(0.62, bottom)
+        grad.setColorAt(1.0, bottom.darker(112))
+        painter.setPen(QPen(border, 1))
+        painter.setBrush(grad)
+        painter.drawRoundedRect(rect, radius, radius)
+        shine = QRect(rect.left() + 2, rect.top() + 2, rect.width() - 4, max(2, rect.height() // 3))
+        shine_grad = QLinearGradient(shine.topLeft(), shine.bottomLeft())
+        shine_grad.setColorAt(0.0, QColor(255, 255, 255, 72))
+        shine_grad.setColorAt(1.0, QColor(255, 255, 255, 4))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(shine_grad)
+        painter.drawRoundedRect(shine, max(2, radius - 2), max(2, radius - 2))
+
+    def draw_pf_info_led_clock(self, painter, rect, text):
+        theme = app_theme(self.theme_name, self.skin_name)
+        grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
+        grad.setColorAt(0.0, theme["info_led_clock_bg_top"])
+        grad.setColorAt(1.0, theme["info_led_clock_bg_bottom"])
+        painter.setPen(QPen(QColor(8, 8, 10, 230), 1))
+        painter.setBrush(grad)
+        painter.drawRoundedRect(rect, self.pf_info_metric(8, 5, 10), self.pf_info_metric(8, 5, 10))
+        font = QFont(clock_font_family(), max(13, rect.height() - self.pf_info_metric(7, 5, 9)), QFont.Bold)
+        painter.setFont(font)
+        led = theme["info_led_clock_text"]
+        for dx, dy, alpha in ((2, 2, 132), (1, 1, 90), (0, 0, 60)):
+            painter.setPen(QColor(100, 0, 0, alpha))
+            painter.drawText(rect.translated(dx, dy), Qt.AlignCenter, text)
+        painter.setPen(led)
+        painter.drawText(rect, Qt.AlignCenter, text)
+        painter.setPen(QColor(255, 190, 190, 120))
+        painter.drawText(rect.adjusted(0, -1, 0, -1), Qt.AlignCenter, text)
+
+    def pf_info_channel_parts(self):
+        number = self.state.get("channel_number", "")
+        name = (self.state.get("channel_name") or "").strip()
+        line = (self.state.get("channel_line") or "").strip()
+        if not name and line:
+            parts = re.split(r"\s*[•\-]\s*", line, maxsplit=1)
+            if len(parts) > 1:
+                name = parts[1].strip()
+            else:
+                name = line
+        if not number and line:
+            match = re.search(r"CH\s*(\d+)", line, re.IGNORECASE)
+            if match:
+                number = match.group(1)
+        try:
+            number = f"{int(number):02d}" if str(number).strip() else ""
+        except (TypeError, ValueError):
+            number = str(number).strip()
+        return number, name or "MediaWave Channel", line
+
+    def pf_info_channel_initials(self, name, number):
+        cleaned = re.findall(r"[A-Za-z0-9]+", name or "")
+        if not cleaned:
+            return f"CH {number}" if number else "TV"
+        if len(cleaned) == 1:
+            return cleaned[0][:6].upper()
+        return "".join(part[0] for part in cleaned[:4]).upper()
+
+    def pf_info_channel_logo_path(self):
+        keys = (
+            "channel_logo_path",
+            "channel_logo",
+            "logo_path",
+            "clearlogo_path",
+            "artwork_path",
+            "thumbnail_path",
+        )
+        for key in keys:
+            value = self.state.get(key)
+            if isinstance(value, str) and os.path.isfile(value):
+                return value
+        channel = self.state.get("channel")
+        if isinstance(channel, dict):
+            for key in keys:
+                value = channel.get(key)
+                if isinstance(value, str) and os.path.isfile(value):
+                    return value
+        return ""
+
+    def draw_pf_info_channel_identity(self, painter, card, text_rect, theme):
+        number, name, line = self.pf_info_channel_parts()
+        self.draw_pf_info_glossy_rect(painter, card, theme["info_channel_card_top"], theme["info_channel_card_bottom"], theme["info_channel_card_border"], radius=self.pf_info_metric(10, 7, 14))
+        logo = load_ui_pixmap(self.pf_info_channel_logo_path())
+        if not logo.isNull():
+            inset = self.pf_info_metric(12, 8, 18)
+            logo_box = card.adjusted(inset, inset, -inset, -inset)
+            scaled = logo.scaled(logo_box.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            draw_rect = QRect(
+                logo_box.left() + max(0, (logo_box.width() - scaled.width()) // 2),
+                logo_box.top() + max(0, (logo_box.height() - scaled.height()) // 2),
+                scaled.width(),
+                scaled.height(),
+            )
+            painter.drawPixmap(draw_rect, scaled)
+        else:
+            inset = self.pf_info_metric(12, 8, 18)
+            fallback = card.adjusted(inset, inset, -inset, -inset)
+            radial = QRadialGradient(fallback.center(), max(fallback.width(), fallback.height()) * 0.62)
+            radial.setColorAt(0.0, QColor(255, 255, 255, 54))
+            radial.setColorAt(0.55, QColor(255, 255, 255, 10))
+            radial.setColorAt(1.0, QColor(0, 0, 0, 56))
+            painter.setPen(QPen(with_alpha(theme["info_channel_text"], 80), 1))
+            painter.setBrush(radial)
+            painter.drawRoundedRect(fallback, self.pf_info_metric(7, 5, 10), self.pf_info_metric(7, 5, 10))
+            initials = self.pf_info_channel_initials(name, number)
+            initials_font = self.pf_info_font(28, QFont.Black, 20, 46)
+            metrics = QFontMetrics(initials_font)
+            while initials_font.pointSize() > 14 and metrics.horizontalAdvance(initials) > fallback.width() - 16:
+                initials_font.setPointSize(initials_font.pointSize() - 1)
+                metrics = QFontMetrics(initials_font)
+            painter.setFont(initials_font)
+            painter.setPen(theme["info_channel_text"])
+            painter.drawText(fallback.adjusted(4, 0, -4, 0), Qt.AlignCenter, initials)
+            if number:
+                painter.setFont(self.pf_info_font(10, QFont.Bold, 8, 14))
+                painter.setPen(with_alpha(theme["info_channel_text"], 188))
+                painter.drawText(fallback.adjusted(8, 5, -8, 0), Qt.AlignLeft | Qt.AlignTop, f"CH {number}")
+
+        painter.setFont(self.pf_info_font(13, QFont.Bold, 10, 18))
+        painter.setPen(theme["info_channel_text"])
+        channel_line = line or (f"CH {number}  •  {name}" if number else name)
+        painter.drawText(text_rect, Qt.AlignCenter | Qt.TextWordWrap, channel_line)
+
+    def draw_pf_info_details(self, painter, detail, footer, theme):
+        title = (self.state.get("title") or "Now Playing").strip()
+        summary = (self.state.get("summary") or self.state.get("subtitle") or "").strip()
+        title_font = self.pf_info_font(26, QFont.Bold, 18, 38)
+        summary_font = self.pf_info_font(13, QFont.DemiBold, 10, 18)
+        small_font = self.pf_info_font(11, QFont.Bold, 9, 15)
+        actions = self.state.get("actions", [])
+        action_index = self.state.get("action_index", -1)
+        action_font = self.pf_info_font(10, QFont.Bold, 8, 14)
+        action_gap = self.pf_info_metric(8, 5, 12)
+        action_h = self.pf_info_metric(28, 22, 34)
+        action_total_w = 0
+        for label in actions[:2]:
+            action_total_w += min(self.pf_info_metric(176, 130, 220), max(self.pf_info_metric(118, 90, 150), QFontMetrics(action_font).horizontalAdvance(label) + self.pf_info_metric(28, 20, 38)))
+        if len(actions[:2]) > 1:
+            action_total_w += action_gap * (len(actions[:2]) - 1)
+
+        progress_h = self.pf_info_metric(42, 34, 52)
+        progress_rect = QRect(detail.left(), detail.bottom() - progress_h, detail.width(), progress_h)
+        title_width = detail.width()
+        if action_total_w:
+            title_width = max(detail.width() // 2, detail.width() - action_total_w - self.pf_info_metric(18, 12, 26))
+        title_rect = QRect(detail.left(), detail.top() + self.pf_info_metric(8, 4, 12), title_width, max(self.pf_info_metric(48, 38, 72), detail.height() - progress_h - self.pf_info_metric(78, 56, 92)))
+
+        painter.setFont(title_font)
+        painter.setPen(theme["info_title_text"])
+        title_bounds = painter.boundingRect(title_rect, Qt.TextWordWrap, title)
+        title_draw = QRect(title_rect.left(), title_rect.top(), title_rect.width(), min(title_rect.height(), max(self.pf_info_metric(36, 28, 54), title_bounds.height())))
+        painter.drawText(title_draw, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, title)
+
+        summary_top = title_draw.bottom() + self.pf_info_metric(8, 5, 12)
+        summary_rect = QRect(detail.left(), summary_top, detail.width(), max(self.pf_info_metric(24, 18, 38), progress_rect.top() - summary_top - self.pf_info_metric(10, 7, 14)))
+        painter.setFont(summary_font)
+        painter.setPen(theme["info_body_text"])
+        painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, summary)
+
+        if actions:
+            x = detail.right()
+            for idx, label in reversed(list(enumerate(actions[:2]))):
+                width = min(self.pf_info_metric(176, 130, 220), max(self.pf_info_metric(118, 90, 150), QFontMetrics(action_font).horizontalAdvance(label) + self.pf_info_metric(28, 20, 38)))
+                x -= width
+                rect = QRect(x, detail.top(), width, action_h)
+                active = action_index == idx
+                self.draw_pf_info_button(painter, rect, label, theme, active, action_font)
+                x -= action_gap
+
+        self.draw_pf_info_progress(painter, progress_rect, theme)
+
+    def draw_pf_info_progress(self, painter, rect, theme):
+        remaining = self.state.get("remaining_line", "")
+        end_label = self.state.get("end_line") or self.state.get("end_label") or ""
+        if not end_label and self.state.get("end"):
+            end_label = f"Ends {time.strftime('%I:%M %p', time.localtime(float(self.state.get('end')))).lstrip('0')}"
+        label_font = self.pf_info_font(11, QFont.Bold, 9, 15)
+        painter.setFont(label_font)
+        painter.setPen(theme["info_muted_text"])
+        label_h = self.pf_info_metric(18, 14, 22)
+        painter.drawText(QRect(rect.left(), rect.top(), rect.width() // 2, label_h), Qt.AlignLeft | Qt.AlignVCenter, remaining)
+        painter.drawText(QRect(rect.left() + rect.width() // 2, rect.top(), rect.width() // 2, label_h), Qt.AlignRight | Qt.AlignVCenter, end_label)
+
+        track_h = self.pf_info_metric(13, 9, 17)
+        track = QRect(rect.left(), rect.top() + label_h + self.pf_info_metric(8, 5, 10), rect.width(), track_h)
+        track_grad = QLinearGradient(track.topLeft(), track.bottomLeft())
+        track_grad.setColorAt(0.0, theme["info_progress_track"].lighter(128))
+        track_grad.setColorAt(0.5, theme["info_progress_track"])
+        track_grad.setColorAt(1.0, theme["info_progress_track"].darker(128))
+        painter.setPen(QPen(QColor(50, 50, 50, 150), 1))
+        painter.setBrush(track_grad)
+        painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
+
+        progress = max(0.0, min(1.0, float(self.state.get("progress", 0.0) or 0.0)))
+        fill_w = max(track.height(), int(track.width() * progress))
+        fill = QRect(track.left(), track.top(), min(track.width(), fill_w), track.height())
+        fill_grad = QLinearGradient(fill.topLeft(), fill.bottomLeft())
+        fill_grad.setColorAt(0.0, QColor(255, 86, 72, 255))
+        fill_grad.setColorAt(0.48, theme["info_progress_fill"])
+        fill_grad.setColorAt(1.0, QColor(142, 0, 0, 255))
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(fill_grad)
+        painter.drawRoundedRect(fill, fill.height() // 2, fill.height() // 2)
+
+        knob_r = self.pf_info_metric(13, 10, 17)
+        knob_x = track.left() + int(track.width() * progress)
+        knob = QRect(knob_x - knob_r, track.center().y() - knob_r, knob_r * 2, knob_r * 2)
+        knob_grad = QRadialGradient(knob.center(), knob_r)
+        knob_grad.setColorAt(0.0, QColor(255, 255, 255, 255))
+        knob_grad.setColorAt(0.58, theme["info_progress_knob"])
+        knob_grad.setColorAt(1.0, QColor(88, 88, 88, 255))
+        painter.setPen(QPen(QColor(40, 40, 40, 172), 1))
+        painter.setBrush(knob_grad)
+        painter.drawEllipse(knob)
+        inner = knob.adjusted(knob_r // 2, knob_r // 2, -knob_r // 2, -knob_r // 2)
+        painter.setBrush(QColor(42, 42, 42, 220))
+        painter.setPen(Qt.NoPen)
+        painter.drawEllipse(inner)
+
+    def draw_pf_info_footer_buttons(self, painter, footer, theme):
+        labels = ["BACK", "MENU", "GUIDE", "VAULT"]
+        gap = self.pf_info_metric(8, 5, 12)
+        button_font = self.pf_info_font(10, QFont.Bold, 8, 14)
+        total_gap = gap * (len(labels) - 1)
+        button_w = max(self.pf_info_metric(64, 50, 84), (footer.width() - total_gap) // len(labels))
+        button_h = min(footer.height(), self.pf_info_metric(30, 24, 38))
+        x = footer.left()
+        y = footer.top() + (footer.height() - button_h) // 2
+        for idx, label in enumerate(labels):
+            rect = QRect(x, y, button_w, button_h)
+            active = bool(self.state.get("nav_focused")) and int(self.state.get("nav_index", -1)) == idx
+            self.draw_pf_info_button(painter, rect, label, theme, active, button_font)
+            x += button_w + gap
+
+    def draw_pf_info_button(self, painter, rect, label, theme, active, font):
+        top = theme["info_button_selected_top"] if active else theme["info_button_top"]
+        bottom = theme["info_button_selected_bottom"] if active else theme["info_button_bottom"]
+        text_color = theme["info_button_selected_text"] if active else theme["info_button_text"]
+        border = theme["pf_selected_bottom"].darker(116) if active else theme["info_overlay_border"]
+        self.draw_pf_info_glossy_rect(painter, rect, top, bottom, border, radius=self.pf_info_metric(6, 4, 9))
+        if active:
+            painter.setPen(QPen(QColor(255, 255, 242, 210), 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), self.pf_info_metric(6, 4, 9), self.pf_info_metric(6, 4, 9))
+        painter.setFont(font)
+        painter.setPen(text_color)
+        painter.drawText(rect, Qt.AlignCenter, label)
 
     def draw_digital_clock_box(self, painter, rect, text):
         if self.skin_style() == "cable":
@@ -8592,13 +12034,14 @@ class VideoWindow(QWidget):
         ):
             watched.installEventFilter(self)
 
-    def configure_display(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT):
+    def configure_display(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
         skin_name = normalize_skin_name(skin_name)
         theme_name = normalize_theme_for_skin(skin_name, theme_name)
+        sleek_mode = normalize_sleek_mode(sleek_mode)
         self.video_surface.set_display_profile(profile_name)
-        self.guide_overlay.configure(profile_name, theme_name, skin_name, ui_scale)
-        self.on_demand_overlay.configure(profile_name, theme_name, skin_name, ui_scale)
-        self.info_overlay.configure(profile_name, theme_name, skin_name, ui_scale)
+        self.guide_overlay.configure(profile_name, theme_name, skin_name, ui_scale, sleek_mode)
+        self.on_demand_overlay.configure(profile_name, theme_name, skin_name, ui_scale, sleek_mode)
+        self.info_overlay.configure(profile_name, theme_name, skin_name, ui_scale, sleek_mode)
         self.next_up_overlay.configure(theme_name, skin_name, ui_scale)
         self.transport_overlay.configure(theme_name, skin_name, ui_scale)
         self.update_special_view_geometry()
@@ -9748,11 +13191,11 @@ class CommercialOverridesDialog(QDialog):
         form.addRow("Preferred Category", self.preferred_category_combo)
 
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["between_episodes_only", "natural_breaks", "timed_breaks", "hybrid"])
+        self.mode_combo.addItems([COMMERCIAL_MODE_LABELS[key] for key in COMMERCIAL_MODES])
         form.addRow("Break Mode", self.mode_combo)
 
         self.density_combo = QComboBox()
-        self.density_combo.addItems(["none", "light", "medium", "heavy", "custom"])
+        self.density_combo.addItems(["light", "medium", "heavy"])
         form.addRow("Density", self.density_combo)
 
         self.min_ads_spin = QSpinBox()
@@ -9763,36 +13206,22 @@ class CommercialOverridesDialog(QDialog):
         self.max_ads_spin.setRange(0, 12)
         form.addRow("Max Ads / Break", self.max_ads_spin)
 
-        self.min_seconds_between_breaks_spin = QSpinBox()
-        self.min_seconds_between_breaks_spin.setRange(30, 7200)
-        self.min_seconds_between_breaks_spin.setSingleStep(30)
-        form.addRow("Min Seconds Between Breaks", self.min_seconds_between_breaks_spin)
-
-        self.target_interval_spin = QSpinBox()
-        self.target_interval_spin.setRange(1, 60)
-        form.addRow("Target Interval (min)", self.target_interval_spin)
-
-        self.first_break_spin = QSpinBox()
-        self.first_break_spin.setRange(0, 1800)
-        self.first_break_spin.setSingleStep(15)
-        form.addRow("Min Before First Break (sec)", self.first_break_spin)
-
-        self.max_ad_half_hour_spin = QSpinBox()
-        self.max_ad_half_hour_spin.setRange(30, 1800)
-        self.max_ad_half_hour_spin.setSingleStep(15)
-        form.addRow("Max Ad Seconds / 30 Min", self.max_ad_half_hour_spin)
+        self.midroll_interval_spin = QSpinBox()
+        self.midroll_interval_spin.setRange(6, 60)
+        self.midroll_interval_spin.setSuffix(" min")
+        form.addRow("Midroll Interval", self.midroll_interval_spin)
 
         self.allow_fallback = QCheckBox("Allow fallback if preferred commercials are missing")
         self.allow_bumpers = QCheckBox("Allow bumpers")
         self.allow_promos = QCheckBox("Allow promos")
-        self.prefer_promos = QCheckBox("Prefer promos over regular ads")
         self.allow_station_ids = QCheckBox("Allow station IDs")
+        self.prefer_same_era = QCheckBox("Prefer same-era commercials")
         for checkbox in (
             self.allow_fallback,
             self.allow_bumpers,
             self.allow_promos,
-            self.prefer_promos,
             self.allow_station_ids,
+            self.prefer_same_era,
         ):
             right_layout.addWidget(checkbox)
 
@@ -9832,19 +13261,16 @@ class CommercialOverridesDialog(QDialog):
             "enabled_mode": enabled_mode_map.get(self.enabled_mode_combo.currentText(), "inherit"),
             "preferred_era": self.preferred_era_combo.currentText().strip(),
             "preferred_category": self.preferred_category_combo.currentText().strip(),
-            "mode": self.mode_combo.currentText(),
+            "mode": COMMERCIAL_MODE_VALUES_BY_LABEL.get(self.mode_combo.currentText(), "between_episodes"),
             "density": self.density_combo.currentText(),
             "min_ads_per_break": self.min_ads_spin.value(),
             "max_ads_per_break": self.max_ads_spin.value(),
-            "min_seconds_between_breaks": self.min_seconds_between_breaks_spin.value(),
-            "target_break_interval_minutes": self.target_interval_spin.value(),
-            "minimum_content_before_first_break_seconds": self.first_break_spin.value(),
-            "max_ad_seconds_per_half_hour": self.max_ad_half_hour_spin.value(),
+            "midroll_interval_minutes": self.midroll_interval_spin.value(),
             "allow_fallback": self.allow_fallback.isChecked(),
             "allow_bumpers": self.allow_bumpers.isChecked(),
             "allow_promos": self.allow_promos.isChecked(),
-            "prefer_promos": self.prefer_promos.isChecked(),
             "allow_station_ids": self.allow_station_ids.isChecked(),
+            "prefer_same_era": self.prefer_same_era.isChecked(),
         }
         self.result_overrides[channel_name] = override
 
@@ -9862,19 +13288,17 @@ class CommercialOverridesDialog(QDialog):
         self.enabled_mode_combo.setCurrentText(enabled_text)
         self.preferred_era_combo.setCurrentText(str(override.get("preferred_era", "") or ""))
         self.preferred_category_combo.setCurrentText(str(override.get("preferred_category", "") or ""))
-        self.mode_combo.setCurrentText(str(override.get("mode", "between_episodes_only") or "between_episodes_only"))
-        self.density_combo.setCurrentText(str(override.get("density", "light") or "light"))
+        self.mode_combo.setCurrentText(commercial_mode_label(override.get("mode", "between_episodes")))
+        density = str(override.get("density", "light") or "light").lower()
+        self.density_combo.setCurrentText(density if density in {"light", "medium", "heavy"} else "light")
         self.min_ads_spin.setValue(int(override.get("min_ads_per_break", 1) or 1))
         self.max_ads_spin.setValue(int(override.get("max_ads_per_break", 3) or 3))
-        self.min_seconds_between_breaks_spin.setValue(int(override.get("min_seconds_between_breaks", 330) or 330))
-        self.target_interval_spin.setValue(int(override.get("target_break_interval_minutes", 7) or 7))
-        self.first_break_spin.setValue(int(override.get("minimum_content_before_first_break_seconds", 90) or 90))
-        self.max_ad_half_hour_spin.setValue(int(override.get("max_ad_seconds_per_half_hour", 240) or 240))
+        self.midroll_interval_spin.setValue(int(override.get("midroll_interval_minutes", override.get("target_break_interval_minutes", 15)) or 15))
         self.allow_fallback.setChecked(bool(override.get("allow_fallback", True)))
         self.allow_bumpers.setChecked(bool(override.get("allow_bumpers", True)))
         self.allow_promos.setChecked(bool(override.get("allow_promos", True)))
-        self.prefer_promos.setChecked(bool(override.get("prefer_promos", False)))
         self.allow_station_ids.setChecked(bool(override.get("allow_station_ids", True)))
+        self.prefer_same_era.setChecked(bool(override.get("prefer_same_era", True)))
 
     def accept(self):
         self.save_current_override()
@@ -9907,6 +13331,63 @@ class FocusScrollArea(QScrollArea):
         return super().eventFilter(watched, event)
 
 
+class DiagnosticSummaryLabel(QLabel):
+    activated = Signal()
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setWordWrap(True)
+
+    def mousePressEvent(self, event):
+        self.activated.emit()
+        event.accept()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            self.activated.emit()
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+
+class DiagnosticReadoutDialog(QDialog):
+    def __init__(self, text, theme_name=DEFAULT_THEME_NAME, skin_name=DEFAULT_SKIN_NAME, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("Diagnostic Readout")
+        self.setModal(True)
+        self.resize(820, 560)
+        self.setStyleSheet(build_themed_dialog_stylesheet(theme_name, skin_name))
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(16, 16, 16, 16)
+        card = QWidget()
+        card.setObjectName("dialogCard")
+        outer.addWidget(card, 1)
+
+        layout = QVBoxLayout(card)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(12)
+        title = QLabel("Diagnostic Readout")
+        title.setObjectName("dialogTitle")
+        layout.addWidget(title)
+
+        readout = QTextEdit()
+        readout.setReadOnly(True)
+        readout.setPlainText(text)
+        readout.setLineWrapMode(QTextEdit.WidgetWidth)
+        readout.setMinimumHeight(360)
+        layout.addWidget(readout, 1)
+
+        buttons = QHBoxLayout()
+        buttons.addStretch(1)
+        close_btn = QPushButton("Close")
+        close_btn.clicked.connect(self.accept)
+        buttons.addWidget(close_btn)
+        layout.addLayout(buttons)
+
+
 class AdvancedCommercialSettingsDialog(QDialog):
     def __init__(self, settings, channel_names=None, channel_overrides=None, allow_empty_catalog_tv=False, parent=None):
         super().__init__(parent)
@@ -9932,23 +13413,17 @@ class AdvancedCommercialSettingsDialog(QDialog):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(14)
 
-        self.allow_empty_catalog_tv = QCheckBox("Allow Watch TV without local content loaded")
-        self.allow_empty_catalog_tv.setChecked(bool(allow_empty_catalog_tv))
-        test_card, test_layout = self.build_section_card(
-            "Cable Test Mode",
-            "Lets MediaWave open the TV interface using only enabled companion channels like WeatherStar, RadioWaveTV, and NetTV.",
-        )
-        test_layout.addWidget(self.allow_empty_catalog_tv)
-        layout.addWidget(test_card)
+        self.allow_empty_catalog_tv_value = bool(allow_empty_catalog_tv)
 
         self.enabled = QCheckBox("Enable channel commercials")
         self.enabled.setChecked(bool(self.settings.get("enabled", False)))
         self.mode_combo = QComboBox()
-        self.mode_combo.addItems(["between_episodes_only", "natural_breaks", "timed_breaks", "hybrid"])
-        self.mode_combo.setCurrentText(self.settings.get("mode", "between_episodes_only"))
+        self.mode_combo.addItems([COMMERCIAL_MODE_LABELS[key] for key in COMMERCIAL_MODES])
+        self.mode_combo.setCurrentText(commercial_mode_label(self.settings.get("mode", "between_episodes")))
         self.density_combo = QComboBox()
-        self.density_combo.addItems(["none", "light", "medium", "heavy", "custom"])
-        self.density_combo.setCurrentText(self.settings.get("density", "light"))
+        self.density_combo.addItems(["light", "medium", "heavy"])
+        density = str(self.settings.get("density", "light") or "light").lower()
+        self.density_combo.setCurrentText(density if density in {"light", "medium", "heavy"} else "light")
         self.era_combo = QComboBox()
         self.era_combo.setEditable(True)
         self.era_combo.addItems(["", "70s", "80s", "90s", "2000s", "2010s"])
@@ -9981,24 +13456,9 @@ class AdvancedCommercialSettingsDialog(QDialog):
         self.max_ads.setRange(0, 12)
         self.max_ads.setValue(int(self.settings.get("max_ads_per_break", 3) or 3))
         self.interval = QSpinBox()
-        self.interval.setRange(1, 60)
-        self.interval.setValue(int(self.settings.get("target_break_interval_minutes", 7) or 7))
-        self.min_between = QSpinBox()
-        self.min_between.setRange(30, 7200)
-        self.min_between.setSingleStep(30)
-        self.min_between.setValue(int(self.settings.get("min_seconds_between_breaks", 330) or 330))
-        self.first_break = QSpinBox()
-        self.first_break.setRange(0, 1800)
-        self.first_break.setSingleStep(15)
-        self.first_break.setValue(int(self.settings.get("minimum_content_before_first_break_seconds", 90) or 90))
-        self.jitter = QSpinBox()
-        self.jitter.setRange(0, 600)
-        self.jitter.setSingleStep(15)
-        self.jitter.setValue(int(self.settings.get("break_jitter_seconds", 45) or 45))
-        self.max_half_hour = QSpinBox()
-        self.max_half_hour.setRange(30, 1800)
-        self.max_half_hour.setSingleStep(15)
-        self.max_half_hour.setValue(int(self.settings.get("max_ad_seconds_per_half_hour", 240) or 240))
+        self.interval.setRange(6, 60)
+        self.interval.setSuffix(" min")
+        self.interval.setValue(int(self.settings.get("midroll_interval_minutes", 15) or 15))
 
         timing_card, timing_layout = self.build_section_card("Break Timing")
         timing_form = QFormLayout()
@@ -10007,37 +13467,20 @@ class AdvancedCommercialSettingsDialog(QDialog):
         timing_form.setVerticalSpacing(10)
         timing_form.addRow("Min Ads / Break", self.min_ads)
         timing_form.addRow("Max Ads / Break", self.max_ads)
-        timing_form.addRow("Break Interval (min)", self.interval)
-        timing_form.addRow("Min Seconds Between Breaks", self.min_between)
-        timing_form.addRow("Min Before First Break", self.first_break)
-        timing_form.addRow("Break Jitter (sec)", self.jitter)
-        timing_form.addRow("Max Ad Seconds / 30 Min", self.max_half_hour)
+        timing_form.addRow("Midroll Interval", self.interval)
         timing_layout.addLayout(timing_form)
         layout.addWidget(timing_card)
 
-        self.smart_breaks = QCheckBox("Use Smart Breaks when natural cut points can be found")
-        self.smart_breaks.setChecked(bool(self.settings.get("smart_breaks", True)))
-        self.skip_midroll = QCheckBox("Skip mid-roll breaks if Smart Breaks cannot find a good break point")
-        self.skip_midroll.setChecked(bool(self.settings.get("skip_midroll_if_no_smart_breaks", False)))
-        smart_card, smart_layout = self.build_section_card("Smart Breaks")
-        smart_layout.addWidget(self.smart_breaks)
-        smart_layout.addWidget(self.skip_midroll)
-        layout.addWidget(smart_card)
-
-        self.pre_roll = QCheckBox("Allow commercials before a program starts")
-        self.pre_roll.setChecked(bool(self.settings.get("pre_roll_enabled", False)))
-        self.post_roll = QCheckBox("Allow commercials after a program ends")
-        self.post_roll.setChecked(bool(self.settings.get("post_roll_enabled", False)))
         self.allow_bumpers = QCheckBox("Allow bumpers in breaks")
         self.allow_bumpers.setChecked(bool(self.settings.get("allow_bumpers", True)))
         self.allow_promos = QCheckBox("Allow promos in breaks")
         self.allow_promos.setChecked(bool(self.settings.get("allow_promos", True)))
-        self.prefer_promos = QCheckBox("Prefer promos over regular commercials when available")
-        self.prefer_promos.setChecked(bool(self.settings.get("prefer_promos", False)))
         self.allow_station_ids = QCheckBox("Allow station IDs")
         self.allow_station_ids.setChecked(bool(self.settings.get("allow_station_ids", True)))
+        self.prefer_same_era = QCheckBox("Prefer same-era commercials")
+        self.prefer_same_era.setChecked(bool(self.settings.get("prefer_same_era", True)))
         extras_card, extras_layout = self.build_section_card("Bumpers / Promos / Station IDs")
-        for checkbox in (self.pre_roll, self.post_roll, self.allow_bumpers, self.allow_promos, self.prefer_promos, self.allow_station_ids):
+        for checkbox in (self.allow_bumpers, self.allow_promos, self.allow_station_ids, self.prefer_same_era):
             extras_layout.addWidget(checkbox)
         layout.addWidget(extras_card)
 
@@ -10089,69 +13532,130 @@ class AdvancedCommercialSettingsDialog(QDialog):
         settings.update(
             {
                 "enabled": self.enabled.isChecked(),
-                "smart_breaks": self.smart_breaks.isChecked(),
-                "mode": self.mode_combo.currentText(),
+                "commercials_enabled": self.enabled.isChecked(),
+                "mode": COMMERCIAL_MODE_VALUES_BY_LABEL.get(self.mode_combo.currentText(), "between_episodes"),
                 "density": self.density_combo.currentText(),
                 "allow_fallback": self.allow_fallback.isChecked(),
-                "pre_roll_enabled": self.pre_roll.isChecked(),
-                "post_roll_enabled": self.post_roll.isChecked(),
                 "allow_bumpers": self.allow_bumpers.isChecked(),
                 "allow_promos": self.allow_promos.isChecked(),
-                "prefer_promos": self.prefer_promos.isChecked(),
                 "allow_station_ids": self.allow_station_ids.isChecked(),
-                "skip_midroll_if_no_smart_breaks": self.skip_midroll.isChecked(),
+                "prefer_same_era": self.prefer_same_era.isChecked(),
                 "preferred_era": self.era_combo.currentText().strip(),
                 "preferred_category": self.category_combo.currentText().strip(),
                 "min_ads_per_break": self.min_ads.value(),
                 "max_ads_per_break": self.max_ads.value(),
-                "min_seconds_between_breaks": self.min_between.value(),
-                "target_break_interval_minutes": self.interval.value(),
-                "minimum_content_before_first_break_seconds": self.first_break.value(),
-                "break_jitter_seconds": self.jitter.value(),
-                "max_ad_seconds_per_half_hour": self.max_half_hour.value(),
+                "midroll_interval_minutes": self.interval.value(),
                 "channel_overrides": self.result_overrides,
             }
         )
         return {
             "commercials": normalize_commercials_config(settings),
-            "allow_empty_catalog_tv": self.allow_empty_catalog_tv.isChecked(),
+            "allow_empty_catalog_tv": self.allow_empty_catalog_tv_value,
         }
 
 
 class AdvancedConfigDialog(QDialog):
-    def __init__(self, settings, channel_names=None, parent=None):
+    def __init__(self, settings, channel_names=None, parent=None, channel_infos=None):
         super().__init__(parent)
         self.review_requested = False
         self.channel_names = list(channel_names or [])
+        self.catalog_channel_settings = normalize_catalog_channel_settings((settings or {}).get("catalog_channel_settings", {}))
+        self.catalog_channel_infos = list(channel_infos or [])
+        if not self.catalog_channel_infos:
+            self.catalog_channel_infos = [
+                {
+                    "id": f"media-name:{normalize_title(name)}",
+                    "name": name,
+                    "channel_type": "media",
+                    "root_path": "",
+                    "default_number": index + 1,
+                }
+                for index, name in enumerate(self.channel_names)
+            ]
+        self.catalog_rows = []
         self.commercials_settings = normalize_commercials_config((settings or {}).get("commercials", {}))
         self.advanced_commercials_settings = json.loads(json.dumps(self.commercials_settings))
         self.channel_commercial_overrides = json.loads(json.dumps(self.commercials_settings.get("channel_overrides", {})))
         self.setWindowTitle("Advanced Configuration")
         self.setModal(True)
-        self.resize(840, 760)
-        theme_name = parent.theme_combo.currentText() if parent is not None and hasattr(parent, "theme_combo") else DEFAULT_THEME_NAME
-        skin_name = parent.skin_combo.currentText() if parent is not None and hasattr(parent, "skin_combo") else DEFAULT_SKIN_NAME
-        self.setStyleSheet(build_themed_dialog_stylesheet(theme_name, skin_name))
+        self.resize(920, 720)
+        self.setMinimumSize(780, 580)
+        self.setStyleSheet(build_themed_dialog_stylesheet())
 
         outer = QVBoxLayout(self)
-        outer.setContentsMargins(16, 16, 16, 16)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
-        card = QWidget()
-        card.setObjectName("dialogCard")
-        outer.addWidget(card)
+        # ── Wizard split: nav sidebar | content stack ───────────────────────
+        split = QHBoxLayout()
+        split.setContentsMargins(0, 0, 0, 0)
+        split.setSpacing(0)
 
-        layout = QVBoxLayout(card)
-        layout.setContentsMargins(20, 18, 20, 18)
-        layout.setSpacing(14)
+        # ── Left navigation panel ───────────────────────────────────────────
+        self._adv_nav = _AdvNavPanel()
+        nav_inner = QVBoxLayout(self._adv_nav)
+        nav_inner.setContentsMargins(0, 0, 0, 0)
+        nav_inner.setSpacing(0)
 
-        title = QLabel("Advanced Configuration")
-        title.setObjectName("dialogTitle")
-        layout.addWidget(title)
+        # Header: logo + subtitle
+        nav_header = QWidget()
+        nav_header.setObjectName("advNavHeader")
+        nav_hdr_layout = QVBoxLayout(nav_header)
+        nav_hdr_layout.setContentsMargins(20, 22, 16, 16)
+        nav_hdr_layout.setSpacing(4)
+        _nav_logo_pix = load_brand_logo(150, 48, APP_LOGO_PATH)
+        if not _nav_logo_pix.isNull():
+            nav_logo_lbl = QLabel()
+            nav_logo_lbl.setAlignment(Qt.AlignLeft)
+            nav_logo_lbl.setPixmap(_nav_logo_pix)
+            nav_hdr_layout.addWidget(nav_logo_lbl)
+        nav_subtitle = QLabel("Configuration")
+        nav_subtitle.setObjectName("advNavSubtitle")
+        nav_hdr_layout.addWidget(nav_subtitle)
+        nav_inner.addWidget(nav_header)
 
-        note = QLabel("Manage companion channels and your commercial system. MediaWave Vault uses local names and assets, while commercial rules let each channel behave more like a real network.")
-        note.setObjectName("dialogNote")
-        note.setWordWrap(True)
-        layout.addWidget(note)
+        # Separator line
+        nav_sep = QWidget()
+        nav_sep.setObjectName("advNavSep")
+        nav_sep.setFixedHeight(1)
+        nav_inner.addWidget(nav_sep)
+
+        # Nav item buttons
+        self._adv_nav_group = QButtonGroup(self)
+        self._adv_nav_group.setExclusive(True)
+        _nav_items = [
+            ("📺  Commercials",         0),
+            ("📡  Companion Channels",  1),
+            ("📁  My Catalog",          2),
+            ("⚙️  Power User",           3),
+        ]
+        for label, idx in _nav_items:
+            btn = QPushButton(label)
+            btn.setObjectName("advNavItem")
+            btn.setCheckable(True)
+            btn.setChecked(idx == 0)
+            btn.setFlat(True)
+            btn.setCursor(Qt.PointingHandCursor)
+            nav_inner.addWidget(btn)
+            self._adv_nav_group.addButton(btn, idx)
+
+        nav_inner.addStretch(1)
+
+        nav_footer = QLabel(f"v{APP_VERSION}")
+        nav_footer.setObjectName("advNavFooter")
+        nav_footer.setContentsMargins(20, 0, 0, 14)
+        nav_inner.addWidget(nav_footer)
+
+        split.addWidget(self._adv_nav)
+
+        # ── Right: stacked content pages ────────────────────────────────────
+        self._adv_stack = QStackedWidget()
+        self._adv_stack.setObjectName("advContentStack")
+        split.addWidget(self._adv_stack, 1)
+        outer.addLayout(split, 1)
+
+        # Placeholder — real layout variable used by widget-creation code below
+        layout = self._adv_stack  # widgets below use layout.addWidget-style via card
 
         self.weatherstar_location_input = QLineEdit()
         self.weatherstar_location_input.setPlaceholderText("City, state or ZIP code")
@@ -10183,12 +13687,7 @@ class AdvancedConfigDialog(QDialog):
         self.youtube_playlist_input = QLineEdit()
         self.youtube_playlist_input.setPlaceholderText("Paste a YouTube playlist URL")
         self.youtube_playlist_input.setText(settings.get("youtube_playlist_url", ""))
-        self.youtube_playlist_help = QLabel(
-            "Make sure your playlist is public. Use a playlist URL like "
-            "https://www.youtube.com/playlist?list=PL... Avoid watch-page links like "
-            "youtube.com/watch?v=...&list=..., YouTube Mix/Radio playlists, Watch Later, Liked, History, "
-            "private playlists, or playlists that only work while logged in."
-        )
+        self.youtube_playlist_help = QLabel("Public playlists only — use a youtube.com/playlist?list= URL.")
         self.youtube_playlist_help.setObjectName("fieldHelp")
         self.youtube_playlist_help.setWordWrap(True)
 
@@ -10206,14 +13705,14 @@ class AdvancedConfigDialog(QDialog):
         self.youtube_enabled = QCheckBox("Enable NetTV playlist channel")
         self.youtube_enabled.setChecked(bool(settings.get("youtube_enabled", False)))
 
-        self.allow_empty_catalog_tv = QCheckBox("Allow Watch TV without local content loaded")
+        self.allow_empty_catalog_tv = QCheckBox("Allow Live TV with no catalog")
         self.allow_empty_catalog_tv.setChecked(bool(settings.get("allow_empty_catalog_tv", False)))
-        self.allow_dummy_vault_catalog = QCheckBox("Allow dummy Vault listings without a catalog")
+        self.allow_dummy_vault_catalog = QCheckBox("Allow MediaWave Vault with no catalog")
         self.allow_dummy_vault_catalog.setChecked(bool(settings.get("allow_dummy_vault_catalog", False)))
-        self.dev_menu_enabled = QCheckBox("Enable in-app dev menu")
+        self.dev_menu_enabled = QCheckBox("Enable Diagnostics for viewing")
         self.dev_menu_enabled.setChecked(bool(settings.get("dev_menu_enabled", True)))
 
-        self.commercials_enabled = QCheckBox("Enable channel commercials")
+        self.commercials_enabled = QCheckBox("Enable Commercials")
         self.commercials_enabled.setChecked(bool(self.commercials_settings.get("enabled", False)))
 
         self.commercials_root_input = QLineEdit()
@@ -10229,39 +13728,13 @@ class AdvancedConfigDialog(QDialog):
         self.commercials_browse_btn.clicked.connect(self.choose_commercials_folder)
         commercials_picker_layout.addWidget(self.commercials_browse_btn)
 
-        self.simple_commercials_enabled = QCheckBox("Commercials On")
-        self.simple_commercials_enabled.setChecked(bool(self.commercials_settings.get("enabled", False)))
-        self.simple_preset_combo = QComboBox()
-        self.simple_preset_combo.addItems([
-            commercial_simple_preset_label("light_tv"),
-            commercial_simple_preset_label("classic_cable"),
-            commercial_simple_preset_label("heavy_retro"),
-            commercial_simple_preset_label("premium"),
-        ])
-        self.simple_preset_combo.setCurrentText(commercial_simple_preset_label(self.commercials_settings.get("simple_preset", "classic_cable")))
-        self.simple_smart_breaks = QCheckBox("Smart Breaks")
-        self.simple_smart_breaks.setChecked(bool(self.commercials_settings.get("smart_breaks", True)))
-        self.simple_preset_hint = QLabel("")
-        self.simple_preset_hint.setObjectName("presetHint")
-        self.simple_preset_hint.setWordWrap(True)
-
         self.commercials_mode_combo = QComboBox()
-        self.commercials_mode_combo.addItems(["between_episodes_only", "natural_breaks", "timed_breaks", "hybrid"])
-        self.commercials_mode_combo.setCurrentText(self.commercials_settings.get("mode", "between_episodes_only"))
+        self.commercials_mode_combo.addItems([COMMERCIAL_MODE_LABELS[key] for key in COMMERCIAL_MODES])
+        self.commercials_mode_combo.setCurrentText(commercial_mode_label(self.commercials_settings.get("mode", "between_episodes")))
 
         self.commercials_density_combo = QComboBox()
-        self.commercials_density_combo.addItems(["none", "light", "medium", "heavy", "custom"])
-        self.commercials_density_combo.setCurrentText(self.commercials_settings.get("density", "light"))
-
-        self.commercials_preferred_era_combo = QComboBox()
-        self.commercials_preferred_era_combo.setEditable(True)
-        self.commercials_preferred_era_combo.addItems(["", "70s", "80s", "90s", "2000s", "2010s"])
-        self.commercials_preferred_era_combo.setCurrentText(self.commercials_settings.get("preferred_era", ""))
-
-        self.commercials_preferred_category_combo = QComboBox()
-        self.commercials_preferred_category_combo.setEditable(True)
-        self.commercials_preferred_category_combo.addItems(["", "Kids", "Toys", "Food", "Fast Food", "Games", "Tech", "Music", "Sports", "Movie Theater", "Network Promos", "General"])
-        self.commercials_preferred_category_combo.setCurrentText(display_commercial_category(self.commercials_settings.get("preferred_category", "")))
+        self.commercials_density_combo.addItems(["Light", "Medium", "Heavy"])
+        self.commercials_density_combo.setCurrentText(str(self.commercials_settings.get("density", "light") or "light").capitalize())
 
         self.commercials_min_ads_spin = QSpinBox()
         self.commercials_min_ads_spin.setRange(0, 12)
@@ -10271,82 +13744,55 @@ class AdvancedConfigDialog(QDialog):
         self.commercials_max_ads_spin.setRange(0, 12)
         self.commercials_max_ads_spin.setValue(int(self.commercials_settings.get("max_ads_per_break", 3) or 3))
 
-        self.commercials_target_interval_spin = QSpinBox()
-        self.commercials_target_interval_spin.setRange(1, 60)
-        self.commercials_target_interval_spin.setValue(int(self.commercials_settings.get("target_break_interval_minutes", 7) or 7))
+        self.commercials_midroll_interval_spin = QSpinBox()
+        self.commercials_midroll_interval_spin.setRange(6, 60)
+        self.commercials_midroll_interval_spin.setSuffix(" min")
+        self.commercials_midroll_interval_spin.setValue(int(self.commercials_settings.get("midroll_interval_minutes", 15) or 15))
 
-        self.commercials_min_between_spin = QSpinBox()
-        self.commercials_min_between_spin.setRange(30, 7200)
-        self.commercials_min_between_spin.setSingleStep(30)
-        self.commercials_min_between_spin.setValue(int(self.commercials_settings.get("min_seconds_between_breaks", 330) or 330))
-
-        self.commercials_first_break_spin = QSpinBox()
-        self.commercials_first_break_spin.setRange(0, 1800)
-        self.commercials_first_break_spin.setSingleStep(15)
-        self.commercials_first_break_spin.setValue(int(self.commercials_settings.get("minimum_content_before_first_break_seconds", 90) or 90))
-
-        self.commercials_jitter_spin = QSpinBox()
-        self.commercials_jitter_spin.setRange(0, 600)
-        self.commercials_jitter_spin.setSingleStep(15)
-        self.commercials_jitter_spin.setValue(int(self.commercials_settings.get("break_jitter_seconds", 45) or 45))
-
-        self.commercials_max_half_hour_spin = QSpinBox()
-        self.commercials_max_half_hour_spin.setRange(30, 1800)
-        self.commercials_max_half_hour_spin.setSingleStep(15)
-        self.commercials_max_half_hour_spin.setValue(int(self.commercials_settings.get("max_ad_seconds_per_half_hour", 240) or 240))
-
-        self.commercials_smart_breaks = QCheckBox("Use Smart Breaks when natural cut points can be found")
-        self.commercials_smart_breaks.setChecked(bool(self.commercials_settings.get("smart_breaks", True)))
-
-        self.commercials_allow_fallback = QCheckBox("Allow fallback through era/type/general/all commercials")
+        self.commercials_allow_fallback = QCheckBox("Allow Fallback Commercials")
         self.commercials_allow_fallback.setChecked(bool(self.commercials_settings.get("allow_fallback", True)))
 
-        self.commercials_pre_roll = QCheckBox("Allow commercials before a program starts")
-        self.commercials_pre_roll.setChecked(bool(self.commercials_settings.get("pre_roll_enabled", False)))
-
-        self.commercials_post_roll = QCheckBox("Allow commercials after a program ends")
-        self.commercials_post_roll.setChecked(bool(self.commercials_settings.get("post_roll_enabled", False)))
-
-        self.commercials_allow_bumpers = QCheckBox("Allow bumpers in breaks")
+        self.commercials_allow_bumpers = QCheckBox("Allow Bumpers")
         self.commercials_allow_bumpers.setChecked(bool(self.commercials_settings.get("allow_bumpers", True)))
 
-        self.commercials_allow_promos = QCheckBox("Allow promos in breaks")
+        self.commercials_allow_promos = QCheckBox("Allow Promos")
         self.commercials_allow_promos.setChecked(bool(self.commercials_settings.get("allow_promos", True)))
 
-        self.commercials_prefer_promos = QCheckBox("Prefer promos over regular commercials when available")
-        self.commercials_prefer_promos.setChecked(bool(self.commercials_settings.get("prefer_promos", False)))
-
-        self.commercials_allow_station_ids = QCheckBox("Allow station IDs")
+        self.commercials_allow_station_ids = QCheckBox("Allow Station IDs")
         self.commercials_allow_station_ids.setChecked(bool(self.commercials_settings.get("allow_station_ids", True)))
 
-        self.commercials_skip_midroll = QCheckBox("Skip mid-roll breaks if Smart Breaks cannot find a good break point")
-        self.commercials_skip_midroll.setChecked(bool(self.commercials_settings.get("skip_midroll_if_no_smart_breaks", False)))
+        self.commercials_prefer_same_era = QCheckBox("Prefer Same-Era Commercials")
+        self.commercials_prefer_same_era.setChecked(bool(self.commercials_settings.get("prefer_same_era", True)))
 
         self.channel_overrides_btn = QPushButton("Edit Channel Commercial Overrides")
         self.channel_overrides_btn.clicked.connect(self.open_channel_overrides_dialog)
-        self.open_advanced_commercials_btn = QPushButton("Open Advanced Commercial Settings")
-        self.open_advanced_commercials_btn.clicked.connect(self.open_advanced_commercial_settings)
 
-        self.tabs = QTabWidget()
-        layout.addWidget(self.tabs, 1)
-        self.tabs.addTab(self.build_commercials_tab(), "Commercials")
-        self.tabs.addTab(self.build_companion_tab(), "Companions")
+        # ── Populate the content stack ───────────────────────────────────────
+        self._adv_stack.addWidget(self.build_commercials_tab())    # 0
+        self._adv_stack.addWidget(self.build_companion_tab())      # 1
+        self._adv_stack.addWidget(self.build_my_catalog_tab())     # 2
+        self._adv_stack.addWidget(self.build_smart_alecs_tab())    # 3
+        self._adv_nav_group.idClicked.connect(self._adv_stack.setCurrentIndex)
 
-        button_row = QHBoxLayout()
-        button_row.addStretch(1)
+        # ── Footer: Save / Close ─────────────────────────────────────────────
+        adv_footer = QWidget()
+        adv_footer.setObjectName("advFooter")
+        footer_row = QHBoxLayout(adv_footer)
+        footer_row.setContentsMargins(20, 10, 20, 16)
+        footer_row.setSpacing(10)
+        footer_row.addStretch(1)
         cancel_btn = QPushButton("Close")
         cancel_btn.clicked.connect(self.reject)
-        button_row.addWidget(cancel_btn)
+        footer_row.addWidget(cancel_btn)
         save_btn = QPushButton("Save")
         save_btn.setObjectName("saveButton")
         save_btn.clicked.connect(self.accept)
-        button_row.addWidget(save_btn)
-        layout.addLayout(button_row)
+        footer_row.addWidget(save_btn)
+        outer.addWidget(adv_footer)
 
-        self.simple_commercials_enabled.toggled.connect(self.sync_simple_to_advanced)
-        self.simple_smart_breaks.toggled.connect(self.sync_simple_to_advanced)
-        self.simple_preset_combo.currentTextChanged.connect(self.sync_simple_to_advanced)
-        self.refresh_simple_preset_hint()
+        self.commercials_enabled.toggled.connect(self.sync_commercial_mode_enabled)
+        self.commercials_mode_combo.currentTextChanged.connect(self.sync_commercial_mode_enabled)
+        self.sync_commercial_mode_enabled()
 
     def build_section_card(self, title_text, note_text=None):
         card = QWidget()
@@ -10380,55 +13826,58 @@ class AdvancedConfigDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(14)
 
-        card, card_layout = self.build_section_card(
-            "Simple Commercial Setup",
-            "A quick way to make your channels feel more like TV. These presets feed the same commercial engine as the advanced controls.",
-        )
+        card, card_layout = self.build_section_card("Commercials")
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(12)
-        form.addRow("Commercials", self.simple_commercials_enabled)
-        form.addRow("Commercial Style", self.simple_preset_combo)
-        form.addRow("Smart Breaks", self.simple_smart_breaks)
+        form.addRow("Enable Commercials", self.commercials_enabled)
         form.addRow("Commercials Folder", self._build_row_wrapper(self.commercials_root_input, self.commercials_browse_btn))
+        form.addRow("Mode", self.commercials_mode_combo)
+        form.addRow("Density", self.commercials_density_combo)
         card_layout.addLayout(form)
-        card_layout.addWidget(self.simple_preset_hint)
         layout.addWidget(card)
 
-        card2, card2_layout = self.build_section_card(
-            "Power User Controls",
-            "Fine-tune timing, fallback behavior, channel overrides, and cable test mode in a separate focused menu.",
-        )
-        card2_layout.addWidget(self.open_advanced_commercials_btn)
-        layout.addWidget(card2)
+        details_card, details_layout = self.build_section_card("Break Settings")
+        details_form = QFormLayout()
+        details_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+        details_form.setHorizontalSpacing(16)
+        details_form.setVerticalSpacing(12)
+        details_form.addRow("Min Ads Per Break", self.commercials_min_ads_spin)
+        details_form.addRow("Max Ads Per Break", self.commercials_max_ads_spin)
+        details_form.addRow("Midroll Interval Minutes", self.commercials_midroll_interval_spin)
+        details_layout.addLayout(details_form)
+        details_layout.addWidget(self.commercials_allow_promos)
+        details_layout.addWidget(self.commercials_allow_bumpers)
+        details_layout.addWidget(self.commercials_allow_station_ids)
+        details_layout.addWidget(self.commercials_prefer_same_era)
+        details_layout.addWidget(self.commercials_allow_fallback)
+        layout.addWidget(details_card)
+
         layout.addStretch(1)
         return self.build_scroll_tab(content)
 
     def populate_advanced_commercial_sections(self, layout):
         global_card, global_layout = self.build_section_card(
-            "Global Commercial Settings",
-            "These are the master commercial rules. Simple presets update these values for you, and you can still fine-tune them here.",
+            "Commercials",
+            "MediaWave uses simple schedule-driven breaks: off, between episodes, or timed mid-episode breaks.",
         )
         global_form = QFormLayout()
         global_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         global_form.setHorizontalSpacing(16)
         global_form.setVerticalSpacing(10)
-        global_form.addRow("Commercials Enabled", self.commercials_enabled)
-        global_form.addRow("Global Mode", self.commercials_mode_combo)
-        global_form.addRow("Global Density", self.commercials_density_combo)
-        global_form.addRow("Default Era Preference", self.commercials_preferred_era_combo)
-        global_form.addRow("Default Category Preference", self.commercials_preferred_category_combo)
+        global_form.addRow("Enable Commercials", self.commercials_enabled)
+        global_form.addRow("Mode", self.commercials_mode_combo)
+        global_form.addRow("Density", self.commercials_density_combo)
         global_layout.addLayout(global_form)
         folder_jump = QPushButton("Commercials Folder...")
         folder_jump.clicked.connect(lambda: self.tabs.setCurrentIndex(0))
         global_layout.addWidget(folder_jump)
-        global_layout.addWidget(self.commercials_allow_fallback)
         layout.addWidget(global_card)
 
         timing_card, timing_layout = self.build_section_card(
-            "Break Timing",
-            "Control how often breaks appear and how large each pod can get.",
+            "Optional Details",
+            "Timed Mid-Episode Breaks use this fixed interval. No smart-break scanning or learning is performed.",
         )
         timing_form = QFormLayout()
         timing_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
@@ -10436,40 +13885,14 @@ class AdvancedConfigDialog(QDialog):
         timing_form.setVerticalSpacing(10)
         timing_form.addRow("Min Ads / Break", self.commercials_min_ads_spin)
         timing_form.addRow("Max Ads / Break", self.commercials_max_ads_spin)
-        timing_form.addRow("Break Interval (min)", self.commercials_target_interval_spin)
-        timing_form.addRow("Min Seconds Between Breaks", self.commercials_min_between_spin)
-        timing_form.addRow("Min Before First Break", self.commercials_first_break_spin)
-        timing_form.addRow("Break Jitter (sec)", self.commercials_jitter_spin)
-        timing_form.addRow("Max Ad Seconds / 30 Min", self.commercials_max_half_hour_spin)
+        timing_form.addRow("Midroll Interval", self.commercials_midroll_interval_spin)
         timing_layout.addLayout(timing_form)
+        timing_layout.addWidget(self.commercials_allow_promos)
+        timing_layout.addWidget(self.commercials_allow_bumpers)
+        timing_layout.addWidget(self.commercials_allow_station_ids)
+        timing_layout.addWidget(self.commercials_prefer_same_era)
+        timing_layout.addWidget(self.commercials_allow_fallback)
         layout.addWidget(timing_card)
-
-        smart_card, smart_layout = self.build_section_card(
-            "Smart Breaks",
-            "Use fade-to-black and silence cues when possible, then fall back to timed breaks if needed.",
-        )
-        smart_layout.addWidget(self.commercials_smart_breaks)
-        smart_layout.addWidget(self.commercials_skip_midroll)
-        layout.addWidget(smart_card)
-
-        extras_card, extras_layout = self.build_section_card(
-            "Bumpers / Promos / Station IDs",
-            "Shape the personality of each break without losing the ability to fine-tune channels later.",
-        )
-        extras_layout.addWidget(self.commercials_pre_roll)
-        extras_layout.addWidget(self.commercials_post_roll)
-        extras_layout.addWidget(self.commercials_allow_bumpers)
-        extras_layout.addWidget(self.commercials_allow_promos)
-        extras_layout.addWidget(self.commercials_prefer_promos)
-        extras_layout.addWidget(self.commercials_allow_station_ids)
-        layout.addWidget(extras_card)
-
-        channel_card, channel_layout = self.build_section_card(
-            "Per-Channel Overrides",
-            "Each channel can still behave differently: no ads, kid-focused ads, retro density, promo-heavy blocks, and more.",
-        )
-        channel_layout.addWidget(self.channel_overrides_btn)
-        layout.addWidget(channel_card)
 
     def build_companion_tab(self):
         content = QWidget()
@@ -10477,9 +13900,7 @@ class AdvancedConfigDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(14)
 
-        companion_card, companion_layout = self.build_section_card(
-            "Companion Channels",
-        )
+        companion_card, companion_layout = self.build_section_card("Companion Channels")
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         form.setHorizontalSpacing(16)
@@ -10494,33 +13915,293 @@ class AdvancedConfigDialog(QDialog):
         companion_layout.addWidget(self.weatherstar_enabled)
         companion_layout.addWidget(self.radiowave_enabled)
         companion_layout.addWidget(self.youtube_enabled)
-        companion_layout.addWidget(self.allow_empty_catalog_tv)
-        companion_layout.addWidget(self.allow_dummy_vault_catalog)
-        companion_layout.addWidget(self.dev_menu_enabled)
         layout.addWidget(companion_card)
 
-        diagnostics_card, diagnostics_layout = self.build_section_card(
-            "Diagnostics",
-            "Useful paths and feature state for troubleshooting source vs packaged builds.",
+        layout.addStretch(1)
+        return self.build_scroll_tab(content)
+
+    def build_my_catalog_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(14)
+
+        catalog_card, catalog_layout = self.build_section_card("My Catalog")
+
+        top_row = QHBoxLayout()
+        top_row.setSpacing(8)
+        self.catalog_search_input = QLineEdit()
+        self.catalog_search_input.setPlaceholderText("Search channels")
+        self.catalog_search_input.textChanged.connect(self.filter_catalog_rows)
+        top_row.addWidget(self.catalog_search_input, 1)
+        enable_all = QPushButton("Enable All")
+        enable_all.clicked.connect(lambda: self.set_all_catalog_enabled(True))
+        top_row.addWidget(enable_all)
+        disable_all = QPushButton("Disable All")
+        disable_all.clicked.connect(lambda: self.set_all_catalog_enabled(False))
+        top_row.addWidget(disable_all)
+        reset_all = QPushButton("Reset All")
+        reset_all.clicked.connect(self.reset_all_catalog_rows)
+        top_row.addWidget(reset_all)
+        catalog_layout.addLayout(top_row)
+
+        header = QWidget()
+        header_layout = QGridLayout(header)
+        header_layout.setContentsMargins(8, 0, 8, 0)
+        header_layout.setHorizontalSpacing(10)
+        for column, text in enumerate(("On", "No.", "Channel", "Vault Category", "Custom Name", "")):
+            label = QLabel(text)
+            label.setObjectName("configLabel")
+            header_layout.addWidget(label, 0, column)
+        header_layout.setColumnStretch(2, 3)
+        header_layout.setColumnStretch(3, 2)
+        header_layout.setColumnStretch(4, 2)
+        catalog_layout.addWidget(header)
+
+        self.catalog_rows_widget = QWidget()
+        self.catalog_rows_layout = QVBoxLayout(self.catalog_rows_widget)
+        self.catalog_rows_layout.setContentsMargins(0, 0, 0, 0)
+        self.catalog_rows_layout.setSpacing(8)
+        if self.catalog_channel_infos:
+            for info in self.catalog_channel_infos:
+                self.add_catalog_row(info)
+        else:
+            empty = QLabel("Load a catalog to customize channel organization.")
+            empty.setObjectName("fieldHelp")
+            empty.setWordWrap(True)
+            self.catalog_rows_layout.addWidget(empty)
+        self.catalog_rows_layout.addStretch(1)
+
+        rows_scroll = FocusScrollArea()
+        rows_scroll.setWidget(self.catalog_rows_widget)
+        rows_scroll.setMinimumHeight(360)
+        catalog_layout.addWidget(rows_scroll, 1)
+        layout.addWidget(catalog_card, 1)
+        return content
+
+    def add_catalog_row(self, info):
+        channel_id = info.get("id") or catalog_channel_id_from_info(info)
+        name = str(info.get("name", "") or "Channel").strip() or "Channel"
+        default_number = int(info.get("default_number", 0) or 0)
+        settings = catalog_channel_settings_defaults()
+        settings.update(self.catalog_channel_settings.get(channel_id, {}))
+
+        # ── Outer container (card + expansion together) ──────────────────────
+        outer_widget = QWidget()
+        outer_widget.setObjectName("sectionCard")
+        outer_layout = QVBoxLayout(outer_widget)
+        outer_layout.setContentsMargins(0, 0, 0, 0)
+        outer_layout.setSpacing(0)
+
+        # ── Main row ─────────────────────────────────────────────────────────
+        row_header = QWidget()
+        row_header.setObjectName("catalogRowHeader")
+        row_layout = QGridLayout(row_header)
+        row_layout.setContentsMargins(10, 8, 10, 8)
+        row_layout.setHorizontalSpacing(10)
+        row_layout.setVerticalSpacing(4)
+
+        enabled_box = QCheckBox()
+        enabled_box.setChecked(bool(settings.get("enabled", True)))
+        row_layout.addWidget(enabled_box, 0, 0, Qt.AlignCenter)
+
+        number_spin = QSpinBox()
+        number_spin.setRange(1, 9999)
+        number_spin.setValue(int(settings.get("channel_number") or default_number or 1))
+        number_spin.setMinimumWidth(68)
+        row_layout.addWidget(number_spin, 0, 1)
+
+        name_label = QLabel(name)
+        name_label.setObjectName("configLabel")
+        name_label.setWordWrap(False)
+        name_label.setToolTip(name)
+        row_layout.addWidget(name_label, 0, 2)
+
+        category_combo = QComboBox()
+        category_combo.addItems(CATALOG_BUILTIN_CATEGORIES)
+        mode = settings.get("vault_category_mode", "channel_name")
+        category = settings.get("vault_category", "")
+        if mode == "custom":
+            category_combo.setCurrentText(CATALOG_CATEGORY_CUSTOM)
+        elif mode == "builtin" and category in CATALOG_BUILTIN_CATEGORIES:
+            category_combo.setCurrentText(category)
+        elif mode == "builtin" and category:
+            category_combo.setCurrentText(CATALOG_CATEGORY_CUSTOM)
+        else:
+            category_combo.setCurrentText(CATALOG_CATEGORY_USE_CHANNEL)
+        row_layout.addWidget(category_combo, 0, 3)
+
+        custom_input = QLineEdit()
+        custom_input.setPlaceholderText("Custom category name")
+        custom_input.setText(settings.get("custom_vault_category", "") or (category if mode == "builtin" and category not in CATALOG_BUILTIN_CATEGORIES else ""))
+        row_layout.addWidget(custom_input, 0, 4)
+
+        config_btn = QPushButton("Config  ▾")
+        config_btn.setObjectName("configToggleButton")
+        config_btn.setCheckable(True)
+        config_btn.setChecked(False)
+        row_layout.addWidget(config_btn, 0, 5)
+
+        row_layout.setColumnStretch(2, 3)
+        row_layout.setColumnStretch(3, 2)
+        row_layout.setColumnStretch(4, 2)
+        outer_layout.addWidget(row_header)
+
+        # ── Expandable "Show Config" panel ────────────────────────────────────
+        expand_panel = QWidget()
+        expand_panel.setObjectName("catalogExpandPanel")
+        expand_panel.setVisible(False)
+        exp_layout = QVBoxLayout(expand_panel)
+        exp_layout.setContentsMargins(16, 12, 16, 14)
+        exp_layout.setSpacing(10)
+
+        # Description blurb
+        desc_row = QHBoxLayout()
+        desc_row.setSpacing(12)
+        desc_label = QLabel("Channel Blurb")
+        desc_label.setObjectName("configLabel")
+        desc_label.setFixedWidth(100)
+        desc_label.setAlignment(Qt.AlignRight | Qt.AlignTop)
+        desc_edit = QTextEdit()
+        desc_edit.setObjectName("catalogDescEdit")
+        desc_edit.setPlaceholderText(f"A short blurb about {name} — shows in the Vault description card.")
+        desc_edit.setPlainText(settings.get("description", ""))
+        desc_edit.setFixedHeight(64)
+        desc_edit.setAcceptRichText(False)
+        desc_row.addWidget(desc_label)
+        desc_row.addWidget(desc_edit, 1)
+        exp_layout.addLayout(desc_row)
+
+        # Genre tags
+        tags_row = QHBoxLayout()
+        tags_row.setSpacing(12)
+        tags_label = QLabel("Genre Tags")
+        tags_label.setObjectName("configLabel")
+        tags_label.setFixedWidth(100)
+        tags_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        tags_input = QLineEdit()
+        tags_input.setObjectName("catalogTagsInput")
+        tags_input.setPlaceholderText("e.g. Animated, Comedy, 90s  (comma-separated)")
+        tags_input.setText(settings.get("vault_genre_tags", ""))
+        tags_row.addWidget(tags_label)
+        tags_row.addWidget(tags_input, 1)
+        exp_layout.addLayout(tags_row)
+
+        # Reset button inside panel
+        panel_footer = QHBoxLayout()
+        panel_footer.addStretch(1)
+        reset_btn = QPushButton("Reset to Default")
+        reset_btn.setObjectName("catalogResetButton")
+        panel_footer.addWidget(reset_btn)
+        exp_layout.addLayout(panel_footer)
+
+        outer_layout.addWidget(expand_panel)
+
+        def _toggle_expand(checked, btn=config_btn, panel=expand_panel):
+            panel.setVisible(checked)
+            btn.setText("Config  ▴" if checked else "Config  ▾")
+
+        config_btn.toggled.connect(_toggle_expand)
+
+        row = {
+            "id": channel_id,
+            "name": name,
+            "default_number": default_number or 1,
+            "widget": outer_widget,
+            "enabled": enabled_box,
+            "number": number_spin,
+            "category": category_combo,
+            "custom": custom_input,
+            "description": desc_edit,
+            "tags": tags_input,
+            "expand_panel": expand_panel,
+            "config_btn": config_btn,
+        }
+        category_combo.currentTextChanged.connect(lambda _text, row=row: self.sync_catalog_custom_field(row))
+        reset_btn.clicked.connect(lambda _checked=False, row=row: self.reset_catalog_row(row))
+        self.catalog_rows.append(row)
+        self.sync_catalog_custom_field(row)
+        self.catalog_rows_layout.addWidget(outer_widget)
+
+    def sync_catalog_custom_field(self, row):
+        is_custom = row["category"].currentText() == CATALOG_CATEGORY_CUSTOM
+        row["custom"].setEnabled(is_custom)
+        row["custom"].setVisible(is_custom)
+
+    def filter_catalog_rows(self, text):
+        needle = normalize_title(text)
+        for row in self.catalog_rows:
+            visible = not needle or needle in normalize_title(row["name"])
+            row["widget"].setVisible(visible)
+            # collapse expand panel when hidden
+            if not visible and "config_btn" in row:
+                row["config_btn"].setChecked(False)
+
+    def set_all_catalog_enabled(self, enabled):
+        for row in self.catalog_rows:
+            row["enabled"].setChecked(bool(enabled))
+
+    def reset_catalog_row(self, row):
+        row["enabled"].setChecked(True)
+        row["number"].setValue(max(1, int(row.get("default_number", 1) or 1)))
+        row["category"].setCurrentText(CATALOG_CATEGORY_USE_CHANNEL)
+        row["custom"].clear()
+        if "description" in row:
+            row["description"].clear()
+        if "tags" in row:
+            row["tags"].clear()
+        self.sync_catalog_custom_field(row)
+
+    def reset_all_catalog_rows(self):
+        for row in self.catalog_rows:
+            self.reset_catalog_row(row)
+
+    def collect_catalog_channel_settings(self):
+        settings = {}
+        for row in self.catalog_rows:
+            category_text = row["category"].currentText()
+            if category_text == CATALOG_CATEGORY_CUSTOM:
+                mode = "custom"
+                vault_category = ""
+                custom_category = sanitize_catalog_category(row["custom"].text())
+            elif category_text == CATALOG_CATEGORY_USE_CHANNEL:
+                mode = "channel_name"
+                vault_category = ""
+                custom_category = ""
+            else:
+                mode = "builtin"
+                vault_category = sanitize_catalog_category(category_text)
+                custom_category = ""
+            settings[row["id"]] = {
+                "enabled": row["enabled"].isChecked(),
+                "channel_number": row["number"].value(),
+                "display_name": row["name"],
+                "vault_category_mode": mode,
+                "vault_category": vault_category,
+                "custom_vault_category": custom_category,
+                "description": row["description"].toPlainText().strip() if "description" in row else "",
+                "vault_genre_tags": row["tags"].text().strip() if "tags" in row else "",
+            }
+        return normalize_catalog_channel_settings(settings)
+
+    def build_smart_alecs_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(14)
+
+        warning_card, warning_layout = self.build_section_card(
+            "Power User Options",
+            "These settings are for testing and diagnostics. You probably won't need them — but they're here if you do.",
         )
-        ffmpeg_status = "found" if resolve_ffmpeg_path() else "missing"
-        ffprobe_status = "found" if resolve_ffprobe_path() else "missing"
-        ytdlp_status = "found" if resolve_ytdlp_command() else "missing"
-        runtime_mode = "packaged app" if getattr(sys, "frozen", False) else "source checkout"
-        diagnostics = QLabel(
-            f"Runtime: {runtime_mode}\n"
-            f"Source/resources: {RESOURCE_DIR}\n"
-            f"Writable data/cache: {DATA_DIR}\n"
-            f"Current catalog: {(self.parent().catalog_root if self.parent() is not None and hasattr(self.parent(), 'catalog_root') else '') or 'not selected'}\n"
-            f"Theme: {self.parent().theme_combo.currentText() if self.parent() is not None and hasattr(self.parent(), 'theme_combo') else 'default'}\n"
-            f"FFmpeg: {ffmpeg_status}  •  FFprobe: {ffprobe_status}  •  yt-dlp: {ytdlp_status}\n"
-            f"Remote metadata matching: {'experimental enabled' if REMOTE_METADATA_EXPERIMENTAL else 'disabled'}\n"
-            f"NetTV: {'enabled (experimental)' if self.youtube_enabled.isChecked() else 'disabled'}"
-        )
-        diagnostics.setObjectName("sectionNote")
-        diagnostics.setWordWrap(True)
-        diagnostics_layout.addWidget(diagnostics)
-        layout.addWidget(diagnostics_card)
+        layout.addWidget(warning_card)
+
+        test_card, test_layout = self.build_section_card("Testing and Diagnostics")
+        test_layout.addWidget(self.allow_empty_catalog_tv)
+        test_layout.addWidget(self.allow_dummy_vault_catalog)
+        test_layout.addWidget(self.dev_menu_enabled)
+        layout.addWidget(test_card)
+
         layout.addStretch(1)
         return self.build_scroll_tab(content)
 
@@ -10547,45 +14228,22 @@ class AdvancedConfigDialog(QDialog):
         label.setObjectName("configLabel")
         return label
 
-    def refresh_simple_preset_hint(self):
-        preset = normalize_commercial_simple_preset(self.simple_preset_combo.currentText())
-        hints = {
-            "premium": "Premium / No Ads keeps channels clean and uninterrupted.",
-            "light_tv": "Light TV mostly keeps ads between shows with a gentler cadence.",
-            "classic_cable": "Set Top Box adds moderate ads, promos, and IDs for a familiar old-TV flow.",
-            "heavy_retro": "Heavy Retro leans into dense breaks, more promos, and a stronger throwback feel.",
-        }
-        self.simple_preset_hint.setText(hints.get(preset, hints["classic_cable"]))
-
-    def sync_simple_to_advanced(self):
-        self.refresh_simple_preset_hint()
-        preset_key = normalize_commercial_simple_preset(self.simple_preset_combo.currentText())
-        resolved = apply_commercial_simple_preset(
-            self.values().get("commercials", self.commercials_settings),
-            preset_key,
-            smart_breaks=self.simple_smart_breaks.isChecked(),
-            enabled=self.simple_commercials_enabled.isChecked(),
-            root_folder=self.commercials_root_input.text().strip(),
-        )
-        self.advanced_commercials_settings = json.loads(json.dumps(resolved))
-        self.commercials_enabled.setChecked(bool(resolved.get("enabled", False)))
-        self.commercials_mode_combo.setCurrentText(resolved.get("mode", "between_episodes_only"))
-        self.commercials_density_combo.setCurrentText(resolved.get("density", "light"))
-        self.commercials_smart_breaks.setChecked(bool(resolved.get("smart_breaks", True)))
-        self.commercials_pre_roll.setChecked(bool(resolved.get("pre_roll_enabled", False)))
-        self.commercials_post_roll.setChecked(bool(resolved.get("post_roll_enabled", False)))
-        self.commercials_allow_bumpers.setChecked(bool(resolved.get("allow_bumpers", True)))
-        self.commercials_allow_promos.setChecked(bool(resolved.get("allow_promos", True)))
-        self.commercials_prefer_promos.setChecked(bool(resolved.get("prefer_promos", False)))
-        self.commercials_allow_station_ids.setChecked(bool(resolved.get("allow_station_ids", True)))
-        self.commercials_min_ads_spin.setValue(int(resolved.get("min_ads_per_break", 1) or 1))
-        self.commercials_max_ads_spin.setValue(int(resolved.get("max_ads_per_break", 3) or 3))
-        self.commercials_min_between_spin.setValue(int(resolved.get("min_seconds_between_breaks", 330) or 330))
-        self.commercials_target_interval_spin.setValue(int(resolved.get("target_break_interval_minutes", 7) or 7))
-        self.commercials_first_break_spin.setValue(int(resolved.get("minimum_content_before_first_break_seconds", 90) or 90))
-        self.commercials_jitter_spin.setValue(int(resolved.get("break_jitter_seconds", 45) or 45))
-        self.commercials_max_half_hour_spin.setValue(int(resolved.get("max_ad_seconds_per_half_hour", 240) or 240))
-        self.commercials_skip_midroll.setChecked(bool(resolved.get("skip_midroll_if_no_smart_breaks", False)))
+    def sync_commercial_mode_enabled(self):
+        mode = COMMERCIAL_MODE_VALUES_BY_LABEL.get(self.commercials_mode_combo.currentText(), "between_episodes")
+        sender = self.sender()
+        enabled = self.commercials_enabled.isChecked()
+        if sender is self.commercials_enabled and enabled and mode == "off":
+            self.commercials_mode_combo.blockSignals(True)
+            self.commercials_mode_combo.setCurrentText(COMMERCIAL_MODE_LABELS["between_episodes"])
+            self.commercials_mode_combo.blockSignals(False)
+        elif not enabled and mode != "off":
+            self.commercials_mode_combo.blockSignals(True)
+            self.commercials_mode_combo.setCurrentText(COMMERCIAL_MODE_LABELS["off"])
+            self.commercials_mode_combo.blockSignals(False)
+        elif sender is self.commercials_mode_combo and enabled and mode == "off":
+            self.commercials_enabled.blockSignals(True)
+            self.commercials_enabled.setChecked(False)
+            self.commercials_enabled.blockSignals(False)
 
     def open_channel_overrides_dialog(self):
         dialog = CommercialOverridesDialog(self.channel_names, self.channel_commercial_overrides, self)
@@ -10606,17 +14264,26 @@ class AdvancedConfigDialog(QDialog):
             self.advanced_commercials_settings = normalize_commercials_config(values.get("commercials", settings))
             self.channel_commercial_overrides = self.advanced_commercials_settings.get("channel_overrides", {})
             self.allow_empty_catalog_tv.setChecked(bool(values.get("allow_empty_catalog_tv", False)))
-            self.simple_commercials_enabled.setChecked(bool(self.advanced_commercials_settings.get("enabled", False)))
-            self.simple_smart_breaks.setChecked(bool(self.advanced_commercials_settings.get("smart_breaks", True)))
 
     def values(self):
         commercials = normalize_commercials_config(self.advanced_commercials_settings)
+        mode = COMMERCIAL_MODE_VALUES_BY_LABEL.get(self.commercials_mode_combo.currentText(), "between_episodes")
+        enabled = self.commercials_enabled.isChecked() and mode != "off"
         commercials.update(
             {
-                "enabled": self.commercials_enabled.isChecked(),
+                "enabled": enabled,
+                "commercials_enabled": enabled,
                 "root_folder": self.commercials_root_input.text().strip(),
-                "simple_preset": normalize_commercial_simple_preset(self.simple_preset_combo.currentText()),
-                "smart_breaks": self.commercials_smart_breaks.isChecked(),
+                "mode": mode,
+                "density": self.commercials_density_combo.currentText().strip().lower(),
+                "allow_fallback": self.commercials_allow_fallback.isChecked(),
+                "allow_bumpers": self.commercials_allow_bumpers.isChecked(),
+                "allow_promos": self.commercials_allow_promos.isChecked(),
+                "allow_station_ids": self.commercials_allow_station_ids.isChecked(),
+                "prefer_same_era": self.commercials_prefer_same_era.isChecked(),
+                "min_ads_per_break": self.commercials_min_ads_spin.value(),
+                "max_ads_per_break": self.commercials_max_ads_spin.value(),
+                "midroll_interval_minutes": self.commercials_midroll_interval_spin.value(),
                 "channel_overrides": self.channel_commercial_overrides,
             }
         )
@@ -10637,6 +14304,7 @@ class AdvancedConfigDialog(QDialog):
             "allow_dummy_vault_catalog": self.allow_dummy_vault_catalog.isChecked(),
             "dev_menu_enabled": self.dev_menu_enabled.isChecked(),
             "commercials": commercials,
+            "catalog_channel_settings": self.collect_catalog_channel_settings(),
         }
 
     def choose_radiowave_folder(self):
@@ -10982,6 +14650,320 @@ class MetadataReviewDialog(QDialog):
         self.update_entry_details(self.title_list.currentRow())
 
 
+class CoaxieWidget(QWidget):
+    """Coaxie — MediaWave2000 mascot. Klasky Csupo-inspired retro TV character.
+    Drawn with QPainter; swap in vector art when available."""
+
+    def __init__(self, size: int = 96, parent=None):
+        super().__init__(parent)
+        sz = max(50, int(size))
+        self.setFixedSize(sz, int(sz * 1.38))  # extra height so antennas don't clip
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self._blink = False
+        self._blink_timer = QTimer(self)
+        self._blink_timer.timeout.connect(self._start_blink)
+        self._blink_timer.start(3800)
+
+    def _start_blink(self):
+        self._blink = True
+        self.update()
+        QTimer.singleShot(115, self._end_blink)
+
+    def _end_blink(self):
+        self._blink = False
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+        sc = W / 96.0  # design grid: 96 wide
+
+        def s(v):
+            return v * sc
+
+        dy = s(9)      # vertical offset so antennas clear the top edge
+
+        def y(v):      # shifted y coordinate
+            return s(v) + dy
+
+        def outline(width=2.5):
+            return QPen(QColor(14, 16, 40), max(1, s(width)))
+
+        # ── Left antenna — straighter, slightly inward lean ──────────────────
+        ant_pen = QPen(QColor(28, 20, 60), max(1, s(3)))
+        ant_pen.setCapStyle(Qt.RoundCap)
+        p.setPen(ant_pen)
+        p.drawLine(QPointF(s(33), y(17)), QPointF(s(26), y(2)))
+        p.drawLine(QPointF(s(63), y(17)), QPointF(s(75), y(1)))
+
+        # Antenna balls
+        p.setPen(outline(1.5))
+        p.setBrush(QColor(255, 212, 32))
+        p.drawEllipse(QPointF(s(23), y(1)), s(5), s(5))
+        p.setBrush(QColor(255, 180, 20))
+        p.drawEllipse(QPointF(s(77), y(0)), s(4.5), s(5.5))
+
+        # ── TV body ──────────────────────────────────────────────────────────
+        body = QRectF(s(2), y(13), s(92), s(82))
+        body_grad = QLinearGradient(body.topLeft(), body.bottomLeft())
+        body_grad.setColorAt(0.0,  QColor(72,  92, 195))
+        body_grad.setColorAt(0.45, QColor(52,  68, 162))
+        body_grad.setColorAt(1.0,  QColor(28,  36, 110))
+        p.setBrush(body_grad)
+        p.setPen(outline(2.8))
+        p.drawRoundedRect(body, s(7), s(7))
+
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(255, 255, 255, 22))
+        p.drawRoundedRect(
+            QRectF(body.x() + s(38), body.y() + s(4), s(48), body.height() * 0.45),
+            s(5), s(5)
+        )
+
+        # ── Screen bezel ─────────────────────────────────────────────────────
+        scr = QRectF(s(10), y(21), s(68), s(54))
+        p.setPen(outline(2))
+        p.setBrush(QColor(6, 8, 28))
+        p.drawRoundedRect(scr, s(4), s(4))
+
+        cx, cy = scr.center().x(), scr.center().y()
+        glow = QRadialGradient(cx - s(4), cy - s(3), s(28))
+        glow.setColorAt(0.0, QColor(60, 108, 240, 45))
+        glow.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.setPen(Qt.NoPen)
+        p.setBrush(glow)
+        p.drawEllipse(scr.adjusted(s(3), s(3), -s(3), -s(3)))
+
+        # ── Eyebrows ─────────────────────────────────────────────────────────
+        brow_pen = QPen(QColor(28, 20, 60), max(1, s(3)))
+        brow_pen.setCapStyle(Qt.RoundCap)
+        p.setPen(brow_pen)
+        ey = cy - s(5)
+        p.drawLine(QPointF(cx - s(19), ey - s(10)), QPointF(cx - s(5),  ey - s(13)))
+        p.drawLine(QPointF(cx + s(4),  ey - s(12)), QPointF(cx + s(18), ey - s(10)))
+
+        # ── Eyes ─────────────────────────────────────────────────────────────
+        if self._blink:
+            blink_pen = QPen(QColor(14, 16, 40), max(1, s(3)))
+            blink_pen.setCapStyle(Qt.RoundCap)
+            p.setPen(blink_pen)
+            p.setBrush(Qt.NoBrush)
+            p.drawLine(QPointF(cx - s(18), ey), QPointF(cx - s(6), ey))
+            p.drawLine(QPointF(cx + s(5),  ey), QPointF(cx + s(17), ey))
+        else:
+            p.setPen(outline(2))
+            p.setBrush(QColor(230, 240, 255))
+            p.drawEllipse(QPointF(cx - s(12), ey), s(7.5), s(8.5))
+            p.drawEllipse(QPointF(cx + s(11), ey), s(6.5), s(7.5))
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(40, 170, 255))
+            p.drawEllipse(QPointF(cx - s(12), ey + s(1)), s(5), s(5.5))
+            p.drawEllipse(QPointF(cx + s(11), ey + s(0.5)), s(4.2), s(4.8))
+            p.setBrush(QColor(14, 16, 40))
+            p.drawEllipse(QPointF(cx - s(11.5), ey + s(1)), s(2.8), s(3))
+            p.drawEllipse(QPointF(cx + s(11.5), ey + s(0.5)), s(2.2), s(2.5))
+            p.setBrush(QColor(255, 255, 255, 230))
+            p.drawEllipse(QPointF(cx - s(13.5), ey - s(1.5)), s(1.5), s(1.5))
+            p.drawEllipse(QPointF(cx + s(9.8),  ey - s(1.2)), s(1.2), s(1.2))
+
+        # ── Nose ─────────────────────────────────────────────────────────────
+        p.setPen(outline(1.2))
+        p.setBrush(QColor(40, 56, 140))
+        p.drawEllipse(QPointF(cx - s(1), ey + s(7)), s(1.8), s(1.8))
+
+        # ── Cute arc smile ────────────────────────────────────────────────────
+        smile_pen = QPen(QColor(96, 200, 255), max(2, s(2.6)))
+        smile_pen.setCapStyle(Qt.RoundCap)
+        p.setPen(smile_pen)
+        p.setBrush(Qt.NoBrush)
+        smile_rect = QRectF(cx - s(11), ey + s(7), s(22), s(14))
+        p.drawArc(smile_rect, 0, -180 * 16)
+
+        # Cheek blushes
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(240, 100, 140, 70))
+        p.drawEllipse(QPointF(cx - s(22), ey + s(4)), s(6), s(4))
+        p.drawEllipse(QPointF(cx + s(21), ey + s(4)), s(6), s(4))
+
+        # ── Speaker grille lines ──────────────────────────────────────────────
+        grill_pen = QPen(QColor(38, 50, 130), max(1, s(1.2)))
+        p.setPen(grill_pen)
+        gx = scr.right() + s(5)
+        for gi in range(4):
+            gy = scr.top() + s(10) + gi * s(8)
+            p.drawLine(QPointF(gx, gy), QPointF(gx + s(8), gy))
+
+        # ── Dial knobs ────────────────────────────────────────────────────────
+        knob_y = body.bottom() - s(12)
+        p.setPen(outline(1.8))
+        p.setBrush(QColor(212, 168, 48))
+        p.drawEllipse(QPointF(s(26), knob_y), s(5.5), s(5.5))
+        p.drawRoundedRect(QRectF(s(58), knob_y - s(5.5), s(11), s(11)), s(2.5), s(2.5))
+        # Knob tick marks
+        p.setPen(QPen(QColor(140, 100, 20), max(1, s(1.2))))
+        p.drawLine(QPointF(s(26), knob_y - s(3.5)), QPointF(s(26), knob_y - s(1)))
+
+        p.end()
+
+
+# Deterministic star positions for the startup hero – generated once at class level
+def _make_startup_stars(n=46):
+    stars = []
+    seed = 0xA5F3C1
+    for _ in range(n):
+        seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+        x = (seed & 0xFFFF) / 0xFFFF
+        seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+        y = (seed & 0xFFFF) / 0xFFFF
+        seed = (seed * 1664525 + 1013904223) & 0xFFFFFFFF
+        v = (seed & 0xFFFF) / 0xFFFF
+        stars.append((x, y, v))
+    return stars
+
+_STARTUP_STARS = _make_startup_stars()
+
+
+class _StartupHeroWidget(QWidget):
+    """Full-width painted hero band at the top of the startup screen.
+    Fixed palette — no dependency on the active guide theme."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedHeight(148)
+        self._logo: QPixmap = QPixmap()
+        self._tagline = "Your neighborhood cable box."
+
+    def set_logo(self, pixmap: QPixmap):
+        self._logo = pixmap
+        self.update()
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setRenderHint(QPainter.SmoothPixmapTransform)
+        W, H = self.width(), self.height()
+
+        # ── Background gradient ─────────────────────────────────────────────
+        bg = QLinearGradient(0, 0, 0, H)
+        bg.setColorAt(0.0, _SW_HERO_TOP)
+        bg.setColorAt(1.0, _SW_HERO_BOT)
+        p.fillRect(0, 0, W, H, bg)
+
+        # Subtle left-to-right vignette (brighter near logo)
+        side_grad = QLinearGradient(0, 0, W, 0)
+        side_grad.setColorAt(0.0, QColor(80, 110, 220, 18))
+        side_grad.setColorAt(0.5, QColor(0, 0, 0, 0))
+        side_grad.setColorAt(1.0, QColor(0, 0, 0, 0))
+        p.fillRect(0, 0, W, H, side_grad)
+
+        # ── Pixel stars ─────────────────────────────────────────────────────
+        p.setPen(Qt.NoPen)
+        # Coaxie occupies the right ~120px — leave that area clear
+        star_right = W - 136
+        for (sx, sy, sv) in _STARTUP_STARS:
+            px = int(sx * star_right)
+            py = int(sy * H)
+            if sv > 0.75:
+                col = QColor(_SW_STAR_WARM.red(), _SW_STAR_WARM.green(),
+                             _SW_STAR_WARM.blue(), int(150 + sv * 90))
+                r = 1.6
+            elif sv > 0.42:
+                col = QColor(_SW_STAR_COOL.red(), _SW_STAR_COOL.green(),
+                             _SW_STAR_COOL.blue(), int(110 + sv * 100))
+                r = 1.1
+            else:
+                col = QColor(200, 212, 252, int(70 + sv * 110))
+                r = 0.7
+            p.setBrush(col)
+            p.drawEllipse(QPointF(px, py), r, r)
+
+        # ── Thin scanline texture (every 4px, very subtle) ──────────────────
+        line_col = QColor(0, 0, 0, 12)
+        p.setPen(QPen(line_col, 1))
+        y = 0
+        while y < H:
+            p.drawLine(0, y, W, y)
+            y += 4
+
+        # ── Logo ────────────────────────────────────────────────────────────
+        p.setPen(Qt.NoPen)
+        logo_margin = 28
+        if not self._logo.isNull():
+            lx = logo_margin
+            ly = (H - self._logo.height()) // 2 - 10
+            p.drawPixmap(lx, ly, self._logo)
+            # Tagline below logo
+            tagline_y = ly + self._logo.height() + 8
+        else:
+            tagline_y = H // 2 + 12
+
+        tag_font = QFont()
+        tag_font.setPixelSize(12)
+        tag_font.setItalic(True)
+        p.setFont(tag_font)
+        p.setPen(QColor(_SW_TEXT_DIM.red(), _SW_TEXT_DIM.green(),
+                        _SW_TEXT_DIM.blue(), 180))
+        p.drawText(logo_margin + 2, tagline_y + 13, self._tagline)
+
+        # ── Bottom rule ─────────────────────────────────────────────────────
+        rule_pen = QPen(QColor(48, 64, 160, 200), 1)
+        p.setPen(rule_pen)
+        p.drawLine(0, H - 1, W, H - 1)
+        # Subtle glow line above rule
+        glow_pen = QPen(QColor(80, 110, 255, 30), 1)
+        p.setPen(glow_pen)
+        p.drawLine(0, H - 2, W, H - 2)
+
+        p.end()
+
+
+class _AdvNavPanel(QWidget):
+    """Custom-painted left navigation sidebar for the Advanced Config wizard.
+    Shares the startup screen star/space aesthetic."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setFixedWidth(210)
+
+    def paintEvent(self, event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        W, H = self.width(), self.height()
+
+        bg = QLinearGradient(0, 0, 0, H)
+        bg.setColorAt(0.0, QColor(8, 10, 26))
+        bg.setColorAt(1.0, QColor(13, 16, 38))
+        p.fillRect(0, 0, W, H, bg)
+
+        # Stars — use a subset, slightly dimmer than the hero
+        p.setPen(Qt.NoPen)
+        for (sx, sy, sv) in _STARTUP_STARS[:28]:
+            px = int(sx * W)
+            py = int(sy * H)
+            alpha_boost = 0.55
+            if sv > 0.75:
+                p.setBrush(QColor(255, 218, 96, int((150 + sv * 90) * alpha_boost)))
+                p.drawEllipse(QPointF(px, py), 1.3, 1.3)
+            elif sv > 0.4:
+                p.setBrush(QColor(148, 196, 255, int((110 + sv * 100) * alpha_boost)))
+                p.drawEllipse(QPointF(px, py), 0.9, 0.9)
+            else:
+                p.setBrush(QColor(200, 212, 252, int((70 + sv * 110) * alpha_boost)))
+                p.drawEllipse(QPointF(px, py), 0.6, 0.6)
+
+        # Subtle right-edge glow bleed
+        glow = QLinearGradient(W - 24, 0, W, 0)
+        glow.setColorAt(0.0, QColor(68, 108, 235, 0))
+        glow.setColorAt(1.0, QColor(68, 108, 235, 32))
+        p.fillRect(W - 24, 0, 24, H, glow)
+
+        # Hard right border
+        p.setPen(QPen(QColor(40, 56, 150, 180), 1))
+        p.drawLine(W - 1, 0, W - 1, H)
+        p.end()
+
+
 class VideoSurface(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -11104,6 +15086,7 @@ class ChannelSurfer(QWidget):
                 "display_mode": "Auto",
                 "guide_theme": DEFAULT_THEME_NAME,
                 "guide_skin": DEFAULT_SKIN_NAME,
+                "sleek_freak_mode": "dark",
                 "guide_ui_scale": GUIDE_UI_SCALE_DEFAULT,
                 "catalog_path": "",
                 "weatherstar_location": "",
@@ -11118,22 +15101,38 @@ class ChannelSurfer(QWidget):
                 "youtube_enabled": False,
                 "allow_empty_catalog_tv": False,
                 "allow_dummy_vault_catalog": False,
-                "dev_menu_enabled": True,
+                "dev_menu_enabled": False,
+                "auto_launch": False,
                 "experimental_remote_metadata": False,
                 "commercials": commercial_settings_defaults(),
+                "catalog_channel_settings": {},
             },
         )
         original_skin = self.app_settings.get("guide_skin", DEFAULT_SKIN_NAME)
         original_theme = self.app_settings.get("guide_theme", DEFAULT_THEME_NAME)
+        original_sleek_mode = self.app_settings.get("sleek_freak_mode", "dark")
+        original_commercials = json.dumps(self.app_settings.get("commercials", {}), sort_keys=True)
+        original_catalog_channel_settings = json.dumps(self.app_settings.get("catalog_channel_settings", {}), sort_keys=True)
         migrated_skin = normalize_skin_name(original_skin)
         migrated_theme = normalize_theme_for_skin(
             original_skin,
             original_theme,
         )
+        migrated_sleek_mode = normalize_sleek_mode(original_sleek_mode)
         self.app_settings["guide_skin"] = migrated_skin
         self.app_settings["guide_theme"] = migrated_theme
+        self.app_settings["sleek_freak_mode"] = migrated_sleek_mode
         self.app_settings["commercials"] = normalize_commercials_config(self.app_settings.get("commercials", {}))
-        if original_skin != migrated_skin or original_theme != migrated_theme:
+        self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
+        migrated_commercials = json.dumps(self.app_settings.get("commercials", {}), sort_keys=True)
+        migrated_catalog_channel_settings = json.dumps(self.app_settings.get("catalog_channel_settings", {}), sort_keys=True)
+        if (
+            original_skin != migrated_skin
+            or original_theme != migrated_theme
+            or original_sleek_mode != migrated_sleek_mode
+            or original_commercials != migrated_commercials
+            or original_catalog_channel_settings != migrated_catalog_channel_settings
+        ):
             save_json_file(APP_SETTINGS_FILE, self.app_settings)
         self.resume_state = load_json_file(RESUME_STATE_FILE, {"entries": {}})
         self.youtube_playlist_cache_state = load_json_file(
@@ -11148,37 +15147,152 @@ class ChannelSurfer(QWidget):
             self.app_settings.get("guide_skin", DEFAULT_SKIN_NAME),
         ))
 
-        layout = QVBoxLayout()
-        layout.setContentsMargins(18, 18, 18, 18)
-        layout.setSpacing(14)
+        self.resize(860, 520)
+        self.setMinimumSize(700, 460)
 
-        hero = QWidget()
-        hero.setObjectName("chromeCard")
-        hero_layout = QVBoxLayout(hero)
-        hero_layout.setContentsMargins(22, 18, 22, 18)
-        hero_layout.setSpacing(12)
+        # ── Root layout ─────────────────────────────────────────────────────
+        root = QVBoxLayout()
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
 
-        self.startup_logo = QLabel()
-        self.startup_logo.setObjectName("startupLogo")
-        self.startup_logo.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        startup_logo = load_brand_logo(460, 88)
-        if not startup_logo.isNull():
-            self.startup_logo.setPixmap(startup_logo)
-        hero_layout.addWidget(self.startup_logo)
+        # ── Hero band ───────────────────────────────────────────────────────
+        self._hero = _StartupHeroWidget()
+        hero_logo = load_brand_logo(260, 70)
+        if not hero_logo.isNull():
+            self._hero.set_logo(hero_logo)
 
-        self.subtitle_label = QLabel("Grab the Clicker!")
-        self.subtitle_label.setObjectName("subLabel")
-        hero_layout.addWidget(self.subtitle_label)
+        # Coaxie overlaid on hero (right side)
+        self._coaxie = CoaxieWidget(size=88, parent=self._hero)
 
-        self.status = QLabel("Choose a catalog, add optional local artwork/descriptions, then press Watch TV when you’re ready to go live.")
+        root.addWidget(self._hero)
+
+        # ── Two-column content area ─────────────────────────────────────────
+        content = QWidget()
+        content.setObjectName("startupContent")
+        content_layout = QHBoxLayout(content)
+        content_layout.setContentsMargins(20, 16, 20, 10)
+        content_layout.setSpacing(14)
+
+        # ── Library card ─────────────────────────────────────────────────────
+        library_card = QWidget()
+        library_card.setObjectName("setupCard")
+        library_card.setMinimumHeight(0)
+        library_inner = QVBoxLayout(library_card)
+        library_inner.setContentsMargins(16, 14, 16, 16)
+        library_inner.setSpacing(14)
+
+        lib_header = QLabel("YOUR LIBRARY")
+        lib_header.setObjectName("setupCardHeader")
+        library_inner.addWidget(lib_header)
+
+        self.catalog_path_label = QLabel("No catalog selected.")
+        self.catalog_path_label.setObjectName("catalogPathLabel")
+        self.catalog_path_label.setWordWrap(True)
+        library_inner.addWidget(self.catalog_path_label)
+
+        lib_action_row = QHBoxLayout()
+        lib_action_row.setSpacing(12)
+        lib_action_row.setContentsMargins(0, 4, 0, 0)
+        self.catalog_btn = QPushButton("Choose Catalog…")
+        self.catalog_btn.setObjectName("chooseCatalogButton")
+        self.catalog_btn.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
+        lib_action_row.addWidget(self.catalog_btn)
+        self.library_summary = QLabel("No channels loaded")
+        self.library_summary.setObjectName("librarySummaryLabel")
+        lib_action_row.addWidget(self.library_summary, 1)
+        library_inner.addLayout(lib_action_row)
+        library_inner.addStretch(1)
+        content_layout.addWidget(library_card, 1)
+
+        # ── Display setup card ───────────────────────────────────────────────
+        display_card = QWidget()
+        display_card.setObjectName("setupCard")
+        display_card.setMinimumHeight(0)
+        display_inner = QVBoxLayout(display_card)
+        display_inner.setContentsMargins(16, 14, 16, 14)
+        display_inner.setSpacing(10)
+
+        disp_header = QLabel("DISPLAY SETUP")
+        disp_header.setObjectName("setupCardHeader")
+        display_inner.addWidget(disp_header)
+
+        def _disp_row(label_text, combo_widget):
+            row = QHBoxLayout()
+            row.setSpacing(8)
+            lbl = QLabel(label_text)
+            lbl.setObjectName("fieldLabel")
+            lbl.setFixedWidth(82)
+            lbl.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+            combo_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+            row.addWidget(lbl)
+            row.addWidget(combo_widget, 1)
+            return row
+
+        self.profile_combo = QComboBox()
+        self.profile_combo.addItems(list(GUIDE_PROFILES.keys()))
+        saved_profile = self.app_settings.get("display_mode", "Auto")
+        if saved_profile in GUIDE_PROFILES:
+            self.profile_combo.setCurrentText(saved_profile)
+
+        self.skin_combo = QComboBox()
+        self.skin_combo.addItems(list(GUIDE_SKINS.keys()))
+        saved_skin = normalize_skin_name(self.app_settings.get("guide_skin", DEFAULT_SKIN_NAME))
+        self.skin_combo.setCurrentText(saved_skin)
+
+        self.theme_combo = QComboBox()
+        self.refresh_theme_combo_for_skin(initial_theme=self.app_settings.get("guide_theme", DEFAULT_THEME_NAME))
+
+        display_inner.addLayout(_disp_row("Display Mode", self.profile_combo))
+        display_inner.addLayout(_disp_row("Skin", self.skin_combo))
+        display_inner.addLayout(_disp_row("Guide Theme", self.theme_combo))
+        display_inner.addStretch(1)
+        content_layout.addWidget(display_card, 1)
+
+        root.addWidget(content, 1)
+
+        # ── Options strip ────────────────────────────────────────────────────
+        options_strip = QWidget()
+        options_strip.setObjectName("startupOptions")
+        options_layout = QHBoxLayout(options_strip)
+        options_layout.setContentsMargins(22, 0, 22, 0)
+        options_layout.setSpacing(16)
+
+        self.auto_launch_check = QCheckBox("Go straight to TV next time  (skip this screen)")
+        self.auto_launch_check.setObjectName("autoLaunchCheck")
+        self.auto_launch_check.setChecked(bool(self.app_settings.get("auto_launch", False)))
+        self.auto_launch_check.toggled.connect(self._save_auto_launch)
+        options_layout.addWidget(self.auto_launch_check)
+        options_layout.addStretch(1)
+
+        # Diagnostics pill — shown only when dev_menu_enabled
+        self.diagnostics_summary = DiagnosticSummaryLabel()
+        self.diagnostics_summary.setObjectName("diagnosticsPill")
+        self.diagnostics_summary.setToolTip("Open Diagnostic Readout")
+        self.diagnostics_summary.activated.connect(self.show_diagnostic_readout)
+        options_layout.addWidget(self.diagnostics_summary)
+        root.addWidget(options_strip)
+
+        # ── Footer action bar ────────────────────────────────────────────────
+        footer = QWidget()
+        footer.setObjectName("startupFooter")
+        footer_layout = QHBoxLayout(footer)
+        footer_layout.setContentsMargins(22, 12, 22, 16)
+        footer_layout.setSpacing(10)
+
+        status_col = QVBoxLayout()
+        status_col.setSpacing(5)
+        status_col.setContentsMargins(0, 0, 0, 0)
+
+        self.status = QLabel("Choose a catalog, then press Watch TV.")
         self.status.setObjectName("statusLabel")
         self.status.setWordWrap(True)
+        status_col.addWidget(self.status)
 
         self.loading_card = QWidget()
         self.loading_card.setObjectName("loadingCard")
         loading_layout = QVBoxLayout(self.loading_card)
-        loading_layout.setContentsMargins(14, 12, 14, 12)
-        loading_layout.setSpacing(8)
+        loading_layout.setContentsMargins(0, 4, 0, 0)
+        loading_layout.setSpacing(4)
         self.loading_stage = QLabel("Loading catalog")
         self.loading_stage.setObjectName("loadingStage")
         loading_layout.addWidget(self.loading_stage)
@@ -11190,114 +15304,28 @@ class ChannelSurfer(QWidget):
         self.loading_progress.setTextVisible(True)
         loading_layout.addWidget(self.loading_progress)
         self.loading_card.hide()
-        hero_layout.addWidget(self.status)
-        hero_layout.addWidget(self.loading_card)
+        status_col.addWidget(self.loading_card)
+        footer_layout.addLayout(status_col, 1)
 
-        button_row = QHBoxLayout()
-        button_row.setSpacing(10)
-        self.catalog_btn = QPushButton("Choose Catalog")
-        button_row.addWidget(self.catalog_btn)
-        self.watch_btn = QPushButton("Watch TV")
-        self.watch_btn.setObjectName("watchButton")
-        button_row.addWidget(self.watch_btn)
-        hero_layout.addLayout(button_row)
-        layout.addWidget(hero)
-
-        content_row = QHBoxLayout()
-        content_row.setSpacing(14)
-
-        sidebar = QWidget()
-        sidebar.setObjectName("sourceCard")
-        sidebar.setFixedWidth(220)
-        sidebar_layout = QVBoxLayout(sidebar)
-        sidebar_layout.setContentsMargins(16, 16, 16, 16)
-        sidebar_layout.setSpacing(10)
-
-        library_label = QLabel("Library")
-        library_label.setObjectName("sectionLabel")
-        sidebar_layout.addWidget(library_label)
-
-        self.catalog_path_label = QLabel("No catalog selected yet.")
-        self.catalog_path_label.setObjectName("infoPill")
-        self.catalog_path_label.setWordWrap(True)
-        sidebar_layout.addWidget(self.catalog_path_label)
-
-        self.library_summary = QLabel("No channels loaded")
-        self.library_summary.setObjectName("infoPill")
-        sidebar_layout.addWidget(self.library_summary)
-        sidebar_layout.addStretch(1)
-
-        settings_form = QFormLayout()
-        settings_form.setSpacing(12)
-        settings_form.setHorizontalSpacing(16)
-        settings_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
-        settings_form.setLabelAlignment(Qt.AlignRight | Qt.AlignVCenter)
-        self.profile_combo = QComboBox()
-        self.profile_combo.setMinimumWidth(220)
-        self.profile_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.profile_combo.addItems(list(GUIDE_PROFILES.keys()))
-        saved_profile = self.app_settings.get("display_mode", "Auto")
-        if saved_profile in GUIDE_PROFILES:
-            self.profile_combo.setCurrentText(saved_profile)
-        profile_label = QLabel("Display Mode")
-        profile_label.setObjectName("fieldLabel")
-        settings_form.addRow(profile_label, self.profile_combo)
-
-        self.theme_combo = QComboBox()
-        self.theme_combo.setMinimumWidth(220)
-        self.theme_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.skin_combo = QComboBox()
-        self.skin_combo.setMinimumWidth(220)
-        self.skin_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
-        self.skin_combo.addItems(list(GUIDE_SKINS.keys()))
-        saved_skin = normalize_skin_name(self.app_settings.get("guide_skin", DEFAULT_SKIN_NAME))
-        self.skin_combo.setCurrentText(saved_skin)
-        skin_label = QLabel("Skin")
-        skin_label.setObjectName("fieldLabel")
-        settings_form.addRow(skin_label, self.skin_combo)
-        self.refresh_theme_combo_for_skin(initial_theme=self.app_settings.get("guide_theme", DEFAULT_THEME_NAME))
-        theme_label = QLabel("Guide Theme")
-        theme_label.setObjectName("fieldLabel")
-        settings_form.addRow(theme_label, self.theme_combo)
-
-        settings_card = QWidget()
-        settings_card.setObjectName("chromeCard")
-        settings_layout = QVBoxLayout(settings_card)
-        settings_layout.setContentsMargins(18, 18, 18, 18)
-        settings_layout.setSpacing(12)
-        playback_label = QLabel("Playback Setup")
-        playback_label.setObjectName("sectionLabel")
-        settings_layout.addWidget(playback_label)
-        settings_layout.addLayout(settings_form)
-        self.allow_empty_catalog_tv_check = QCheckBox("Allow Watch TV without local content loaded")
-        self.allow_empty_catalog_tv_check.setChecked(bool(self.app_settings.get("allow_empty_catalog_tv", False)))
-        settings_layout.addWidget(self.allow_empty_catalog_tv_check)
-        self.allow_dummy_vault_check = QCheckBox("Allow dummy Vault listings without a catalog")
-        self.allow_dummy_vault_check.setChecked(bool(self.app_settings.get("allow_dummy_vault_catalog", False)))
-        settings_layout.addWidget(self.allow_dummy_vault_check)
-        self.dev_menu_enabled_check = QCheckBox("Enable in-app dev menu")
-        self.dev_menu_enabled_check.setChecked(bool(self.app_settings.get("dev_menu_enabled", True)))
-        settings_layout.addWidget(self.dev_menu_enabled_check)
-        self.advanced_btn = QPushButton("Advanced Configuration")
+        action_col = QVBoxLayout()
+        action_col.setSpacing(8)
+        self.advanced_btn = QPushButton("Advanced Config")
         self.advanced_btn.setObjectName("advancedButton")
-        settings_layout.addWidget(self.advanced_btn)
-        setup_note = QLabel(f"Your theme and display mode are remembered automatically the next time you open {APP_NAME}.")
-        setup_note.setObjectName("infoPill")
-        setup_note.setWordWrap(True)
-        settings_layout.addWidget(setup_note)
-        settings_layout.addStretch(1)
+        action_col.addWidget(self.advanced_btn)
+        self.watch_btn = QPushButton("Watch TV  ▶")
+        self.watch_btn.setObjectName("watchButton")
+        action_col.addWidget(self.watch_btn)
+        footer_layout.addLayout(action_col)
 
-        content_row.addWidget(sidebar)
-        content_row.addWidget(settings_card, 1)
-        layout.addLayout(content_row)
-        self.setLayout(layout)
+        root.addWidget(footer)
+        self.setLayout(root)
+
+        # Needed for compat — unused QLabel kept for any code still referencing it
+        self.startup_logo = QLabel()
 
         self.catalog_btn.clicked.connect(self.browse_catalog)
         self.watch_btn.clicked.connect(self.watch_tv)
         self.advanced_btn.clicked.connect(self.open_advanced_configuration)
-        self.allow_empty_catalog_tv_check.toggled.connect(lambda value: self.update_qol_setting("allow_empty_catalog_tv", value))
-        self.allow_dummy_vault_check.toggled.connect(lambda value: self.update_qol_setting("allow_dummy_vault_catalog", value))
-        self.dev_menu_enabled_check.toggled.connect(lambda value: self.update_qol_setting("dev_menu_enabled", value))
 
         self.channels = []
         self.current_channel = 0
@@ -11305,7 +15333,6 @@ class ChannelSurfer(QWidget):
         self.radiowave_metadata_cache = load_json_file(RADIOWAVE_METADATA_CACHE_FILE, {})
         self.schedule_state = load_json_file(SCHEDULE_STATE_FILE, {"catalogs": {}})
         self.commercial_library_cache_state = load_json_file(COMMERCIAL_LIBRARY_CACHE_FILE, {"signature": "", "root_folder": "", "assets": []})
-        self.smart_break_cache_state = load_json_file(SMART_BREAK_CACHE_FILE, {"entries": {}})
         self.tmdb_cache = load_json_file(TMDB_CACHE_FILE, {})
         self.tmdb_overrides = load_json_file(TMDB_OVERRIDES_FILE, {"shows": {}})
         self.tmdb_review = load_json_file(TMDB_REVIEW_FILE, {"shows": {}})
@@ -11319,13 +15346,6 @@ class ChannelSurfer(QWidget):
         self.catalog_progress_last_pump = 0.0
         self.catalog_root = None
         self.commercial_library = []
-        self.commercial_warm_queue = []
-        self.commercial_warm_path_channels = {}
-        self.commercial_warm_inflight = None
-        self.commercial_warm_thread = None
-        self.commercial_warm_generation = 0
-        self.commercial_warm_dirty_channels = set()
-        self.commercial_warm_completed_since_refresh = 0
 
         self.video_window = VideoWindow()
         self.guide_ui_scale = clamp_guide_ui_scale(self.app_settings.get("guide_ui_scale", GUIDE_UI_SCALE_DEFAULT))
@@ -11334,6 +15354,7 @@ class ChannelSurfer(QWidget):
             self.theme_combo.currentText(),
             self.skin_combo.currentText(),
             self.guide_ui_scale,
+            self.app_settings.get("sleek_freak_mode", "dark"),
         )
         self.sync_overlay_qol_settings()
         self.video_window.channelUpRequested.connect(self.up)
@@ -11370,13 +15391,18 @@ class ChannelSurfer(QWidget):
         self.video_window.guide_overlay.profileStepRequested.connect(self.step_profile)
         self.video_window.guide_overlay.uiScaleStepRequested.connect(self.adjust_ui_scale)
         self.video_window.guide_overlay.catalogRequested.connect(self.select_catalog_from_menu)
+        self.video_window.guide_overlay.diagnosticReadoutRequested.connect(self.show_diagnostic_readout)
+        self.video_window.guide_overlay.footerNavRequested.connect(lambda index: self.activate_universal_nav("guide", index))
         self.video_window.on_demand_overlay.skinStepRequested.connect(self.step_skin)
         self.video_window.on_demand_overlay.themeStepRequested.connect(self.step_theme)
         self.video_window.on_demand_overlay.profileStepRequested.connect(self.step_profile)
         self.video_window.on_demand_overlay.uiScaleStepRequested.connect(self.adjust_ui_scale)
+        self.video_window.on_demand_overlay.diagnosticReadoutRequested.connect(self.show_diagnostic_readout)
         self.video_window.on_demand_overlay.footerNavRequested.connect(lambda index: self.activate_universal_nav("vault", index))
         self.video_window.on_demand_overlay.settingsCloseRequested.connect(self.close_on_demand_settings)
         self.video_window.on_demand_overlay.homeCardRequested.connect(self.open_on_demand_home_card)
+        self.video_window.on_demand_overlay.heroActionRequested.connect(self.handle_on_demand_hero_action)
+        self.video_window.on_demand_overlay.filterActionRequested.connect(self.handle_on_demand_filter_action)
         self.video_window.on_demand_overlay.upRequested.connect(self.on_demand_up)
         self.video_window.on_demand_overlay.downRequested.connect(self.on_demand_down)
         self.video_window.on_demand_overlay.leftRequested.connect(self.on_demand_left)
@@ -11384,11 +15410,22 @@ class ChannelSurfer(QWidget):
         self.video_window.on_demand_overlay.selectRequested.connect(self.on_demand_select)
         self.video_window.on_demand_overlay.backRequested.connect(self.on_demand_back)
         self.video_window.on_demand_overlay.settingsToggleRequested.connect(self.toggle_on_demand_settings)
+        self.video_window.on_demand_overlay.guideShortcutRequested.connect(self.show_guide)
+        self.video_window.on_demand_overlay.vaultShortcutRequested.connect(self.show_on_demand)
         self.video_window.info_overlay.uiScaleStepRequested.connect(self.adjust_ui_scale)
         self.guide_selection = 0
+        self.loaded_media_channels = []
         self.on_demand_catalog = []
         self.on_demand_catalog_signature = ""
         self.on_demand_catalog_dirty = True
+        self.on_demand_group_cards_cache = None
+        self.on_demand_home_sections_cache = {}
+        self.on_demand_detail_sections_cache = {}
+        self.on_demand_category_sections_cache = {}
+        self.guide_rows_cache = {}
+        self.program_metadata_memory_cache = {}
+        self.media_thumbnail_cache = {}
+        self.perf_last_summary_at = 0.0
         self.on_demand_render_sections = []
         self.on_demand_last_open_request = None
         self.on_demand_view = "home"
@@ -11400,6 +15437,10 @@ class ChannelSurfer(QWidget):
         self.on_demand_action_index = 0
         self.on_demand_section_index = 0
         self.on_demand_section_item_indices = {}
+        self.on_demand_home_focus = "hero"
+        self.on_demand_hero_action_index = 0
+        self.on_demand_filter_index = 0
+        self.on_demand_home_filter = "featured"
         self.on_demand_detail_focus = "actions"
         self.on_demand_season_index = 0
         self.on_demand_back_focused = False
@@ -11535,10 +15576,6 @@ class ChannelSurfer(QWidget):
         self.live_stall_timer = QTimer(self)
         self.live_stall_timer.setInterval(2000)
         self.live_stall_timer.timeout.connect(self.check_live_playback_health)
-        self.commercial_warm_timer = QTimer(self)
-        self.commercial_warm_timer.setInterval(15000)
-        self.commercial_warm_timer.timeout.connect(self.process_background_commercial_warmup)
-        self.commercialWarmScanFinished.connect(self.on_background_commercial_warm_scan_finished)
         self.youtubeStreamResolved.connect(self.on_youtube_stream_resolved)
         self.profile_combo.currentTextChanged.connect(self.apply_display_settings)
         self.theme_combo.currentTextChanged.connect(self.apply_display_settings)
@@ -11572,8 +15609,10 @@ class ChannelSurfer(QWidget):
                 self.load_catalog(saved, autoplay=False)
             if not self.channels and self.app_settings.get("allow_empty_catalog_tv"):
                 self.channels = []
+                self.loaded_media_channels = []
                 self.current_channel = 0
                 self.inject_special_channels()
+                self.apply_catalog_channel_customizations()
                 self.refresh_controls()
                 if not self.channels:
                     self.status.setText("Enable WeatherStar, RadioWaveTV, or a NetTV playlist channel to Watch TV without local content.")
@@ -11619,6 +15658,7 @@ class ChannelSurfer(QWidget):
         return os.path.abspath(str(url.path()))
 
     def load_catalog(self, folder=None, autoplay=False):
+        started_at = time.perf_counter()
         if folder is None:
             folder = self.choose_catalog_folder()
         if not folder:
@@ -11628,6 +15668,8 @@ class ChannelSurfer(QWidget):
             return False
 
         self.catalog_root = folder
+        clear_catalog_lookup_caches()
+        self.invalidate_runtime_caches()
         self.app_settings["catalog_path"] = folder
         save_json_file(APP_SETTINGS_FILE, self.app_settings)
         self.catalog_path_label.setText(folder)
@@ -11701,7 +15743,21 @@ class ChannelSurfer(QWidget):
             if ch.shows:
                 self.channels.append(ch)
 
+        self.loaded_media_channels = list(self.channels)
         self.inject_special_channels()
+        self.apply_catalog_channel_customizations()
+        perf_log(
+            "catalog.scan",
+            (time.perf_counter() - started_at) * 1000.0,
+            channels=len(self.channels),
+            folders=len(channel_names),
+            files=sum(len(getattr(channel, "shows", [])) for channel in self.channels),
+        )
+        perf_summary(
+            "catalog-load",
+            channels=len(self.channels),
+            files=sum(len(getattr(channel, "shows", [])) for channel in self.channels),
+        )
         self.update_catalog_progress(len(channel_names), len(channel_names), "Saving catalog cache", os.path.basename(folder))
         save_json_file(MEDIA_CACHE_FILE, self.duration_cache)
         save_json_file(RADIOWAVE_METADATA_CACHE_FILE, self.radiowave_metadata_cache)
@@ -11712,12 +15768,10 @@ class ChannelSurfer(QWidget):
             len(channel_names),
             len(channel_names),
             "Applying channel schedules",
-            "Using cached smart-break data when available and falling back to timed breaks for the first pass.",
+            "Planning simple schedule-driven commercial breaks.",
         )
         self.apply_channel_schedules(
             folder,
-            allow_smart_break_scan=False,
-            defer_midroll_if_no_cached_breaks=True,
         )
         if self.prepare_on_demand_catalog(clear_catalog=True):
             self.update_catalog_progress(1, 1, "Loading cached on-demand library", "MediaWave Vault is ready from cache.")
@@ -11727,7 +15781,10 @@ class ChannelSurfer(QWidget):
         self.refresh_controls()
 
         if not self.channels:
-            self.status.setText(f"No playable videos were found inside:\n{folder}")
+            if self.loaded_media_channels:
+                self.status.setText("All catalog channels are disabled in My Catalog. Open Advanced Configuration to enable at least one channel.")
+            else:
+                self.status.setText(f"No playable videos were found inside:\n{folder}")
             return False
 
         radiowave_channel = next((channel for channel in self.channels if getattr(channel, "channel_type", "media") == "radiowave"), None)
@@ -11752,14 +15809,15 @@ class ChannelSurfer(QWidget):
 
     def auto_load_catalog_if_available(self):
         saved_catalog = self.app_settings.get("catalog_path", "").strip()
-        if saved_catalog and os.path.isdir(saved_catalog):
+        if saved_catalog and safe_isdir(saved_catalog):
             self.catalog_root = saved_catalog
             self.catalog_path_label.setText(saved_catalog)
             self.status.setText("Saved catalog ready. Press Watch TV to load it, or Choose Catalog to switch libraries.")
+            if self.app_settings.get("auto_launch", False):
+                QTimer.singleShot(150, self.watch_tv)
 
     def finish_catalog_background_setup(self):
         self.preload_weather_if_configured()
-        self.queue_background_commercial_warmup(self.catalog_root or self.app_settings.get("catalog_path", ""))
 
     def refresh_theme_combo_for_skin(self, initial_theme=None):
         skin_name = self.skin_combo.currentText() if hasattr(self, "skin_combo") else DEFAULT_SKIN_NAME
@@ -11779,6 +15837,210 @@ class ChannelSurfer(QWidget):
             "dev_menu_enabled": bool(self.app_settings.get("dev_menu_enabled", True)),
         }
 
+    def diagnostics_enabled(self):
+        return bool(self.app_settings.get("dev_menu_enabled", True))
+
+    def perf_logging_enabled(self):
+        return PERF_LOGGING and self.diagnostics_enabled()
+
+    def invalidate_runtime_caches(self):
+        self.guide_rows_cache = {}
+        self.program_metadata_memory_cache = {}
+        self.media_thumbnail_cache = {}
+        self.on_demand_group_cards_cache = None
+        self.on_demand_home_sections_cache = {}
+        self.on_demand_detail_sections_cache = {}
+        self.on_demand_category_sections_cache = {}
+
+    def catalog_channel_id(self, channel):
+        channel_type = str(getattr(channel, "channel_type", "media") or "media")
+        if channel_type == "weatherstar":
+            return "special:weatherstar"
+        if channel_type == "radiowave":
+            return "special:radiowave"
+        if channel_type == "youtube":
+            return "special:youtube"
+        root_path = os.path.realpath(getattr(channel, "root_path", "") or "")
+        if root_path:
+            return f"media:{root_path}"
+        return f"media-name:{normalize_title(getattr(channel, 'name', 'channel'))}"
+
+    def channel_display_number(self, index, channel):
+        try:
+            value = int(getattr(channel, "display_number", 0) or 0)
+        except (TypeError, ValueError):
+            value = 0
+        return value if value > 0 else int(index) + 1
+
+    def current_catalog_channel_infos(self):
+        infos = []
+        settings = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
+        seen_ids = set()
+        base_channels = list(getattr(self, "loaded_media_channels", None) or [])
+        base_ids = {self.catalog_channel_id(channel) for channel in base_channels}
+        for index, channel in enumerate(self.channels):
+            channel_id = self.catalog_channel_id(channel)
+            if channel_id not in base_ids:
+                base_channels.append(channel)
+                base_ids.add(channel_id)
+        for index, channel in enumerate(base_channels):
+            channel_id = self.catalog_channel_id(channel)
+            seen_ids.add(channel_id)
+            infos.append(
+                {
+                    "id": channel_id,
+                    "name": getattr(channel, "name", "Channel"),
+                    "channel_type": getattr(channel, "channel_type", "media"),
+                    "root_path": getattr(channel, "root_path", ""),
+                    "default_number": self.channel_display_number(index, channel),
+                }
+            )
+        for channel_id, row in settings.items():
+            if channel_id in seen_ids:
+                continue
+            display_name = row.get("display_name") or channel_id.split(":", 1)[-1]
+            infos.append(
+                {
+                    "id": channel_id,
+                    "name": display_name,
+                    "channel_type": "missing",
+                    "root_path": "",
+                    "default_number": int(row.get("channel_number", 0) or len(infos) + 1),
+                }
+            )
+        return infos
+
+    def catalog_settings_for_channel(self, channel):
+        settings = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
+        return settings.get(self.catalog_channel_id(channel), {})
+
+    def catalog_category_for_channel(self, channel):
+        row = self.catalog_settings_for_channel(channel)
+        name = str(getattr(channel, "name", "Channel") or "Channel").strip() or "Channel"
+        mode = row.get("vault_category_mode", "channel_name")
+        if mode == "custom":
+            return sanitize_catalog_category(row.get("custom_vault_category", "")) or name
+        if mode == "builtin":
+            return sanitize_catalog_category(row.get("vault_category", "")) or name
+        return name
+
+    def apply_catalog_channel_customizations(self):
+        settings = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
+        self.app_settings["catalog_channel_settings"] = settings
+        if not self.channels:
+            return
+        current_id = ""
+        if 0 <= self.current_channel < len(self.channels):
+            current_id = self.catalog_channel_id(self.channels[self.current_channel])
+        enabled_rows = []
+        for index, channel in enumerate(self.channels):
+            channel_id = self.catalog_channel_id(channel)
+            row = settings.get(channel_id, {})
+            try:
+                display_number = int(row.get("channel_number", 0) or 0)
+            except (TypeError, ValueError):
+                display_number = 0
+            if display_number <= 0:
+                display_number = index + 1
+            category = self.catalog_category_for_channel(channel)
+            setattr(channel, "catalog_channel_id", channel_id)
+            setattr(channel, "display_number", display_number)
+            setattr(channel, "vault_category", category)
+            setattr(channel, "vault_category_key", catalog_category_key(category))
+            if row.get("enabled", True):
+                enabled_rows.append((display_number, getattr(channel, "name", "").casefold(), index, channel))
+
+        self.channels = [entry[3] for entry in sorted(enabled_rows, key=lambda entry: (entry[0], entry[1], entry[2]))]
+        if self.channels:
+            if current_id:
+                for index, channel in enumerate(self.channels):
+                    if self.catalog_channel_id(channel) == current_id:
+                        self.current_channel = index
+                        break
+                else:
+                    self.current_channel = max(0, min(self.current_channel, len(self.channels) - 1))
+            else:
+                self.current_channel = max(0, min(self.current_channel, len(self.channels) - 1))
+            self.guide_selection = max(0, min(self.guide_selection, len(self.channels) - 1))
+        else:
+            self.current_channel = 0
+            self.guide_selection = 0
+        self.guide_rows_cache = {}
+        self.on_demand_group_cards_cache = None
+        self.on_demand_home_sections_cache = {}
+        self.on_demand_detail_sections_cache = {}
+        self.on_demand_category_sections_cache = {}
+
+    def diagnostic_runtime_label(self):
+        return "packaged app" if getattr(sys, "frozen", False) else "source"
+
+    def diagnostic_catalog_label(self):
+        return (self.catalog_root or self.app_settings.get("catalog_path") or "").strip() or "not selected"
+
+    def diagnostic_tool_statuses(self):
+        return {
+            "FFmpeg": "found" if resolve_ffmpeg_path() else "missing",
+            "FFprobe": "found" if resolve_ffprobe_path() else "missing",
+            "yt-dlp": "found" if resolve_ytdlp_command() else "missing",
+        }
+
+    def condensed_diagnostics_text(self):
+        tools = self.diagnostic_tool_statuses()
+        nettv = "on/experimental" if self.app_settings.get("youtube_enabled") else "off"
+        remote = "enabled" if REMOTE_METADATA_EXPERIMENTAL else "disabled"
+        catalog = "selected" if self.diagnostic_catalog_label() != "not selected" else "not selected"
+        return (
+            "Diagnostics\n"
+            f"Runtime: {self.diagnostic_runtime_label()}\n"
+            f"Catalog: {catalog}\n"
+            f"Theme: {self.skin_combo.currentText()} / {self.theme_combo.currentText()}\n"
+            f"Tools: ffmpeg {tools['FFmpeg']}, ffprobe {tools['FFprobe']}, yt-dlp {tools['yt-dlp']}\n"
+            f"NetTV: {nettv}  Remote metadata: {remote}"
+        )
+
+    def full_diagnostics_text(self):
+        tools = self.diagnostic_tool_statuses()
+        return "\n".join(
+            [
+                f"Runtime: {self.diagnostic_runtime_label()}",
+                f"Source/resources path: {RESOURCE_DIR}",
+                f"Writable data/cache path: {DATA_DIR}",
+                f"Current catalog path: {self.diagnostic_catalog_label()}",
+                f"Theme skin: {self.skin_combo.currentText()}",
+                f"Theme variant: {self.theme_combo.currentText()}",
+                f"Display mode: {self.profile_combo.currentText()}",
+                f"FFmpeg: {tools['FFmpeg']} ({resolve_ffmpeg_path() or 'not found'})",
+                f"FFprobe: {tools['FFprobe']} ({resolve_ffprobe_path() or 'not found'})",
+                f"yt-dlp: {tools['yt-dlp']} ({resolve_ytdlp_command() or 'not found'})",
+                f"Remote metadata matching: {'enabled' if REMOTE_METADATA_EXPERIMENTAL else 'disabled'}",
+                f"NetTV experimental status: {'enabled' if self.app_settings.get('youtube_enabled') else 'disabled'}",
+                f"Allow Live TV with no catalog: {bool_label(self.app_settings.get('allow_empty_catalog_tv', False))}",
+                f"Allow MediaWave Vault with no catalog: {bool_label(self.app_settings.get('allow_dummy_vault_catalog', False))}",
+                f"Diagnostics for viewing: {bool_label(self.diagnostics_enabled())}",
+            ]
+        )
+
+    def refresh_diagnostics_summary(self):
+        box = getattr(self, "diagnostics_summary", None)
+        if box is None:
+            return
+        enabled = self.diagnostics_enabled()
+        box.setVisible(enabled)
+        if enabled:
+            box.setText(self.condensed_diagnostics_text())
+
+    @Slot()
+    def show_diagnostic_readout(self):
+        theme_name = self.theme_combo.currentText() if hasattr(self, "theme_combo") else DEFAULT_THEME_NAME
+        skin_name = self.skin_combo.currentText() if hasattr(self, "skin_combo") else DEFAULT_SKIN_NAME
+        if not self.diagnostics_enabled():
+            text = "Diagnostics are disabled. Enable Diagnostics for viewing in Advanced Configuration > Smart Alecs Only."
+        else:
+            text = self.full_diagnostics_text()
+        parent = self.video_window if getattr(self, "video_window", None) is not None and self.video_window.isVisible() else self
+        dialog = DiagnosticReadoutDialog(text, theme_name, skin_name, parent)
+        dialog.exec()
+
     def sync_overlay_qol_settings(self):
         values = self.overlay_settings_values()
         self.video_window.guide_overlay.settings_values = dict(values)
@@ -11791,6 +16053,7 @@ class ChannelSurfer(QWidget):
         if key == "allow_dummy_vault_catalog":
             self.mark_on_demand_catalog_dirty(clear_catalog=True)
         self.sync_overlay_qol_settings()
+        self.refresh_diagnostics_summary()
         if refresh:
             if self.video_window.guide_overlay.isVisible():
                 self.refresh_guide()
@@ -11813,22 +16076,19 @@ class ChannelSurfer(QWidget):
             checkbox.blockSignals(False)
 
     def in_app_menu_row_count(self):
-        return 7
+        return len(build_in_app_menu_rows(self.overlay_settings_values()))
 
     def in_app_menu_close_index(self):
         return self.in_app_menu_row_count() - 1
 
     def handle_in_app_menu_toggle(self, focus_index):
-        key_map = {
-            3: "allow_empty_catalog_tv",
-            4: "allow_dummy_vault_catalog",
-            5: "dev_menu_enabled",
-        }
-        key = key_map.get(int(focus_index))
-        if not key:
+        rows = build_in_app_menu_rows(self.overlay_settings_values())
+        index = int(focus_index)
+        if not (0 <= index < len(rows)):
             return False
-        self.update_qol_setting(key, not bool(self.app_settings.get(key, False)), refresh=False)
-        self.sync_main_qol_toggles()
+        if rows[index][2] != "diagnostics":
+            return False
+        self.show_diagnostic_readout()
         return True
 
     def preload_weather_if_configured(self):
@@ -11844,6 +16104,7 @@ class ChannelSurfer(QWidget):
             self.app_settings,
             [channel.name for channel in self.channels if getattr(channel, "channel_type", "media") == "media"],
             self,
+            channel_infos=self.current_catalog_channel_infos(),
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -11862,31 +16123,32 @@ class ChannelSurfer(QWidget):
         self.app_settings["allow_dummy_vault_catalog"] = values["allow_dummy_vault_catalog"]
         self.app_settings["dev_menu_enabled"] = values["dev_menu_enabled"]
         self.app_settings["commercials"] = normalize_commercials_config(values.get("commercials", {}))
+        self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(values.get("catalog_channel_settings", {}))
         save_json_file(APP_SETTINGS_FILE, self.app_settings)
         self.sync_main_qol_toggles()
         self.sync_overlay_qol_settings()
         self.status.setText("Advanced configuration saved.")
         self.ensure_nettv_playlist_cache_with_progress(force=True)
-        self.stop_background_commercial_warmup()
         self.load_or_refresh_commercial_library(force_rescan=False)
         self.prepare_on_demand_catalog(clear_catalog=False)
-        if self.channels:
+        if self.channels or getattr(self, "loaded_media_channels", None):
             self.stop_radiowave_background()
             self.inject_special_channels()
+            self.apply_catalog_channel_customizations()
+            self.mark_on_demand_catalog_dirty(clear_catalog=True)
             self.preload_weather_if_configured()
             self.apply_channel_schedules(
                 self.catalog_root or self.app_settings.get("catalog_path", ""),
-                allow_smart_break_scan=False,
-                defer_midroll_if_no_cached_breaks=True,
             )
             self.refresh_controls()
+            if not self.channels:
+                self.status.setText("All catalog channels are disabled in My Catalog. Enable a channel to Watch TV.")
             if self.video_window.guide_overlay.isVisible():
-                self.guide_selection = min(self.guide_selection, len(self.channels) - 1)
+                self.guide_selection = max(0, min(self.guide_selection, len(self.channels) - 1))
                 self.refresh_guide()
             if self.video_window.on_demand_overlay.isVisible():
                 self.refresh_on_demand()
         self.refresh_controls()
-        self.queue_background_commercial_warmup(self.catalog_root or self.app_settings.get("catalog_path", ""))
 
     def begin_catalog_progress(self, folder, total_channels):
         self.catalog_btn.setEnabled(False)
@@ -12121,11 +16383,21 @@ class ChannelSurfer(QWidget):
         return duration
 
     def load_or_refresh_commercial_library(self, force_rescan=False, progress_callback=None):
+        started_at = time.perf_counter()
         settings = self.commercial_settings()
         root_folder = settings.get("root_folder", "")
         if not settings.get("enabled") or not root_folder or not os.path.isdir(root_folder):
             self.commercial_library = []
+            perf_log("commercial.library.load", (time.perf_counter() - started_at) * 1000.0, assets=0, cache="disabled")
             return []
+
+        if (
+            not force_rescan
+            and self.commercial_library
+            and os.path.abspath(root_folder) == os.path.abspath(getattr(self, "commercial_library_loaded_root", "") or "")
+        ):
+            perf_log("commercial.library.load", (time.perf_counter() - started_at) * 1000.0, assets=len(self.commercial_library), cache="memory")
+            return self.commercial_library
 
         signature = build_commercial_root_signature(root_folder)
         cached_signature = self.commercial_library_cache_state.get("signature", "")
@@ -12139,6 +16411,7 @@ class ChannelSurfer(QWidget):
             and isinstance(cached_assets, list)
         ):
             self.commercial_library = cached_assets
+            self.commercial_library_loaded_root = root_folder
             if progress_callback:
                 progress_callback(
                     1,
@@ -12146,6 +16419,7 @@ class ChannelSurfer(QWidget):
                     "Using cached commercial library",
                     f"Loaded {len(cached_assets)} commercial assets from cache.",
                 )
+            perf_log("commercial.library.load", (time.perf_counter() - started_at) * 1000.0, assets=len(cached_assets), cache="disk")
             return cached_assets
 
         assets = []
@@ -12211,8 +16485,10 @@ class ChannelSurfer(QWidget):
             "root_folder": root_folder,
             "assets": assets,
         }
+        self.commercial_library_loaded_root = root_folder
         save_json_file(COMMERCIAL_LIBRARY_CACHE_FILE, self.commercial_library_cache_state)
         save_json_file(MEDIA_CACHE_FILE, self.duration_cache)
+        perf_log("commercial.library.load", (time.perf_counter() - started_at) * 1000.0, assets=len(assets), cache="rescan")
         return assets
 
     def resolve_channel_commercial_profile(self, channel_name):
@@ -12231,15 +16507,12 @@ class ChannelSurfer(QWidget):
             "density",
             "min_ads_per_break",
             "max_ads_per_break",
-            "min_seconds_between_breaks",
-            "target_break_interval_minutes",
-            "minimum_content_before_first_break_seconds",
-            "max_ad_seconds_per_half_hour",
+            "midroll_interval_minutes",
             "allow_fallback",
             "allow_bumpers",
             "allow_promos",
-            "prefer_promos",
             "allow_station_ids",
+            "prefer_same_era",
         ):
             if key in override:
                 profile[key] = override[key]
@@ -12261,7 +16534,7 @@ class ChannelSurfer(QWidget):
         if not filtered:
             return []
 
-        preferred_era = normalize_commercial_era(era or profile.get("preferred_era", ""))
+        preferred_era = normalize_commercial_era(era or profile.get("preferred_era", "")) if profile.get("prefer_same_era", True) else ""
         preferred_category = normalize_commercial_category(category or profile.get("preferred_category", ""))
 
         stages = []
@@ -12339,10 +16612,7 @@ class ChannelSurfer(QWidget):
                 pod_entries.append(self.build_commercial_entry(bumper, channel_name, pod_label, parent_context=parent_context))
 
         for slot in range(count):
-            desired_kind = "promo" if profile.get("prefer_promos") and profile.get("allow_promos") and rng.random() < 0.5 else "commercial"
-            asset = choose_one(desired_kind)
-            if not asset and desired_kind != "commercial":
-                asset = choose_one("commercial")
+            asset = choose_one("commercial")
             if not asset:
                 break
             entry = self.build_commercial_entry(asset, channel_name, pod_label, parent_context=parent_context)
@@ -12362,19 +16632,7 @@ class ChannelSurfer(QWidget):
         return [entry for entry in pod_entries if float(entry.get("duration", 0) or 0) > 0]
 
     def analyze_smart_break_candidates(self, path, allow_probe=True):
-        signature = file_cache_signature(path)
-        cached = (self.smart_break_cache_state.get("entries") or {}).get(path, {})
-        if cached.get("signature") == signature and isinstance(cached.get("candidates"), list):
-            return cached.get("candidates", [])
-        if not allow_probe:
-            return []
-        candidates = detect_smart_break_candidates_for_path(path)
-        self.smart_break_cache_state.setdefault("entries", {})[path] = {
-            "signature": signature,
-            "candidates": candidates,
-        }
-        save_json_file(SMART_BREAK_CACHE_FILE, self.smart_break_cache_state)
-        return candidates
+        return []
 
     def choose_breakpoints_for_program(
         self,
@@ -12387,48 +16645,24 @@ class ChannelSurfer(QWidget):
     ):
         if duration <= 0 or not profile.get("enabled"):
             return []
-        mode = profile.get("mode", "between_episodes_only")
-        if mode == "between_episodes_only":
+        mode = profile.get("mode", "between_episodes")
+        if mode != "timed_midroll":
             return []
 
         breakpoints = []
-        interval = max(60, int(profile.get("target_break_interval_minutes", 7) or 7) * 60)
-        minimum_first = max(0, int(profile.get("minimum_content_before_first_break_seconds", 90) or 90))
-        minimum_spacing = max(60, int(profile.get("min_seconds_between_breaks", 330) or 330))
-        jitter = max(0, int(profile.get("break_jitter_seconds", 45) or 45))
-        rng = random.Random(stable_hash(f"{channel_name}|{path}|breakpoints|{commercial_profile_signature(profile)}"))
-        target = minimum_first + interval
-        candidates = (
-            self.analyze_smart_break_candidates(path, allow_probe=allow_smart_break_scan)
-            if profile.get("smart_breaks") and mode in {"natural_breaks", "hybrid"}
-            else []
-        )
-        if defer_midroll_if_no_cached_breaks and not candidates and not allow_smart_break_scan:
+        if duration < 20 * 60:
             return []
-        while target < max(0, duration - 90):
-            chosen = None
-            if candidates:
-                nearby = [
-                    point for point in candidates
-                    if abs(point - target) <= max(90, interval // 2)
-                    and point >= minimum_first
-                    and (not breakpoints or (point - breakpoints[-1]) >= minimum_spacing)
-                    and point < duration - 45
-                ]
-                if nearby:
-                    chosen = min(nearby, key=lambda point: abs(point - target))
-            if chosen is None and mode in {"timed_breaks", "hybrid"}:
-                if not (profile.get("smart_breaks") and profile.get("skip_midroll_if_no_smart_breaks") and mode == "hybrid"):
-                    chosen = float(max(minimum_first, min(duration - 45, target + rng.randint(-jitter, jitter))))
-                    if breakpoints and (chosen - breakpoints[-1]) < minimum_spacing:
-                        chosen = float(breakpoints[-1] + minimum_spacing)
-            if chosen is None:
-                target += interval
-                continue
-            if chosen >= duration - 45:
+        interval = max(6 * 60, int(profile.get("midroll_interval_minutes", 15) or 15) * 60)
+        first_allowed = 5 * 60
+        last_allowed = max(first_allowed, duration - (5 * 60))
+        target = float(interval)
+        while target < last_allowed:
+            chosen = max(first_allowed, min(last_allowed, target))
+            if chosen >= last_allowed:
                 break
-            breakpoints.append(float(chosen))
-            target = chosen + interval
+            if not breakpoints or chosen - breakpoints[-1] >= interval * 0.75:
+                breakpoints.append(float(chosen))
+            target += interval
         return breakpoints
 
     def build_channel_schedule_entries(
@@ -12443,6 +16677,7 @@ class ChannelSurfer(QWidget):
         allow_smart_break_scan=True,
         defer_midroll_if_no_cached_breaks=False,
     ):
+        started_at = time.perf_counter()
         base_schedule = generate_auto_schedule(root_path, channel.name, channel.shows)
         lineup = list(base_schedule.get("lineup", channel.shows))
         anchor = base_schedule.get("anchor_time", GLOBAL_START)
@@ -12457,15 +16692,10 @@ class ChannelSurfer(QWidget):
         entries = []
         for item_index, path in enumerate(lineup):
             if progress_callback:
-                stage_name = (
-                    "Analyzing smart breaks"
-                    if allow_smart_break_scan and profile.get("smart_breaks") and profile.get("mode") in {"natural_breaks", "hybrid"}
-                    else "Planning channel commercials"
-                )
                 progress_callback(
                     progress_index + item_index,
                     progress_total,
-                    stage_name,
+                    "Planning channel commercials",
                     (
                         f"{channel.name}  •  {os.path.basename(path)}"
                         f"  •  Channel {channel_position}/{channel_total}"
@@ -12491,21 +16721,12 @@ class ChannelSurfer(QWidget):
                 "summary": metadata.get("detail_summary", ""),
                 "slot_title": detail_title,
             }
-            content_budget = max(30.0, (float(profile.get("max_ad_seconds_per_half_hour", 240) or 240) * max(1.0, duration / 1800.0)))
-            spent_ad_seconds = 0.0
-
-            if item_index == 0 and profile.get("pre_roll_enabled"):
-                pod = self.compose_commercial_pod(channel.name, profile, path, f"preroll:{item_index}", pod_label="Pre-Show", parent_context=parent_context)
-                spent_ad_seconds += sum(float(entry.get("duration", 0) or 0) for entry in pod)
-                entries.extend(pod)
 
             breakpoints = self.choose_breakpoints_for_program(
                 channel.name,
                 path,
                 duration,
                 profile,
-                allow_smart_break_scan=allow_smart_break_scan,
-                defer_midroll_if_no_cached_breaks=defer_midroll_if_no_cached_breaks,
             )
             cursor = 0.0
             for break_index, breakpoint in enumerate(breakpoints):
@@ -12523,17 +16744,14 @@ class ChannelSurfer(QWidget):
                             "summary": metadata.get("detail_summary", ""),
                         }
                     )
-                budget_left = max(0.0, content_budget - spent_ad_seconds)
                 pod = self.compose_commercial_pod(
                     channel.name,
                     profile,
                     path,
                     f"midroll:{item_index}:{break_index}",
                     pod_label="Commercial Break",
-                    ad_seconds_budget=budget_left,
                     parent_context=parent_context,
                 )
-                spent_ad_seconds += sum(float(entry.get("duration", 0) or 0) for entry in pod)
                 entries.extend(pod)
                 cursor = float(breakpoint)
 
@@ -12551,16 +16769,14 @@ class ChannelSurfer(QWidget):
                 }
             )
 
-            between_allowed = item_index < len(lineup) - 1 or profile.get("post_roll_enabled")
+            between_allowed = profile.get("mode") == "between_episodes" and item_index < len(lineup) - 1
             if between_allowed:
-                budget_left = max(0.0, content_budget - spent_ad_seconds)
                 pod = self.compose_commercial_pod(
                     channel.name,
                     profile,
                     path,
                     f"between:{item_index}",
                     pod_label="Between Shows",
-                    ad_seconds_budget=budget_left,
                     parent_context=parent_context,
                 )
                 entries.extend(pod)
@@ -12579,29 +16795,23 @@ class ChannelSurfer(QWidget):
 
         if not entries:
             entries = list(lineup)
-        return {
+        result = {
             "mode": "auto-commercials",
             "anchor_time": anchor,
             "entries": entries,
         }
+        perf_log(
+            "commercial.schedule.channel",
+            (time.perf_counter() - started_at) * 1000.0,
+            channel=channel.name,
+            programs=len(lineup),
+            entries=len(entries),
+            mode=profile.get("mode", "between_episodes"),
+        )
+        return result
 
     def smart_break_signature_for_channel(self, channel, profile):
-        if not channel or not profile.get("enabled") or not profile.get("smart_breaks") or profile.get("mode") not in {"natural_breaks", "hybrid"}:
-            return ""
-        entries = []
-        cache_entries = (self.smart_break_cache_state.get("entries") or {})
-        for path in sorted(channel.shows):
-            signature = file_cache_signature(path)
-            cached = cache_entries.get(path, {})
-            if cached.get("signature") == signature:
-                entries.append(
-                    {
-                        "path": path,
-                        "candidate_count": len(cached.get("candidates", []) or []),
-                        "signature": signature,
-                    }
-                )
-        return stable_hash(json.dumps(entries, sort_keys=True))
+        return ""
 
     def apply_channel_schedules(
         self,
@@ -12611,6 +16821,7 @@ class ChannelSurfer(QWidget):
         apply_to_current_channel=True,
         defer_midroll_if_no_cached_breaks=False,
     ):
+        started_at = time.perf_counter()
         catalog_key = stable_hash(root_path)
         catalogs = self.schedule_state.setdefault("catalogs", {})
         catalog_state = catalogs.setdefault(catalog_key, {"root_path": root_path, "channels": {}})
@@ -12637,7 +16848,6 @@ class ChannelSurfer(QWidget):
                         "files": sorted(channel.shows),
                         "commercials": commercial_signature,
                         "commercial_root": commercial_root_signature,
-                        "smart_breaks": self.smart_break_signature_for_channel(channel, profile),
                     },
                     sort_keys=True,
                 )
@@ -12720,112 +16930,29 @@ class ChannelSurfer(QWidget):
                 "Commercial schedule cache ready",
                 f"Cached commercial timing for {len(rebuild_plan)} rebuilt channel schedule(s).",
             )
+        perf_log(
+            "commercial.schedule.apply",
+            (time.perf_counter() - started_at) * 1000.0,
+            channels=len(media_channels),
+            rebuilt=len(rebuild_plan),
+            cached=cached_count,
+        )
 
     def stop_background_commercial_warmup(self):
-        self.commercial_warm_generation += 1
-        self.commercial_warm_timer.stop()
-        self.commercial_warm_queue = []
-        self.commercial_warm_path_channels = {}
-        self.commercial_warm_inflight = None
-        self.commercial_warm_dirty_channels = set()
-        self.commercial_warm_completed_since_refresh = 0
+        return
 
     def queue_background_commercial_warmup(self, root_path):
-        self.stop_background_commercial_warmup()
-        if not root_path or not self.channels or not self.commercials_ready():
-            return
-        cache_entries = self.smart_break_cache_state.get("entries", {}) or {}
-        path_channels = defaultdict(set)
-        queue = []
-        for channel in self.channels:
-            if getattr(channel, "channel_type", "media") != "media":
-                continue
-            profile = self.resolve_channel_commercial_profile(channel.name)
-            if not profile.get("enabled") or not profile.get("smart_breaks") or profile.get("mode") not in {"natural_breaks", "hybrid"}:
-                continue
-            for path in channel.shows:
-                signature = file_cache_signature(path)
-                cached = cache_entries.get(path, {})
-                path_channels[path].add(channel.name)
-                if cached.get("signature") == signature and isinstance(cached.get("candidates"), list):
-                    continue
-                queue.append(path)
-        deduped = []
-        seen = set()
-        for path in queue:
-            if path in seen:
-                continue
-            seen.add(path)
-            deduped.append(path)
-        self.commercial_warm_queue = deduped
-        self.commercial_warm_path_channels = {path: sorted(list(names)) for path, names in path_channels.items()}
-        if self.commercial_warm_queue:
-            self.commercial_warm_timer.start()
+        return
 
     def can_run_background_commercial_warmup(self):
-        if self.loading_card.isVisible() or self.channel_switch_timer.isActive():
-            return False
-        if self.video_window.on_demand_overlay.isVisible() or self.video_window.guide_overlay.isVisible() or self.video_window.info_overlay.isVisible():
-            return False
-        if self.video_window.on_demand_overlay.settings_open or self.video_window.guide_overlay.settings_open or self.video_window.info_overlay.settings_open:
-            return False
-        if self.playback_mode != "live":
-            return False
-        current_channel = self.channels[self.current_channel] if self.channels and 0 <= self.current_channel < len(self.channels) else None
-        if not current_channel or getattr(current_channel, "channel_type", "media") != "media":
-            return False
-        return self.media_player.playbackState() == QMediaPlayer.PlayingState
+        return False
 
     def process_background_commercial_warmup(self):
-        if self.commercial_warm_inflight or not self.commercial_warm_queue:
-            if not self.commercial_warm_queue:
-                self.commercial_warm_timer.stop()
-            return
-        if not self.can_run_background_commercial_warmup():
-            return
-        path = self.commercial_warm_queue.pop(0)
-        self.commercial_warm_inflight = path
-        generation = self.commercial_warm_generation
-        signature = file_cache_signature(path)
-
-        def worker():
-            candidates = detect_smart_break_candidates_for_path(path)
-            self.commercialWarmScanFinished.emit(generation, path, signature, candidates)
-
-        self.commercial_warm_thread = threading.Thread(target=worker, daemon=True)
-        self.commercial_warm_thread.start()
+        return
 
     @Slot(int, str, str, list)
     def on_background_commercial_warm_scan_finished(self, generation, path, signature, candidates):
-        if generation != self.commercial_warm_generation:
-            return
-        self.commercial_warm_inflight = None
-        self.commercial_warm_thread = None
-        self.smart_break_cache_state.setdefault("entries", {})[path] = {
-            "signature": signature,
-            "candidates": list(candidates or []),
-        }
-        save_json_file(SMART_BREAK_CACHE_FILE, self.smart_break_cache_state)
-        for channel_name in self.commercial_warm_path_channels.get(path, []):
-            self.commercial_warm_dirty_channels.add(channel_name)
-        self.commercial_warm_completed_since_refresh += 1
-        if self.commercial_warm_dirty_channels and (
-            self.commercial_warm_completed_since_refresh >= 3 or not self.commercial_warm_queue
-        ):
-            target_names = sorted(self.commercial_warm_dirty_channels)
-            self.apply_channel_schedules(
-                self.catalog_root or self.app_settings.get("catalog_path", ""),
-                allow_smart_break_scan=False,
-                target_channel_names=target_names,
-                apply_to_current_channel=False,
-                defer_midroll_if_no_cached_breaks=False,
-            )
-            self.commercial_warm_dirty_channels.clear()
-            self.commercial_warm_completed_since_refresh = 0
-            if self.video_window.guide_overlay.isVisible():
-                self.refresh_guide()
-        if not self.commercial_warm_queue:
-            self.commercial_warm_timer.stop()
+        return
 
     def metadata_enrichment_enabled(self):
         return bool(self.app_settings.get("experimental_remote_metadata", False)) and REMOTE_METADATA_EXPERIMENTAL
@@ -12999,7 +17126,7 @@ class ChannelSurfer(QWidget):
     def build_metadata_review_entries(self):
         grouped = {}
         episodic_movie_counts = defaultdict(int)
-        for channel in self.channels:
+        for index, channel in enumerate(self.channels):
             if getattr(channel, "channel_type", "media") != "media":
                 continue
             for path in channel.shows:
@@ -13009,7 +17136,7 @@ class ChannelSurfer(QWidget):
                 match_key = local.get("match_key", "")
                 if match_key and local.get("show_name"):
                     episodic_movie_counts[(channel.name, match_key)] += 1
-        for channel in self.channels:
+        for index, channel in enumerate(self.channels):
             if getattr(channel, "channel_type", "media") != "media":
                 continue
             for path in channel.shows:
@@ -13462,7 +17589,7 @@ class ChannelSurfer(QWidget):
 
     def compute_on_demand_catalog_signature(self):
         media_channels = []
-        for channel in self.channels:
+        for index, channel in enumerate(self.channels):
             if getattr(channel, "channel_type", "media") != "media":
                 continue
             shows = []
@@ -13478,14 +17605,18 @@ class ChannelSurfer(QWidget):
                 {
                     "name": channel.name,
                     "root_path": os.path.realpath(getattr(channel, "root_path", "") or ""),
+                    "channel_id": self.catalog_channel_id(channel),
+                    "display_number": self.channel_display_number(index, channel),
+                    "vault_category": self.catalog_category_for_channel(channel),
                     "shows": shows,
                 }
             )
         payload = {
-            "schema": 3,
+            "schema": 4,
             "grouping_mode": "channel-show-subsections-v1",
             "catalog_root": os.path.realpath(self.catalog_root or ""),
             "metadata_mode": self.metadata_cache_mode(),
+            "catalog_channel_settings": normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {})),
             "media_channels": media_channels,
         }
         return stable_hash(json.dumps(payload, sort_keys=True))
@@ -13500,6 +17631,7 @@ class ChannelSurfer(QWidget):
         save_json_file(ON_DEMAND_CACHE_FILE, self.on_demand_cache_state)
 
     def restore_on_demand_catalog_cache(self):
+        started_at = time.perf_counter()
         signature = self.compute_on_demand_catalog_signature()
         cached_signature = self.on_demand_cache_state.get("signature", "")
         cached_catalog = self.on_demand_cache_state.get("catalog", [])
@@ -13507,12 +17639,24 @@ class ChannelSurfer(QWidget):
         if cached_signature == signature and isinstance(cached_catalog, list) and cached_catalog:
             self.on_demand_catalog = cached_catalog
             self.on_demand_catalog_dirty = False
+            self.on_demand_group_cards_cache = None
+            self.on_demand_home_sections_cache = {}
+            self.on_demand_detail_sections_cache = {}
+            self.on_demand_category_sections_cache = {}
+            self.on_demand_category_sections_cache = {}
+            perf_log("catalog.on_demand_cache.load", (time.perf_counter() - started_at) * 1000.0, groups=sum(len(channel.get("groups", [])) for channel in cached_catalog))
             return True
+        perf_log("catalog.on_demand_cache.miss", (time.perf_counter() - started_at) * 1000.0, cached=bool(cached_catalog))
         return False
 
     def mark_on_demand_catalog_dirty(self, clear_catalog=False):
         self.on_demand_catalog_signature = self.compute_on_demand_catalog_signature()
         self.on_demand_catalog_dirty = True
+        self.on_demand_group_cards_cache = None
+        self.on_demand_home_sections_cache = {}
+        self.on_demand_detail_sections_cache = {}
+        self.on_demand_category_sections_cache = {}
+        self.on_demand_category_sections_cache = {}
         if clear_catalog:
             self.on_demand_catalog = []
 
@@ -13562,6 +17706,7 @@ class ChannelSurfer(QWidget):
                     self.refresh_on_demand()
                 else:
                     self.mark_on_demand_catalog_dirty(clear_catalog=True)
+                self.guide_rows_cache = {}
             return
 
         path = self.metadata_queue.pop(0)
@@ -13581,6 +17726,7 @@ class ChannelSurfer(QWidget):
                     self.mark_on_demand_catalog_dirty(clear_catalog=True)
             self.last_metadata_overlay_refresh_at = now
             if self.video_window.guide_overlay.isVisible():
+                self.guide_rows_cache = {}
                 self.refresh_guide()
             if self.video_window.on_demand_overlay.isVisible():
                 self.refresh_on_demand()
@@ -13676,22 +17822,30 @@ class ChannelSurfer(QWidget):
             {
                 "number": 1,
                 "label": "Dummy Vault",
+                "channel_id": "dummy:vault",
+                "vault_category": "Dummy Vault",
+                "vault_category_key": catalog_category_key("Dummy Vault"),
                 "meta": "4 dummy collections",
                 "groups": [
                     show_group("Dummy Show", [(1, 28)]),
                     show_group("Dummy Show: Live", [(season, 12) for season in range(1, 5)]),
                     movie_group("Dummy Movie", 1),
-                    movie_group("Dummy Movie 2: Electic Boogaloo", 2),
+                    movie_group("Dummy Movie 2: Electric Boogaloo", 2),
                 ],
             }
         ]
 
     def build_on_demand_catalog(self, use_remote=False, progress_callback=None):
+        started_at = time.perf_counter()
         catalog = []
         media_channels = [channel for channel in self.channels if getattr(channel, "channel_type", "media") == "media"]
         if not media_channels and self.app_settings.get("allow_dummy_vault_catalog", False):
             self.on_demand_catalog = self.build_dummy_on_demand_catalog()
             self.on_demand_catalog_dirty = False
+            self.on_demand_group_cards_cache = None
+            self.on_demand_home_sections_cache = {}
+            self.on_demand_detail_sections_cache = {}
+            perf_log("vault.catalog.build", (time.perf_counter() - started_at) * 1000.0, mode="dummy", groups=sum(len(channel.get("groups", [])) for channel in self.on_demand_catalog))
             return
         total_media_channels = max(1, len(media_channels))
         for media_index, channel in enumerate(media_channels, start=1):
@@ -13817,8 +17971,11 @@ class ChannelSurfer(QWidget):
 
             catalog.append(
                 {
-                    "number": media_index,
+                    "number": self.channel_display_number(media_index - 1, channel),
                     "label": channel.name,
+                    "channel_id": self.catalog_channel_id(channel),
+                    "vault_category": self.catalog_category_for_channel(channel),
+                    "vault_category_key": catalog_category_key(self.catalog_category_for_channel(channel)),
                     "meta": f"{len(group_items)} show{'s' if len(group_items) != 1 else ''}",
                     "groups": group_items,
                 }
@@ -13832,7 +17989,18 @@ class ChannelSurfer(QWidget):
                 )
         self.on_demand_catalog = catalog
         self.on_demand_catalog_dirty = False
+        self.on_demand_group_cards_cache = None
+        self.on_demand_home_sections_cache = {}
+        self.on_demand_detail_sections_cache = {}
         self.save_on_demand_catalog_cache()
+        perf_log(
+            "vault.catalog.build",
+            (time.perf_counter() - started_at) * 1000.0,
+            mode="scan",
+            channels=len(catalog),
+            groups=sum(len(channel.get("groups", [])) for channel in catalog),
+            items=sum(len(group.get("items", [])) for channel in catalog for group in channel.get("groups", [])),
+        )
 
     def configured_weather_channel(self):
         if not self.app_settings.get("weatherstar_enabled"):
@@ -14170,7 +18338,8 @@ class ChannelSurfer(QWidget):
         self.configure_radiowave_background(radiowave_channel)
 
     def inject_special_channels(self):
-        base_channels = [channel for channel in self.channels if getattr(channel, "channel_type", "media") == "media"]
+        base_source = getattr(self, "loaded_media_channels", None) or self.channels
+        base_channels = [channel for channel in base_source if getattr(channel, "channel_type", "media") == "media"]
         special_channels = []
         weather_channel = self.configured_weather_channel()
         if weather_channel:
@@ -14551,6 +18720,7 @@ class ChannelSurfer(QWidget):
 
         ch = self.channels[self.current_channel]
         if getattr(ch, "channel_type", "media") == "weatherstar":
+            display_number = self.channel_display_number(self.current_channel, ch)
             previous_frame = self.capture_current_frame()
             self.stop_player()
             self.playback_mode = "live"
@@ -14573,20 +18743,21 @@ class ChannelSurfer(QWidget):
                 self.switch_sound.stop()
                 self.switch_sound.play()
             if show_channel_overlay:
-                self.video_window.channel_overlay.show_channel(self.current_channel + 1, ch.name)
+                self.video_window.channel_overlay.show_channel(display_number, ch.name)
 
             widescreen = self.profile_combo.currentText() != "CRT 4:3"
             self.pending_weather_url = ch.weatherstar_url(widescreen=widescreen)
             self.pending_weather_name = ch.name
             self.pending_weather_location = ch.location
             self.status.setText(
-                f"Channel {self.current_channel + 1}/{len(self.channels)}: "
+                f"Channel {display_number}/{len(self.channels)}: "
                 f"{ch.name}\n{ch.location}"
             )
             self.channel_switch_timer.start(165 if with_transition else 10)
             return
 
         if getattr(ch, "channel_type", "media") == "radiowave":
+            display_number = self.channel_display_number(self.current_channel, ch)
             previous_frame = self.capture_current_frame()
             self.stop_player()
             self.playback_mode = "live"
@@ -14609,17 +18780,18 @@ class ChannelSurfer(QWidget):
                 self.switch_sound.stop()
                 self.switch_sound.play()
             if show_channel_overlay:
-                self.video_window.channel_overlay.show_channel(self.current_channel + 1, ch.name)
+                self.video_window.channel_overlay.show_channel(display_number, ch.name)
 
             self.pending_radiowave_channel = ch
             self.status.setText(
-                f"Channel {self.current_channel + 1}/{len(self.channels)}: "
+                f"Channel {display_number}/{len(self.channels)}: "
                 f"{ch.name}\nLocal music channel"
             )
             self.channel_switch_timer.start(165 if with_transition else 10)
             return
 
         if getattr(ch, "channel_type", "media") == "youtube":
+            display_number = self.channel_display_number(self.current_channel, ch)
             previous_frame = self.capture_current_frame()
             self.stop_player()
             self.playback_mode = "live"
@@ -14640,7 +18812,7 @@ class ChannelSurfer(QWidget):
                 self.switch_sound.stop()
                 self.switch_sound.play()
             if show_channel_overlay:
-                self.video_window.channel_overlay.show_channel(self.current_channel + 1, ch.name)
+                self.video_window.channel_overlay.show_channel(display_number, ch.name)
 
             entries_now = getattr(ch, "entries", []) or []
             has_placeholder_entries = any(entry.get("placeholder") for entry in entries_now)
@@ -14696,7 +18868,7 @@ class ChannelSurfer(QWidget):
                     self.nettv_player.play()
                 self.reset_live_playback_health(entry_path)
                 self.status.setText(
-                    f"Channel {self.current_channel + 1}/{len(self.channels)}: "
+                    f"Channel {display_number}/{len(self.channels)}: "
                     f"{ch.name}\n{youtube_entry.get('title', 'NetTV video')}"
                 )
                 return
@@ -14725,7 +18897,7 @@ class ChannelSurfer(QWidget):
                 "Tuning cached NetTV feed..." if cached_video else "Caching video for reliable playback...",
             )
             self.status.setText(
-                f"Channel {self.current_channel + 1}/{len(self.channels)}: "
+                f"Channel {display_number}/{len(self.channels)}: "
                 f"{ch.name}\n{youtube_entry.get('title', 'NetTV video')}"
             )
             self.channel_switch_timer.start(165 if with_transition else 10)
@@ -14753,15 +18925,17 @@ class ChannelSurfer(QWidget):
         self.video_window.setFocus(Qt.ActiveWindowFocusReason)
         if self.video_window.guide_overlay.isVisible():
             self.refresh_guide()
+        if self.video_window.on_demand_overlay.isVisible():
+            self.refresh_on_demand()
         self.video_window.on_demand_overlay.hide()
         if with_transition:
             self.video_window.static.trigger(previous_frame)
             self.switch_sound.stop()
             self.switch_sound.play()
         if show_channel_overlay:
-            self.video_window.channel_overlay.show_channel(self.current_channel + 1, ch.name)
+            self.video_window.channel_overlay.show_channel(self.channel_display_number(self.current_channel, ch), ch.name)
         self.status.setText(
-            f"Channel {self.current_channel + 1}/{len(self.channels)}: "
+            f"Channel {self.channel_display_number(self.current_channel, ch)}/{len(self.channels)}: "
             f"{ch.name}\n{os.path.basename(video)}"
         )
 
@@ -15036,11 +19210,11 @@ class ChannelSurfer(QWidget):
             status = self.nettv_player.mediaStatus()
             title = self.nettv_current_title or "NetTV"
             if status in (QMediaPlayer.MediaStatus.InvalidMedia, QMediaPlayer.MediaStatus.StalledMedia):
-                self.show_youtube_tuning_slate(title, "NetTV could not open this cached video. MediaWave will keep the channel on standby instead of showing a black screen.")
+                self.show_youtube_tuning_slate(title, "NetTV could not play this video. Tuning to next available.")
                 self.status.setText("NetTV playback stalled or could not open this cached video.")
                 return
             if self.nettv_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState and not self.nettv_pending_play_after_seek:
-                self.show_youtube_tuning_slate(title, "NetTV is waiting for the player to start. The playlist is loaded, but playback has not produced picture yet.")
+                self.show_youtube_tuning_slate(title, "Tuning to channel feed...")
                 self.status.setText("NetTV is waiting for the player to start.")
                 return
             if self.nettv_waiting_for_visible_frame and now - self.nettv_waiting_started_at >= 6.0:
@@ -15075,7 +19249,7 @@ class ChannelSurfer(QWidget):
                     self.nettv_last_status_update_at = now
                     self.video_window.show_nettv_status(
                         title,
-                        "The playlist is loaded, but this video has not produced a visible frame yet.",
+                        "Tuning in...",
                     )
                 self.status.setText(
                     f"NetTV is waiting for visible video.\n{title}\n"
@@ -15282,7 +19456,7 @@ class ChannelSurfer(QWidget):
                 self.nettv_waiting_started_at = now
             if now - self.nettv_last_status_update_at >= 1.0 or not self.video_window.nettv_status_overlay.isVisible():
                 self.nettv_last_status_update_at = now
-                message = "The playlist is loaded, but this video has not produced a visible frame yet."
+                message = "Tuning in..."
                 self.nettv_current_message = message
                 self.video_window.show_nettv_status(self.nettv_current_title or "NetTV", message)
 
@@ -15316,7 +19490,7 @@ class ChannelSurfer(QWidget):
                             self.nettv_waiting_started_at = now
                         if now - self.nettv_last_status_update_at >= 1.0 or not self.video_window.nettv_status_overlay.isVisible():
                             self.nettv_last_status_update_at = now
-                            message = "The playlist is loaded, but this video has not produced a visible frame yet."
+                            message = "Tuning in..."
                             self.nettv_current_message = message
                             self.video_window.show_nettv_status(self.nettv_current_title or "NetTV", message)
                         return
@@ -15349,9 +19523,33 @@ class ChannelSurfer(QWidget):
         self.current_channel = (self.current_channel - 1) % len(self.channels)
         self.play_channel()
 
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._position_coaxie()
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._position_coaxie()
+
+    def _position_coaxie(self):
+        hero = getattr(self, "_hero", None)
+        coaxie = getattr(self, "_coaxie", None)
+        if hero is None or coaxie is None:
+            return
+        margin = 20
+        x = hero.width() - coaxie.width() - margin
+        y = (hero.height() - coaxie.height()) // 2
+        coaxie.move(x, max(4, y))
+        coaxie.raise_()
+
+    @Slot(bool)
+    def _save_auto_launch(self, checked):
+        self.app_settings["auto_launch"] = checked
+        save_json_file(APP_SETTINGS_FILE, self.app_settings)
+
     def refresh_controls(self):
         has_channels = bool(self.channels)
-        saved_catalog_ready = bool((self.app_settings.get("catalog_path") or "").strip()) and os.path.isdir((self.app_settings.get("catalog_path") or "").strip())
+        saved_catalog_ready = bool((self.app_settings.get("catalog_path") or "").strip()) and safe_isdir((self.app_settings.get("catalog_path") or "").strip())
         weather_ready = bool(self.app_settings.get("weatherstar_enabled")) and bool((self.app_settings.get("weatherstar_location") or "").strip())
         radiowave_ready = bool(self.app_settings.get("radiowave_enabled"))
         youtube_ready = bool(self.app_settings.get("youtube_enabled")) and bool(youtube_source_url(self.app_settings.get("youtube_playlist_url", "")))
@@ -15374,6 +19572,7 @@ class ChannelSurfer(QWidget):
                 self.status.setText(
                     "Choose a catalog, add optional local artwork/descriptions, then press Watch TV when you’re ready to go live."
                 )
+        self.refresh_diagnostics_summary()
 
     @Slot()
     def apply_display_settings(self):
@@ -15384,6 +19583,7 @@ class ChannelSurfer(QWidget):
             theme_name,
             skin_name,
             self.guide_ui_scale,
+            self.app_settings.get("sleek_freak_mode", "dark"),
         )
         self.app_settings["display_mode"] = self.profile_combo.currentText()
         self.app_settings["guide_theme"] = theme_name
@@ -15391,7 +19591,23 @@ class ChannelSurfer(QWidget):
         self.app_settings["guide_ui_scale"] = self.guide_ui_scale
         self.setStyleSheet(build_startup_stylesheet(theme_name, skin_name))
         save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        self.refresh_diagnostics_summary()
         self.preload_weather_if_configured()
+
+    def toggle_sleek_freak_mode(self):
+        current = normalize_sleek_mode(self.app_settings.get("sleek_freak_mode", "dark"))
+        updated = "light" if current == "dark" else "dark"
+        self.app_settings["sleek_freak_mode"] = updated
+        save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        self.video_window.configure_display(
+            self.profile_combo.currentText(),
+            self.theme_combo.currentText(),
+            self.skin_combo.currentText(),
+            self.guide_ui_scale,
+            updated,
+        )
+        if self.video_window.guide_overlay.isVisible():
+            self.refresh_guide()
 
     @Slot()
     def on_skin_changed(self):
@@ -15413,6 +19629,7 @@ class ChannelSurfer(QWidget):
             self.theme_combo.currentText(),
             self.skin_combo.currentText(),
             self.guide_ui_scale,
+            self.app_settings.get("sleek_freak_mode", "dark"),
         )
         self.video_window.ui_scale_overlay.show_scale(self.guide_ui_scale)
         if self.video_window.guide_overlay.isVisible():
@@ -15512,28 +19729,40 @@ class ChannelSurfer(QWidget):
                 "match_key": "youtube-playlist",
                 "tmdb_matched": False,
             }
+        mode = self.metadata_cache_mode()
+        memory_cached = self.program_metadata_memory_cache.get(path)
+        if memory_cached and memory_cached.get("cache_mode") == mode:
+            return memory_cached
         local = parse_local_media(path)
         signature = local_asset_signature(path, local)
         cached = self.tmdb_cache.get(path)
         if (
             cached
             and cached.get("signature") == signature
-            and cached.get("cache_mode") == self.metadata_cache_mode()
+            and cached.get("cache_mode") == mode
         ):
+            self.program_metadata_memory_cache[path] = cached
             return cached
 
         metadata = self.resolve_program_metadata(path, allow_remote=False)
         self.tmdb_cache[path] = metadata
+        self.program_metadata_memory_cache[path] = metadata
         return metadata
 
     def get_program_metadata_local(self, path):
+        mode = self.metadata_cache_mode()
+        memory_cached = self.program_metadata_memory_cache.get(path)
+        if memory_cached and memory_cached.get("cache_mode") == mode:
+            return memory_cached
         local = parse_local_media(path)
         signature = local_asset_signature(path, local)
         cached = self.tmdb_cache.get(path)
-        if cached and cached.get("signature") == signature and cached.get("cache_mode") == self.metadata_cache_mode():
+        if cached and cached.get("signature") == signature and cached.get("cache_mode") == mode:
+            self.program_metadata_memory_cache[path] = cached
             return cached
         metadata = self.resolve_program_metadata(path, allow_remote=False)
         self.tmdb_cache[path] = metadata
+        self.program_metadata_memory_cache[path] = metadata
         return metadata
 
     def resolve_program_metadata(self, path, allow_remote=False):
@@ -15641,6 +19870,7 @@ class ChannelSurfer(QWidget):
 
     def build_guide_rows(self, timeline_start=None):
         timeline_start = timeline_start or self.video_window.guide_overlay.timeline_start or self.video_window.guide_overlay.floor_to_half_hour(time.time())
+        started_at = time.perf_counter()
         rows = []
         for index, channel in enumerate(self.channels):
             if getattr(channel, "channel_type", "media") == "weatherstar":
@@ -15648,24 +19878,24 @@ class ChannelSurfer(QWidget):
                 metadata = self.get_program_metadata(info["current_path"]) if info else {}
                 rows.append({
                     "index": index,
-                    "number": index + 1,
+                    "number": self.channel_display_number(index, channel),
                     "name": channel.name,
                     "now_title": info["current_title"] if info else channel.name,
-                    "now_time": time.strftime("%I:%M", time.localtime(info["current_start"])).lstrip("0") if info else "",
+                    "now_time": time.strftime("%I:%M %p", time.localtime(info["current_start"])).lstrip("0") if info else "",
                     "next_title": "",
                     "next_time": "",
                     "slots": [{
                         "title": "Local Forecast",
-                        "time": time.strftime("%I:%M", time.localtime(timeline_start)).lstrip("0"),
+                        "time": time.strftime("%I:%M %p", time.localtime(timeline_start)).lstrip("0"),
                         "start": timeline_start,
-                        "end": timeline_start + (30 * 60 * 4),
+                        "end": timeline_start + (30 * 60),
                         "path": "weatherstar://local-forecast",
                     }],
                     "detail_slot_index": 0,
                     "detail_title": "WeatherStar 4000+",
                     "detail_path": "weatherstar://local-forecast",
                     "detail_is_live": True,
-                    "detail_status": "ON NOW  •  ENTER tunes to the live channel feed",
+                    "detail_status": "ON NOW  •  Press ENTER to tune in",
                     "detail_time": "",
                     "detail_summary": f"Local weather coverage for {channel.location}. Retro mode {'on' if channel.retro else 'off'}.",
                     "summary": metadata.get("detail_summary", f"Local weather coverage for {channel.location}."),
@@ -15679,29 +19909,29 @@ class ChannelSurfer(QWidget):
                     detail_summary = current_meta.get("detail_summary") or RADIOWAVE_EMPTY_WARNING
                     slots = [{
                         "title": "Music Server Offline",
-                        "time": time.strftime("%I:%M", time.localtime(timeline_start)).lstrip("0"),
+                        "time": time.strftime("%I:%M %p", time.localtime(timeline_start)).lstrip("0"),
                         "start": timeline_start,
-                        "end": timeline_start + (30 * 60 * 4),
+                        "end": timeline_start + (30 * 60),
                         "path": RadioWaveChannel.EMPTY_PATH,
                     }]
-                    detail_status = "ALERT  •  RadioWaveTV is waiting for music"
+                    detail_status = "NO MUSIC  •  No folder configured in Advanced Config"
                 else:
                     detail_summary_parts = [part for part in (current_meta.get("artist"), current_meta.get("album"), current_meta.get("year")) if part]
                     detail_summary = " • ".join(detail_summary_parts) if detail_summary_parts else "Local music channel."
                     slots = [{
                         "title": "RadioWaveTV Music Mix",
-                        "time": time.strftime("%I:%M", time.localtime(timeline_start)).lstrip("0"),
+                        "time": time.strftime("%I:%M %p", time.localtime(timeline_start)).lstrip("0"),
                         "start": timeline_start,
-                        "end": timeline_start + (30 * 60 * 4),
+                        "end": timeline_start + (30 * 60),
                         "path": info["current_path"] if info else "",
                     }]
                     detail_status = "ON NOW  •  RadioWaveTV music channel"
                 rows.append({
                     "index": index,
-                    "number": index + 1,
+                    "number": self.channel_display_number(index, channel),
                     "name": channel.name,
                     "now_title": current_meta.get("title") or channel.name,
-                    "now_time": time.strftime("%I:%M", time.localtime(info["current_start"])).lstrip("0") if info else "",
+                    "now_time": time.strftime("%I:%M %p", time.localtime(info["current_start"])).lstrip("0") if info else "",
                     "next_title": "",
                     "next_time": "",
                     "slots": slots,
@@ -15710,10 +19940,7 @@ class ChannelSurfer(QWidget):
                     "detail_path": info["current_path"] if info else "",
                     "detail_is_live": True,
                     "detail_status": detail_status,
-                    "detail_time": (
-                        f"{time.strftime('%I:%M', time.localtime(info['current_start'])).lstrip('0')} - "
-                        f"{time.strftime('%I:%M', time.localtime(info['current_end'])).lstrip('0')}"
-                    ) if info else "",
+                    "detail_time": format_clock_range(info["current_start"], info["current_end"]) if info else "",
                     "detail_summary": detail_summary,
                     "summary": detail_summary,
                 })
@@ -15723,7 +19950,7 @@ class ChannelSurfer(QWidget):
             if not programs or not info:
                 rows.append({
                     "index": index,
-                    "number": index + 1,
+                    "number": self.channel_display_number(index, channel),
                     "name": channel.name,
                     "now_title": channel.name,
                     "now_time": "",
@@ -15731,7 +19958,7 @@ class ChannelSurfer(QWidget):
                     "next_time": "",
                     "slots": [{
                         "title": "No Listings Available",
-                        "time": time.strftime("%I:%M", time.localtime(timeline_start)).lstrip("0"),
+                        "time": time.strftime("%I:%M %p", time.localtime(timeline_start)).lstrip("0"),
                         "start": timeline_start,
                         "end": timeline_start + (30 * 60),
                         "path": "",
@@ -15740,10 +19967,10 @@ class ChannelSurfer(QWidget):
                     "detail_title": channel.name,
                     "detail_path": "",
                     "detail_is_live": False,
-                    "detail_status": "No listings available",
+                    "detail_status": "NO LISTINGS",
                     "detail_time": "",
-                    "detail_summary": f"{channel.name} is loaded, but no current schedule could be built.",
-                    "summary": f"{channel.name} is loaded, but no current schedule could be built.",
+                    "detail_summary": f"{channel.name} has no schedule yet — try reloading the catalog.",
+                    "summary": f"{channel.name} has no schedule yet.",
                 })
                 continue
 
@@ -15753,7 +19980,7 @@ class ChannelSurfer(QWidget):
                 slot_data.append(
                     {
                         "title": metadata.get("timeline_title", program["title"]),
-                        "time": time.strftime("%I:%M", time.localtime(program["start"])).lstrip("0"),
+                        "time": time.strftime("%I:%M %p", time.localtime(program["start"])).lstrip("0"),
                         "start": program["start"],
                         "end": program["end"],
                         "path": program["path"],
@@ -15762,51 +19989,65 @@ class ChannelSurfer(QWidget):
 
             detail_program = programs[0]
             detail_slot_index = 0
-            for program in programs:
-                if program["end"] > timeline_start:
-                    detail_program = program
-                    detail_slot_index = programs.index(program)
+            for _slot_i, _slot_prog in enumerate(programs):
+                if _slot_prog["end"] > timeline_start:
+                    detail_program = _slot_prog
+                    detail_slot_index = _slot_i
                     break
             detail_metadata = self.get_program_metadata(detail_program["path"])
             detail_is_live = detail_program["start"] <= time.time() < detail_program["end"]
             if detail_is_live:
-                detail_status = "ON NOW  •  ENTER tunes to the live channel feed"
+                detail_status = "ON NOW  •  Press ENTER to tune in"
             else:
-                detail_status = "UPCOMING LISTING  •  ENTER still tunes to what is airing now"
+                detail_status = "COMING UP  •  Press ENTER to tune in now"
 
             rows.append({
                 "index": index,
-                "number": index + 1,
+                "number": self.channel_display_number(index, channel),
                 "name": channel.name,
                 "now_title": info["current_title"],
-                "now_time": time.strftime("%I:%M", time.localtime(info["current_start"])).lstrip("0"),
+                "now_time": time.strftime("%I:%M %p", time.localtime(info["current_start"])).lstrip("0"),
                 "next_title": info["next_title"],
-                "next_time": time.strftime("%I:%M", time.localtime(info["current_end"])).lstrip("0"),
+                "next_time": time.strftime("%I:%M %p", time.localtime(info["current_end"])).lstrip("0"),
                 "slots": slot_data,
                 "detail_slot_index": detail_slot_index,
                 "detail_title": detail_metadata.get("detail_title", detail_program["title"]),
                 "detail_path": detail_program["path"],
                 "detail_is_live": detail_is_live,
                 "detail_status": detail_status,
-                "detail_time": (
-                    f"{time.strftime('%I:%M', time.localtime(detail_program['start'])).lstrip('0')} - "
-                    f"{time.strftime('%I:%M', time.localtime(detail_program['end'])).lstrip('0')}"
-                ),
+                "detail_time": format_clock_range(detail_program["start"], detail_program["end"]),
                 "detail_summary": detail_metadata.get("detail_summary") or self.build_guide_summary(channel.name, detail_program["title"]),
                 "summary": self.build_guide_summary(channel.name, info["current_title"]),
             })
+        perf_log("guide.rows.build", (time.perf_counter() - started_at) * 1000.0, rows=len(rows), timeline=int(timeline_start))
+        return rows
+
+    def cached_guide_rows(self, timeline_start=None, max_age_seconds=12.0):
+        timeline_start = timeline_start or self.video_window.guide_overlay.timeline_start or self.video_window.guide_overlay.floor_to_half_hour(time.time())
+        channel_signature = (
+            len(self.channels),
+            tuple((getattr(channel, "name", ""), len(getattr(channel, "shows", [])), getattr(channel, "channel_type", "media"), getattr(channel, "display_number", 0)) for channel in self.channels),
+        )
+        key = (int(timeline_start), channel_signature)
+        now = time.monotonic()
+        cached = self.guide_rows_cache.get(key)
+        if cached and now - cached[0] <= max_age_seconds:
+            perf_log("guide.rows.cache_hit", 0.0, rows=len(cached[1]), timeline=int(timeline_start))
+            return cached[1]
+        rows = self.build_guide_rows(timeline_start)
+        if len(self.guide_rows_cache) > 6:
+            self.guide_rows_cache.clear()
+        self.guide_rows_cache[key] = (now, rows)
         return rows
 
     def build_guide_summary(self, channel_name, title):
-        return (
-            f"Currently airing on {channel_name}: {title}. "
-            f"Showing local catalog metadata for now."
-        )
+        return f"Currently airing on {channel_name}: {title}."
 
     @Slot()
     def toggle_guide(self):
         if self.video_window.on_demand_overlay.isVisible():
             self.hide_on_demand()
+            self.show_guide()
             return
         if self.video_window.guide_overlay.isVisible():
             self.hide_guide()
@@ -15824,7 +20065,7 @@ class ChannelSurfer(QWidget):
         self.video_window.guide_overlay.settings_open = False
         self.video_window.guide_overlay.settings_focus_index = 0
         self.video_window.guide_overlay.nav_focus = False
-        self.video_window.guide_overlay.nav_index = 1
+        self.video_window.guide_overlay.nav_index = 1 if self.video_window.guide_overlay.skin_style() == "flat" else 1
         self.refresh_guide(show=True)
 
     @Slot()
@@ -15849,8 +20090,9 @@ class ChannelSurfer(QWidget):
             self.video_window.guide_overlay.set_preview_frame(pixmap, mode=mode)
 
     def refresh_guide(self, show=False):
+        started_at = time.perf_counter()
         self.video_window.guide_overlay.settings_values = self.overlay_settings_values()
-        rows = self.build_guide_rows(self.video_window.guide_overlay.timeline_start)
+        rows = self.cached_guide_rows(self.video_window.guide_overlay.timeline_start)
         if not rows:
             return
         selected_channel = self.channels[self.guide_selection] if self.channels and 0 <= self.guide_selection < len(self.channels) else None
@@ -15876,6 +20118,8 @@ class ChannelSurfer(QWidget):
             self.video_window.guide_overlay.show_guide(rows, self.guide_selection)
         else:
             self.video_window.guide_overlay.update_guide(rows, self.guide_selection)
+        perf_log("guide.refresh", (time.perf_counter() - started_at) * 1000.0, show=show, selected=self.guide_selection)
+        perf_summary("guide-refresh", rows=len(rows), selected=self.guide_selection)
 
     @Slot()
     def guide_up(self):
@@ -15887,10 +20131,12 @@ class ChannelSurfer(QWidget):
             return
         if self.video_window.guide_overlay.nav_focus:
             self.video_window.guide_overlay.nav_focus = False
+            self.guide_selection = len(self.channels) - 1
             self.refresh_guide()
             return
         if self.guide_selection == 0:
             self.video_window.guide_overlay.nav_focus = True
+            self.video_window.guide_overlay.nav_index = 0
         else:
             self.guide_selection = max(0, self.guide_selection - 1)
         self.refresh_guide()
@@ -15904,7 +20150,10 @@ class ChannelSurfer(QWidget):
             self.refresh_guide()
             return
         if self.video_window.guide_overlay.nav_focus:
+            self.video_window.guide_overlay.nav_focus = False
+            self.guide_selection = 0
             self.refresh_guide()
+            return
         else:
             next_index = min(len(self.channels) - 1, self.guide_selection + 1)
             if next_index == self.guide_selection:
@@ -15935,10 +20184,8 @@ class ChannelSurfer(QWidget):
             minimum,
             self.video_window.guide_overlay.timeline_start - (30 * 60),
         )
+        # Already at "now" — stop here, stay in the grid (don't yank focus away).
         if next_start == self.video_window.guide_overlay.timeline_start:
-            self.video_window.guide_overlay.nav_focus = True
-            self.video_window.guide_overlay.nav_index = 0
-            self.refresh_guide()
             return
         self.video_window.guide_overlay.timeline_start = next_start
         self.refresh_guide()
@@ -15956,10 +20203,18 @@ class ChannelSurfer(QWidget):
                 self.step_profile(1)
             return
         if self.video_window.guide_overlay.nav_focus:
-            self.video_window.guide_overlay.nav_index = min(3, self.video_window.guide_overlay.nav_index + 1)
+            max_nav_index = 4 if self.video_window.guide_overlay.skin_style() == "flat" else 3
+            self.video_window.guide_overlay.nav_index = min(max_nav_index, self.video_window.guide_overlay.nav_index + 1)
             self.refresh_guide()
             return
-        self.video_window.guide_overlay.timeline_start += 30 * 60
+        # Cap forward scrolling at a sensible horizon so the timeline can't run
+        # infinitely into the future (the schedule loops anyway).
+        now_floor = self.video_window.guide_overlay.floor_to_half_hour(time.time())
+        max_start = now_floor + GUIDE_FORWARD_HORIZON_SECONDS
+        next_start = self.video_window.guide_overlay.timeline_start + (30 * 60)
+        if next_start > max_start:
+            return
+        self.video_window.guide_overlay.timeline_start = next_start
         self.refresh_guide()
 
     @Slot()
@@ -15991,18 +20246,12 @@ class ChannelSurfer(QWidget):
     def toggle_guide_settings(self):
         if not self.video_window.guide_overlay.isVisible():
             return
-        if not self.app_settings.get("dev_menu_enabled", True):
-            self.status.setText("The in-app dev menu is disabled on the main screen.")
-            return
         self.video_window.guide_overlay.settings_open = not self.video_window.guide_overlay.settings_open
         self.refresh_guide()
 
     @Slot()
     def toggle_on_demand_settings(self):
         if not self.video_window.on_demand_overlay.isVisible():
-            return
-        if not self.app_settings.get("dev_menu_enabled", True):
-            self.status.setText("The in-app dev menu is disabled on the main screen.")
             return
         self.on_demand_settings_open = not self.on_demand_settings_open
         self.on_demand_nav_focused = False
@@ -16134,9 +20383,29 @@ class ChannelSurfer(QWidget):
             self.status.setText("That Vault group hit an error while opening.")
             self.refresh_on_demand()
 
+    @Slot(str)
+    def handle_on_demand_hero_action(self, action):
+        self.activate_on_demand_hero_action(action)
+
+    @Slot(int)
+    def handle_on_demand_filter_action(self, index):
+        if not self.video_window.on_demand_overlay.isVisible():
+            return
+        self.on_demand_settings_open = False
+        self.on_demand_nav_focused = False
+        self.on_demand_home_focus = "filters"
+        self.on_demand_filter_index = max(0, min(int(index), len(self.on_demand_filter_options()) - 1))
+        self.activate_on_demand_filter()
+        self.refresh_on_demand()
+
     def ensure_on_demand_focus_state(self):
-        self.on_demand_nav_index = max(0, min(int(self.on_demand_nav_index), 3))
+        max_nav_index = 4 if self.video_window.on_demand_overlay.skin_style() == "flat" else 3
+        self.on_demand_nav_index = max(0, min(int(self.on_demand_nav_index), max_nav_index))
         self.on_demand_settings_focus_index = max(0, min(int(self.on_demand_settings_focus_index), self.in_app_menu_close_index()))
+        options = self.on_demand_filter_options()
+        self.on_demand_filter_index = max(0, min(int(self.on_demand_filter_index), len(options) - 1))
+        if self.on_demand_home_focus not in {"hero", "filters", "rows"}:
+            self.on_demand_home_focus = "hero"
         sections = self.build_on_demand_home_sections()
         if not sections:
             self.on_demand_section_index = 0
@@ -16174,7 +20443,9 @@ class ChannelSurfer(QWidget):
                 self.on_demand_nav_focused = False
                 self.on_demand_settings_open = False
                 return sections
-            actions_count = 2
+            items = group.get("items", [])
+            media_type = "tv" if any(item.get("media_type") == "tv" for item in items) else "movie"
+            actions_count = 4
             self.on_demand_action_index = max(0, min(int(self.on_demand_action_index), actions_count - 1))
             seasons = self.build_on_demand_seasons(group)
             if seasons:
@@ -16275,6 +20546,8 @@ class ChannelSurfer(QWidget):
             entry = entries.get(item.get("path"))
             if not entry or int(entry.get("position_ms", 0)) <= 0:
                 continue
+            entry = dict(entry)
+            entry["path"] = item.get("path", "")
             if best is None or float(entry.get("last_played", 0)) > float(best.get("last_played", 0)):
                 best = entry
         return best
@@ -16351,12 +20624,290 @@ class ChannelSurfer(QWidget):
             "artwork_path": group.get("artwork_path") or first_item.get("artwork_path", ""),
             "hero_artwork_path": group.get("hero_artwork_path") or group.get("artwork_path") or first_item.get("hero_artwork_path", "") or first_item.get("artwork_path", ""),
             "clearlogo_path": group.get("clearlogo_path") or first_item.get("clearlogo_path", ""),
+            "watchlist_key": self.on_demand_group_key(channel_index, group_index, channel, group),
+            "watchlisted": self.is_on_demand_group_watchlisted(channel_index, group_index, channel, group),
         }
 
     def build_attention_items(self):
         return []
 
-    def build_on_demand_home_sections(self):
+    def on_demand_group_key(self, channel_index, group_index, channel=None, group=None):
+        channel = channel or (self.on_demand_catalog[channel_index] if 0 <= channel_index < len(self.on_demand_catalog) else {})
+        groups = channel.get("groups", []) if channel else []
+        group = group or (groups[group_index] if 0 <= group_index < len(groups) else {})
+        first_path = ""
+        for item in group.get("items", []):
+            first_path = item.get("path", "")
+            if first_path:
+                break
+        if first_path:
+            return f"path:{first_path}"
+        return f"group:{normalize_title(channel.get('label', 'vault'))}:{normalize_title(group.get('label', 'title'))}"
+
+    def on_demand_watchlist_keys(self):
+        keys = self.app_settings.setdefault("vault_watchlist", [])
+        if not isinstance(keys, list):
+            keys = []
+            self.app_settings["vault_watchlist"] = keys
+        return keys
+
+    def is_on_demand_group_watchlisted(self, channel_index, group_index, channel=None, group=None):
+        return self.on_demand_group_key(channel_index, group_index, channel, group) in set(self.on_demand_watchlist_keys())
+
+    def toggle_on_demand_group_watchlist(self, channel_index=None, group_index=None):
+        if channel_index is None:
+            channel_index = self.on_demand_channel_index
+        if group_index is None:
+            group_index = self.on_demand_group_index
+        if not (0 <= int(channel_index) < len(self.on_demand_catalog)):
+            return False
+        channel = self.on_demand_catalog[int(channel_index)]
+        if not (0 <= int(group_index) < len(channel.get("groups", []))):
+            return False
+        group = channel["groups"][int(group_index)]
+        key = self.on_demand_group_key(int(channel_index), int(group_index), channel, group)
+        keys = self.on_demand_watchlist_keys()
+        if key in keys:
+            self.app_settings["vault_watchlist"] = [entry for entry in keys if entry != key]
+            added = False
+        else:
+            keys.append(key)
+            added = True
+        save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        self.on_demand_group_cards_cache = None
+        self.on_demand_home_sections_cache = {}
+        self.on_demand_detail_sections_cache = {}
+        self.on_demand_category_sections_cache = {}
+        self.status.setText(f"{'Added to' if added else 'Removed from'} My Vault: {group.get('label', 'Title')}")
+        return added
+
+    def all_on_demand_group_cards(self):
+        if self.on_demand_group_cards_cache is not None:
+            perf_log("vault.cards.cache_hit", 0.0, cards=len(self.on_demand_group_cards_cache))
+            return list(self.on_demand_group_cards_cache)
+        started_at = time.perf_counter()
+        cards = []
+        for channel_index, channel in enumerate(self.on_demand_catalog):
+            for group_index, _group in enumerate(channel.get("groups", [])):
+                cards.append(self.build_home_card_for_group(channel_index, group_index))
+        self.on_demand_group_cards_cache = list(cards)
+        perf_log("vault.cards.build", (time.perf_counter() - started_at) * 1000.0, cards=len(cards))
+        return cards
+
+    def on_demand_filter_options(self):
+        return [
+            {"key": "featured", "label": "Featured"},
+            {"key": "movies", "label": "Movies"},
+            {"key": "series", "label": "Series"},
+            {"key": "my-vault", "label": "My Vault"},
+            {"key": "random", "label": "Random"},
+        ]
+
+    def apply_on_demand_home_filter(self, sections):
+        filter_key = self.on_demand_home_filter if self.on_demand_home_filter in {item["key"] for item in self.on_demand_filter_options()} else "featured"
+        if filter_key in {"featured", "random"}:
+            return sections
+        filtered = [section for section in sections if section.get("key") == filter_key]
+        if filtered:
+            return filtered
+        labels = {
+            "movies": ("Movies", "No movies found in this Vault yet."),
+            "series": ("Series", "No shows found in this Vault yet."),
+            "my-vault": ("My Vault", "Add a movie or show to My Vault and it will appear here."),
+        }
+        title, subtitle = labels.get(filter_key, ("Vault", "Nothing to show here yet."))
+        return [{"key": filter_key, "title": title, "subtitle": subtitle, "items": []}]
+
+    def activate_on_demand_filter(self):
+        options = self.on_demand_filter_options()
+        self.on_demand_filter_index = max(0, min(int(self.on_demand_filter_index), len(options) - 1))
+        option = options[self.on_demand_filter_index]
+        if option["key"] == "random":
+            cards = self.all_on_demand_group_cards()
+            if cards:
+                card = random.choice(cards)
+                self.open_on_demand_group(card["channel_index"], card["group_index"], 0, focus="actions")
+                return
+            self.status.setText("Your Vault is empty, so Random has nothing to pick yet.")
+            return
+        self.on_demand_home_filter = option["key"]
+        self.on_demand_section_index = 0
+        self.on_demand_section_item_indices = {}
+
+    def activate_on_demand_hero_action(self, action):
+        if self.on_demand_view != "home":
+            return
+        hero = self.video_window.on_demand_overlay.state.get("hero", {})
+        card = dict(hero)
+        if action == "random":
+            cards = self.all_on_demand_group_cards()
+            if cards:
+                card = random.choice(cards)
+                self.open_on_demand_group(card["channel_index"], card["group_index"], 0, focus="actions")
+                self.refresh_on_demand()
+            return
+        if action == "info":
+            if card.get("type") == "resume" and card.get("path"):
+                channel, group, _, item_idx, item = self.find_on_demand_item_by_path(card.get("path"))
+                if channel and group and item:
+                    channel_index = next((idx for idx, entry in enumerate(self.on_demand_catalog) if entry is channel), 0)
+                    group_index = next((idx for idx, entry in enumerate(channel.get("groups", [])) if entry is group), 0)
+                    self.open_on_demand_group(channel_index, group_index, item_idx, focus="actions")
+                    self.refresh_on_demand()
+                return
+            if card.get("channel_index") is not None and card.get("group_index") is not None:
+                self.open_on_demand_group(int(card["channel_index"]), int(card["group_index"]), 0, focus="actions")
+                self.refresh_on_demand()
+            return
+        if action in {"resume", "play", "start_over"}:
+            path = card.get("path", "")
+            position_ms = 0
+            if card.get("type") == "resume" and path:
+                position_ms = int(self.resume_state.get("entries", {}).get(path, {}).get("position_ms", 0) or 0)
+            elif card.get("channel_index") is not None and card.get("group_index") is not None:
+                channel = self.on_demand_catalog[int(card["channel_index"])]
+                group = channel["groups"][int(card["group_index"])]
+                items = group.get("items", [])
+                if items:
+                    path = items[0].get("path", "")
+                    if action == "resume":
+                        resume = self.group_resume_entry(group)
+                        if resume:
+                            path = resume.get("path", path)
+                            position_ms = int(resume.get("position_ms", 0) or 0)
+            if action == "start_over":
+                position_ms = 0
+            self.play_on_demand(path, position_ms)
+
+    def build_on_demand_recent_hero(self, sections):
+        resume = next((section for section in sections if section.get("key") == "continue" and section.get("items")), None)
+        if resume:
+            return dict(resume["items"][0])
+        for section in sections:
+            if section.get("items"):
+                return dict(section["items"][0])
+        return {}
+
+    def build_on_demand_category_sections(self, all_cards):
+        settings_signature = stable_hash(json.dumps(normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {})), sort_keys=True))
+        cache_key = (
+            settings_signature,
+            len(self.on_demand_catalog),
+            sum(len(channel.get("groups", [])) for channel in self.on_demand_catalog),
+            len(all_cards),
+        )
+        cached = self.on_demand_category_sections_cache.get(cache_key)
+        if cached is not None:
+            perf_log("vault.categories.cache_hit", 0.0, sections=len(cached))
+            return cached
+
+        started_at = time.perf_counter()
+        card_lookup = {
+            (int(card.get("channel_index", -1)), int(card.get("group_index", -1))): card
+            for card in all_cards
+            if card.get("channel_index") is not None and card.get("group_index") is not None
+        }
+        grouped = {}
+        order = {}
+        for channel_index, channel in enumerate(self.on_demand_catalog):
+            category = sanitize_catalog_category(channel.get("vault_category") or channel.get("label") or "Vault")
+            if not category:
+                category = channel.get("label") or "Vault"
+            key = catalog_category_key(category)
+            if not key:
+                key = normalize_title(channel.get("label", "vault")) or f"category-{channel_index}"
+            bucket = grouped.setdefault(key, {"title": category, "items": []})
+            order.setdefault(key, min(int(channel.get("number", channel_index + 1) or channel_index + 1), order.get(key, 99999)))
+            for group_index, _group in enumerate(channel.get("groups", [])):
+                card = card_lookup.get((channel_index, group_index))
+                if card:
+                    bucket["items"].append(card)
+
+        sections = []
+        for key, bucket in sorted(grouped.items(), key=lambda item: (order.get(item[0], 99999), item[1]["title"].casefold())):
+            items = bucket["items"]
+            if not items:
+                continue
+            sections.append(
+                {
+                    "key": f"category:{key}",
+                    "title": bucket["title"],
+                    "subtitle": f"{len(items)} title{'s' if len(items) != 1 else ''}",
+                    "items": items[:14],
+                }
+            )
+        if len(self.on_demand_category_sections_cache) > 6:
+            self.on_demand_category_sections_cache.clear()
+        self.on_demand_category_sections_cache[cache_key] = sections
+        perf_log(
+            "vault.categories.build",
+            (time.perf_counter() - started_at) * 1000.0,
+            sections=len(sections),
+            cards=len(all_cards),
+        )
+        return sections
+
+    def build_on_demand_related_sections(self, current_channel_index, current_group_index, media_type):
+        cache_key = (
+            int(current_channel_index),
+            int(current_group_index),
+            str(media_type),
+            len(self.on_demand_catalog),
+            sum(len(channel.get("groups", [])) for channel in self.on_demand_catalog),
+        )
+        cached = self.on_demand_detail_sections_cache.get(cache_key)
+        if cached is not None:
+            perf_log("vault.related.cache_hit", 0.0, sections=len(cached))
+            return cached
+        started_at = time.perf_counter()
+        cards = [
+            card for card in self.all_on_demand_group_cards()
+            if not (card.get("channel_index") == current_channel_index and card.get("group_index") == current_group_index)
+        ]
+        if not cards:
+            return []
+        same_type = [card for card in cards if card.get("media_type") == media_type]
+        recent = sorted(cards, key=lambda card: card.get("added_at", 0.0), reverse=True)
+        sections = []
+        if same_type:
+            sections.append({"key": "more-like-this", "title": "More Like This", "subtitle": "", "items": same_type[:10]})
+        if recent:
+            sections.append({"key": "detail-recent", "title": "Recently Added", "subtitle": "", "items": recent[:10]})
+        if len(self.on_demand_detail_sections_cache) > 24:
+            self.on_demand_detail_sections_cache.clear()
+        self.on_demand_detail_sections_cache[cache_key] = sections
+        perf_log("vault.related.build", (time.perf_counter() - started_at) * 1000.0, sections=len(sections))
+        return sections
+
+    def build_on_demand_home_sections(self, filtered=True):
+        started_at = time.perf_counter()
+        resume_entries = self.resume_state.get("entries", {})
+        resume_signature = (
+            len(resume_entries),
+            max((float(entry.get("last_played", 0.0) or 0.0) for entry in resume_entries.values()), default=0.0),
+        )
+        cache_key = (
+            bool(filtered),
+            self.on_demand_home_filter if filtered else "all",
+            tuple(self.on_demand_watchlist_keys()),
+            resume_signature,
+            stable_hash(json.dumps(normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {})), sort_keys=True)),
+            len(self.on_demand_catalog),
+            sum(len(channel.get("groups", [])) for channel in self.on_demand_catalog),
+        )
+        cached = self.on_demand_home_sections_cache.get(cache_key)
+        if cached is not None:
+            sections = cached
+            perf_log("vault.home_sections.cache_hit", 0.0, sections=len(sections), filtered=filtered)
+            if sections:
+                self.on_demand_section_index = max(0, min(self.on_demand_section_index, len(sections) - 1))
+                for idx, section in enumerate(sections):
+                    current = self.on_demand_section_item_indices.get(idx, 0)
+                    self.on_demand_section_item_indices[idx] = max(0, min(current, len(section["items"]) - 1))
+            else:
+                self.on_demand_section_index = 0
+                self.on_demand_section_item_indices = {}
+            return sections
         sections = []
         resume_items = self.build_resume_items()
         if resume_items:
@@ -16388,28 +20939,44 @@ class ChannelSurfer(QWidget):
                                 else ""
                             ),
                             "artwork_path": item.get("artwork_path", ""),
+                            "hero_artwork_path": item.get("artwork_path", ""),
                         }
                         for item in resume_items[:10]
                     ],
                 }
             )
 
-        for channel_index, channel in enumerate(self.on_demand_catalog):
-            cards = [
-                self.build_home_card_for_group(channel_index, group_index)
-                for group_index, _group in enumerate(channel.get("groups", []))
-            ]
-            if not cards:
-                continue
+        all_cards = self.all_on_demand_group_cards()
+        watchlist = set(self.on_demand_watchlist_keys())
+        watchlist_cards = [card for card in all_cards if card.get("watchlist_key") in watchlist]
+        if watchlist_cards:
             sections.append(
                 {
-                    "key": f"channel-{channel_index}",
-                    "title": channel["label"],
-                    "subtitle": f"Channel {channel['number']}  •  {len(cards)} collection{'s' if len(cards) != 1 else ''}",
-                    "items": cards,
+                    "key": "my-vault",
+                    "title": "My Vault",
+                    "subtitle": "Titles you saved for later.",
+                    "items": watchlist_cards,
                 }
             )
+        if all_cards:
+            sections.append(
+                {
+                    "key": "recently-added",
+                    "title": "Recently Added",
+                    "subtitle": "Newest titles in your local Vault.",
+                    "items": sorted(all_cards, key=lambda card: card.get("added_at", 0.0), reverse=True)[:14],
+                }
+            )
+            sections.extend(self.build_on_demand_category_sections(all_cards))
+            movie_cards = [card for card in all_cards if card.get("media_type") == "movie"]
+            series_cards = [card for card in all_cards if card.get("media_type") == "tv"]
+            if movie_cards:
+                sections.append({"key": "movies", "title": "Movies", "subtitle": "Feature-length titles.", "items": movie_cards[:14]})
+            if series_cards:
+                sections.append({"key": "series", "title": "Series", "subtitle": "Shows and episodic collections.", "items": series_cards[:14]})
 
+        if filtered:
+            sections = self.apply_on_demand_home_filter(sections)
         if sections:
             self.on_demand_section_index = max(0, min(self.on_demand_section_index, len(sections) - 1))
             for idx, section in enumerate(sections):
@@ -16418,6 +20985,10 @@ class ChannelSurfer(QWidget):
         else:
             self.on_demand_section_index = 0
             self.on_demand_section_item_indices = {}
+        if len(self.on_demand_home_sections_cache) > 12:
+            self.on_demand_home_sections_cache.clear()
+        self.on_demand_home_sections_cache[cache_key] = sections
+        perf_log("vault.home_sections.build", (time.perf_counter() - started_at) * 1000.0, sections=len(sections), filtered=filtered)
         return sections
 
     def build_on_demand_seasons(self, group):
@@ -16472,7 +21043,7 @@ class ChannelSurfer(QWidget):
             remaining = max(0.0, info["current_end"] - now)
             metadata = self.get_program_metadata(info["current_path"])
             return {
-                "channel_number": self.current_channel + 1,
+                "channel_number": self.channel_display_number(self.current_channel, channel),
                 "channel_name": channel.name,
                 "path": info["current_path"],
                 "title": metadata.get("detail_title", info["current_title"]),
@@ -16502,7 +21073,7 @@ class ChannelSurfer(QWidget):
             else:
                 summary = " • ".join(part for part in (artist, album, year) if part) or "RadioWaveTV music channel."
             return {
-                "channel_number": self.current_channel + 1,
+                "channel_number": self.channel_display_number(self.current_channel, channel),
                 "channel_name": channel.name,
                 "path": path or "",
                 "title": title if getattr(channel, "empty_state", False) or path == RadioWaveChannel.EMPTY_PATH else (f"{title} - {artist}" if artist else title),
@@ -16542,7 +21113,7 @@ class ChannelSurfer(QWidget):
             if self.nettv_waiting_for_visible_frame:
                 summary = self.nettv_current_message or "NetTV is preparing this playlist video."
             return {
-                "channel_number": self.current_channel + 1,
+                "channel_number": self.channel_display_number(self.current_channel, channel),
                 "channel_name": channel.name,
                 "path": path,
                 "title": title,
@@ -16570,7 +21141,7 @@ class ChannelSurfer(QWidget):
             parent_show_name = current_entry.get("parent_show_name") or metadata.get("show_name", parent_title)
             parent_summary = schedule_entry_user_summary(current_entry, metadata.get("detail_summary") or self.build_guide_summary(channel.name, parent_title))
             return {
-                "channel_number": self.current_channel + 1,
+                "channel_number": self.channel_display_number(self.current_channel, channel),
                 "channel_name": channel.name,
                 "path": parent_path,
                 "title": parent_title,
@@ -16584,7 +21155,7 @@ class ChannelSurfer(QWidget):
                 "progress": elapsed / duration,
             }
         return {
-            "channel_number": self.current_channel + 1,
+            "channel_number": self.channel_display_number(self.current_channel, channel),
             "channel_name": channel.name,
             "path": info["current_path"],
             "title": metadata.get("detail_title", info["current_title"]),
@@ -16666,9 +21237,13 @@ class ChannelSurfer(QWidget):
             actions = []
         return {
             "header": "PROGRAM INFO",
+            "channel_number": program["channel_number"],
+            "channel_name": program["channel_name"],
             "channel_line": f"CH {program['channel_number']:02d}  •  {program['channel_name']}",
             "time_line": format_clock_range(program["start"], program["end"]),
             "remaining_line": f"{format_resume_time(int(program['remaining'] * 1000))} remaining",
+            "end": program.get("end"),
+            "end_line": f"Ends {time.strftime('%I:%M %p', time.localtime(program['end'])).lstrip('0')}" if program.get("end") else "",
             "title": program["title"],
             "summary": program["summary"],
             "progress": program["progress"],
@@ -16690,9 +21265,13 @@ class ChannelSurfer(QWidget):
             channel_line = f"CH {program['channel_number']:02d}  •  {program['channel_name']}"
         return {
             "header": "PROGRAM INFO",
+            "channel_number": program["channel_number"],
+            "channel_name": program["channel_name"],
             "channel_line": channel_line,
             "time_line": "On Demand Playback",
             "remaining_line": f"{format_resume_time(int(program['remaining'] * 1000))} remaining",
+            "end": program.get("end"),
+            "end_line": "Ends when playback finishes",
             "title": program["title"],
             "summary": program["summary"],
             "progress": program["progress"],
@@ -16714,9 +21293,64 @@ class ChannelSurfer(QWidget):
         return self.build_info_state().get("actions", [])
 
     def info_nav_button_count(self):
+        if self.video_window.info_overlay.skin_style() == "flat":
+            return 5
         return 5 if self.playback_mode == "ondemand" else 4
 
     def activate_universal_nav(self, source, index):
+        if source == "guide" and self.video_window.guide_overlay.skin_style() == "flat":
+            if index == 0:
+                self.hide_guide()
+                return
+            if index == 1:
+                self.video_window.guide_overlay.nav_focus = False
+                self.video_window.guide_overlay.settings_open = False
+                self.refresh_guide()
+                return
+            if index == 2:
+                self.hide_guide()
+                self.hide_info_banner()
+                self.show_on_demand()
+                return
+            if index == 3:
+                self.video_window.guide_overlay.settings_open = True
+                self.video_window.guide_overlay.nav_focus = False
+                self.refresh_guide()
+                return
+            self.toggle_sleek_freak_mode()
+            return
+        if source == "vault" and self.video_window.on_demand_overlay.skin_style() == "flat":
+            if index == 0:
+                self.on_demand_nav_focused = False
+                if self.on_demand_settings_open:
+                    self.on_demand_settings_open = False
+                    self.refresh_on_demand()
+                elif self.on_demand_view == "home":
+                    self.hide_on_demand()
+                else:
+                    self.on_demand_view = "home"
+                    self.refresh_on_demand()
+                return
+            if index == 1:
+                self.hide_on_demand()
+                self.show_guide()
+                self.video_window.guide_overlay.settings_open = False
+                self.video_window.guide_overlay.nav_focus = False
+                self.video_window.guide_overlay.timeline_start = self.video_window.guide_overlay.floor_to_half_hour(time.time())
+                self.refresh_guide()
+                return
+            if index == 2:
+                self.on_demand_nav_focused = False
+                self.on_demand_settings_open = False
+                self.refresh_on_demand()
+                return
+            if index == 3:
+                self.on_demand_settings_open = True
+                self.on_demand_nav_focused = False
+                self.refresh_on_demand()
+                return
+            self.toggle_sleek_freak_mode()
+            return
         if source == "vault":
             if index == 0:
                 self.on_demand_nav_focused = False
@@ -16741,9 +21375,6 @@ class ChannelSurfer(QWidget):
                 return
             index -= 1
         if index == 0:
-            if not self.app_settings.get("dev_menu_enabled", True):
-                self.status.setText("The in-app dev menu is disabled on the main screen.")
-                return
             if source == "vault":
                 self.on_demand_settings_open = True
                 self.on_demand_nav_focused = False
@@ -16904,6 +21535,10 @@ class ChannelSurfer(QWidget):
                 self.refresh_info_banner()
             return
         if self.live_info_nav_focused:
+            if self.video_window.info_overlay.skin_style() == "flat" and self.live_info_nav_index == 4:
+                self.toggle_sleek_freak_mode()
+                self.refresh_info_banner()
+                return
             if self.playback_mode == "ondemand" and self.live_info_nav_index == 4:
                 self.restart_on_demand_from_beginning()
                 return
@@ -16948,17 +21583,22 @@ class ChannelSurfer(QWidget):
         self.refresh_on_demand(show=True)
 
     def build_on_demand_state(self):
-        sections = self.build_on_demand_home_sections()
+        started_at = time.perf_counter()
         base_state = {
             "nav_focused": self.on_demand_nav_focused,
             "nav_index": self.on_demand_nav_index,
             "settings_focus_index": self.on_demand_settings_focus_index,
+            "home_focus": self.on_demand_home_focus,
+            "home_filter": self.on_demand_home_filter,
+            "filter_options": self.on_demand_filter_options(),
+            "filter_selected": self.on_demand_filter_index,
         }
 
         if self.on_demand_view == "home":
+            sections = self.build_on_demand_home_sections()
             self.on_demand_render_sections = sections
             if not sections:
-                return {
+                state = {
                     **base_state,
                     "view": "home",
                     "sections": [],
@@ -16972,22 +21612,36 @@ class ChannelSurfer(QWidget):
                     },
                     "selected_section": 0,
                 }
+                perf_log("vault.state.build", (time.perf_counter() - started_at) * 1000.0, view="home-empty")
+                return state
+            hero_card = self.build_on_demand_recent_hero(self.build_on_demand_home_sections(filtered=False))
+            hero = {
+                "title": hero_card.get("title", "Featured"),
+                "subtitle": hero_card.get("subtitle", ""),
+                "summary": hero_card.get("summary", ""),
+                "badge": hero_card.get("badge", "FEATURED"),
+                "media_label": hero_card.get("meta", ""),
+                "meta": hero_card.get("meta", ""),
+                "progress": hero_card.get("progress", 0.0),
+                "progress_label": hero_card.get("progress_label", ""),
+                "artwork_path": hero_card.get("hero_artwork_path") or hero_card.get("artwork_path", ""),
+                "clearlogo_path": hero_card.get("clearlogo_path", ""),
+                "path": hero_card.get("path", ""),
+                "channel_index": hero_card.get("channel_index"),
+                "group_index": hero_card.get("group_index"),
+                "type": hero_card.get("type", "group"),
+                "actions": [
+                    {"label": "Resume" if hero_card.get("progress", 0.0) > 0 else "Play", "action": "resume"},
+                    {"label": "Start Over", "action": "start_over"},
+                    {"label": "Info", "action": "info"},
+                    {"label": "Random", "action": "random"},
+                ],
+            }
+            self.on_demand_hero_action_index = max(0, min(int(self.on_demand_hero_action_index), len(hero["actions"]) - 1))
             selected_section = sections[self.on_demand_section_index]
             selected_item_index = max(0, min(self.on_demand_section_item_indices.get(self.on_demand_section_index, 0), len(selected_section["items"]) - 1))
             self.on_demand_section_item_indices[self.on_demand_section_index] = selected_item_index
-            selected_card = selected_section["items"][selected_item_index] if selected_section["items"] else {}
-            hero = {
-                "title": selected_card.get("title", selected_section["title"]),
-                "subtitle": selected_card.get("subtitle", selected_section["subtitle"]),
-                "summary": selected_card.get("summary", selected_section["subtitle"]),
-                "badge": selected_card.get("badge", selected_section["title"].upper()),
-                "meta": selected_card.get("meta", ""),
-                "progress": selected_card.get("progress", 0.0),
-                "progress_label": selected_card.get("progress_label", ""),
-                "artwork_path": selected_card.get("hero_artwork_path") or selected_card.get("artwork_path", ""),
-                "clearlogo_path": selected_card.get("clearlogo_path", ""),
-            }
-            return {
+            state = {
                 **base_state,
                 "view": "home",
                 "sections": sections,
@@ -16995,7 +21649,11 @@ class ChannelSurfer(QWidget):
                 "selected_item": selected_item_index,
                 "section_item_indices": dict(self.on_demand_section_item_indices),
                 "hero": hero,
+                "hero_action_selected": self.on_demand_hero_action_index,
+                "hero_compact": self.on_demand_home_focus == "rows" and self.on_demand_section_index > 0,
             }
+            perf_log("vault.state.build", (time.perf_counter() - started_at) * 1000.0, view="home", sections=len(sections))
+            return state
 
         self.on_demand_render_sections = []
         channel = self.current_on_demand_channel()
@@ -17008,6 +21666,9 @@ class ChannelSurfer(QWidget):
         else:
             visible_indices = list(range(len(items)))
         visible_items = [items[idx] for idx in visible_indices]
+        if not visible_items and items:
+            visible_indices = list(range(len(items)))
+            visible_items = list(items)
         if visible_items:
             local_index = 0
             if self.on_demand_item_index in visible_indices:
@@ -17038,16 +21699,23 @@ class ChannelSurfer(QWidget):
         resume_entry = self.resume_state.get("entries", {}).get(selected_path, {})
         resume_ms = int(resume_entry.get("position_ms", 0) or 0)
         episode_thumbnail = QPixmap() if str(selected_path).startswith("dummy://") else (self.get_media_thumbnail(selected_path) if selected_path else QPixmap())
+        media_type = "tv" if any(item.get("media_type") == "tv" for item in items) else "movie"
+        watchlisted = self.is_on_demand_group_watchlisted(self.on_demand_channel_index, self.on_demand_group_index)
         action_label = "Resume" if resume_ms > 0 else "Play"
         actions = [
-            {"label": action_label, "meta": "Continue from where you left off" if resume_ms > 0 else "Start playback"},
-            {"label": "Start Over", "meta": "Begin from the opening scene"},
+            {"label": action_label, "action": "resume", "meta": "Continue" if resume_ms > 0 else "Start playback"},
+            {"label": "Start Over", "action": "start_over", "meta": "From the beginning"},
         ]
+        if media_type == "tv":
+            actions.append({"label": "Random Episode", "action": "random_episode", "meta": "Surprise me"})
+        else:
+            actions.append({"label": "Random", "action": "random", "meta": "Pick another title"})
+        actions.append({"label": "Remove from My Vault" if watchlisted else "Add to My Vault", "action": "toggle_watchlist", "meta": "Saved" if watchlisted else "Save this title"})
         self.on_demand_action_index = max(0, min(self.on_demand_action_index, len(actions) - 1))
         if self.on_demand_detail_focus not in ("actions", "seasons", "episodes"):
             self.on_demand_detail_focus = "actions"
 
-        return {
+        state = {
             **base_state,
             "view": "detail",
             "detail": {
@@ -17055,6 +21723,7 @@ class ChannelSurfer(QWidget):
                 "subtitle": self.describe_on_demand_group(channel, group) if channel and group else "",
                 "summary": group_summary,
                 "badge": "TV SHOW" if any(item.get("media_type") == "tv" for item in items) else "MOVIE",
+                "media_type": media_type,
                 "meta": selected_episode.get("detail_title", "") if selected_episode else "",
                 "progress": max(
                     0.0,
@@ -17073,6 +21742,7 @@ class ChannelSurfer(QWidget):
             "actions": actions,
             "action_selected": -1 if self.on_demand_nav_focused else self.on_demand_action_index,
             "detail_focus": self.on_demand_detail_focus if not self.on_demand_nav_focused else "nav",
+            "media_type": media_type,
             "seasons": [{"label": season["label"], "count": len(season["item_indices"])} for season in seasons],
             "season_selected": self.on_demand_season_index,
             "episode_items": [
@@ -17097,6 +21767,7 @@ class ChannelSurfer(QWidget):
                             / max(1, int(self.resume_state.get("entries", {}).get(item["path"], {}).get("duration_ms", 0) or (float(self.duration_cache.get(item["path"], 0) or 0) * 1000) or 1)),
                         ),
                     ),
+                    "artwork_path": item.get("artwork_path", "") or item.get("hero_artwork_path", ""),
                 }
                 for item in visible_items
             ],
@@ -17107,7 +21778,16 @@ class ChannelSurfer(QWidget):
                 "summary": selected_episode.get("summary") if selected_episode else group_summary,
                 "thumbnail": episode_thumbnail,
             },
+            "related_sections": self.build_on_demand_related_sections(self.on_demand_channel_index, self.on_demand_group_index, media_type),
         }
+        perf_log(
+            "vault.state.build",
+            (time.perf_counter() - started_at) * 1000.0,
+            view="detail",
+            episodes=len(state.get("episode_items", [])),
+            related=len(state.get("related_sections", [])),
+        )
+        return state
 
     def open_on_demand_group(self, channel_index, group_index, item_index=0, focus="actions"):
         try:
@@ -17207,11 +21887,20 @@ class ChannelSurfer(QWidget):
     @Slot()
     def toggle_on_demand(self):
         if self.video_window.on_demand_overlay.isVisible():
-            self.hide_on_demand()
+            if self.on_demand_settings_open:
+                self.on_demand_settings_open = False
+            self.refresh_on_demand()
         else:
             self.show_on_demand()
 
     def show_on_demand(self):
+        self.video_window.on_demand_overlay.configure(
+            self.profile_combo.currentText(),
+            self.theme_combo.currentText(),
+            self.skin_combo.currentText(),
+            self.guide_ui_scale,
+            self.app_settings.get("sleek_freak_mode", "dark"),
+        )
         if not self.on_demand_catalog or self.on_demand_catalog_dirty:
             self.build_on_demand_catalog()
         if not self.on_demand_catalog:
@@ -17236,11 +21925,14 @@ class ChannelSurfer(QWidget):
         self.on_demand_view = "home"
         self.on_demand_section_index = 0
         self.on_demand_action_index = 0
+        self.on_demand_home_focus = "hero"
+        self.on_demand_hero_action_index = 0
+        self.on_demand_filter_index = 0
         self.on_demand_detail_focus = "actions"
         self.on_demand_season_index = 0
         self.on_demand_back_focused = False
         self.on_demand_nav_focused = False
-        self.on_demand_nav_index = 3
+        self.on_demand_nav_index = 2 if self.video_window.on_demand_overlay.skin_style() == "flat" else 3
         self.on_demand_settings_open = False
         self.on_demand_settings_focus_index = 0
         self.on_demand_render_sections = []
@@ -17280,6 +21972,7 @@ class ChannelSurfer(QWidget):
         self.refresh_on_demand()
 
     def refresh_on_demand(self, show=False):
+        started_at = time.perf_counter()
         requested_view = self.on_demand_view
         self.log_vault_select(
             "refresh_start",
@@ -17315,6 +22008,8 @@ class ChannelSurfer(QWidget):
             self.video_window.on_demand_overlay.update_browser(state)
         self.video_window.activateWindow()
         self.video_window.setFocus(Qt.ActiveWindowFocusReason)
+        perf_log("vault.refresh", (time.perf_counter() - started_at) * 1000.0, show=show, view=state.get("view", ""))
+        perf_summary("vault-refresh", view=state.get("view", ""), sections=len(state.get("sections", [])), episodes=len(state.get("episode_items", [])))
 
     @Slot()
     def on_demand_up(self):
@@ -17326,11 +22021,28 @@ class ChannelSurfer(QWidget):
             return
         if self.on_demand_nav_focused:
             self.on_demand_nav_focused = False
+            if self.on_demand_view == "home":
+                sections = self.build_on_demand_home_sections()
+                self.on_demand_home_focus = "rows"
+                if sections:
+                    self.on_demand_section_index = len(sections) - 1
+                    self.on_demand_section_item_indices.setdefault(self.on_demand_section_index, 0)
+            else:
+                group = self.current_on_demand_group()
+                seasons = self.build_on_demand_seasons(group)
+                self.on_demand_detail_focus = "episodes" if seasons or (group and group.get("items")) else "actions"
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
-            if self.on_demand_section_index > 0:
-                self.on_demand_section_index -= 1
+            if self.on_demand_home_focus == "rows":
+                if self.on_demand_section_index > 0:
+                    self.on_demand_section_index -= 1
+                else:
+                    self.on_demand_home_focus = "filters"
+            elif self.on_demand_home_focus == "filters":
+                self.on_demand_home_focus = "hero"
+            else:
+                self.on_demand_home_focus = "hero"
         else:
             if self.on_demand_detail_focus == "episodes":
                 group = self.current_on_demand_group()
@@ -17351,6 +22063,7 @@ class ChannelSurfer(QWidget):
                 if current > 0:
                     self.on_demand_detail_focus = order[current - 1]
         self.refresh_on_demand()
+        return
 
     @Slot()
     def on_demand_down(self):
@@ -17361,11 +22074,20 @@ class ChannelSurfer(QWidget):
             self.refresh_on_demand()
             return
         if self.on_demand_nav_focused:
+            self.on_demand_nav_focused = False
+            if self.on_demand_view == "home":
+                self.on_demand_home_focus = "hero"
+            else:
+                self.on_demand_detail_focus = "actions"
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
             sections = self.build_on_demand_home_sections()
-            if self.on_demand_section_index < len(sections) - 1:
+            if self.on_demand_home_focus == "hero":
+                self.on_demand_home_focus = "filters"
+            elif self.on_demand_home_focus == "filters":
+                self.on_demand_home_focus = "rows" if sections else "filters"
+            elif self.on_demand_section_index < len(sections) - 1:
                 self.on_demand_section_index += 1
             else:
                 self.on_demand_nav_focused = True
@@ -17414,10 +22136,19 @@ class ChannelSurfer(QWidget):
             return
         moved = False
         if self.on_demand_view == "home":
-            current = self.on_demand_section_item_indices.get(self.on_demand_section_index, 0)
-            if current > 0:
-                self.on_demand_section_item_indices[self.on_demand_section_index] = current - 1
-                moved = True
+            if self.on_demand_home_focus == "hero":
+                if self.on_demand_hero_action_index > 0:
+                    self.on_demand_hero_action_index -= 1
+                    moved = True
+            elif self.on_demand_home_focus == "filters":
+                if self.on_demand_filter_index > 0:
+                    self.on_demand_filter_index -= 1
+                    moved = True
+            else:
+                current = self.on_demand_section_item_indices.get(self.on_demand_section_index, 0)
+                if current > 0:
+                    self.on_demand_section_item_indices[self.on_demand_section_index] = current - 1
+                    moved = True
         elif self.on_demand_detail_focus == "actions":
             if self.on_demand_action_index > 0:
                 self.on_demand_action_index -= 1
@@ -17438,6 +22169,8 @@ class ChannelSurfer(QWidget):
             self.refresh_on_demand()
             return
         if not moved and self.on_demand_view == "home":
+            self.on_demand_nav_focused = True
+            self.on_demand_nav_index = 0
             self.refresh_on_demand()
             return
         self.refresh_on_demand()
@@ -17455,17 +22188,28 @@ class ChannelSurfer(QWidget):
                 self.step_profile(1)
             return
         if self.on_demand_nav_focused:
-            if self.on_demand_nav_index < 3:
+            max_nav_index = 4 if self.video_window.on_demand_overlay.skin_style() == "flat" else 3
+            if self.on_demand_nav_index < max_nav_index:
                 self.on_demand_nav_index += 1
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
-            sections = self.build_on_demand_home_sections()
-            if sections:
-                items = sections[self.on_demand_section_index]["items"]
-                current = self.on_demand_section_item_indices.get(self.on_demand_section_index, 0)
-                if items and current < len(items) - 1:
-                    self.on_demand_section_item_indices[self.on_demand_section_index] = current + 1
+            if self.on_demand_home_focus == "hero":
+                actions = self.build_on_demand_state().get("hero", {}).get("actions", [])
+                if actions and self.on_demand_hero_action_index < len(actions) - 1:
+                    self.on_demand_hero_action_index += 1
+            elif self.on_demand_home_focus == "filters":
+                options = self.on_demand_filter_options()
+                if self.on_demand_filter_index < len(options) - 1:
+                    self.on_demand_filter_index += 1
+            else:
+                sections = self.build_on_demand_home_sections()
+                if sections:
+                    self.on_demand_section_index = max(0, min(self.on_demand_section_index, len(sections) - 1))
+                    items = sections[self.on_demand_section_index]["items"]
+                    current = self.on_demand_section_item_indices.get(self.on_demand_section_index, 0)
+                    if items and current < len(items) - 1:
+                        self.on_demand_section_item_indices[self.on_demand_section_index] = current + 1
         elif self.on_demand_detail_focus == "actions":
             actions = self.build_on_demand_state().get("actions", [])
             if actions and self.on_demand_action_index < len(actions) - 1:
@@ -17504,6 +22248,18 @@ class ChannelSurfer(QWidget):
             self.activate_universal_nav("vault", self.on_demand_nav_index)
             return
         if self.on_demand_view == "home":
+            if self.on_demand_home_focus == "hero":
+                hero = self.video_window.on_demand_overlay.state.get("hero", {})
+                actions = hero.get("actions", []) or self.build_on_demand_state().get("hero", {}).get("actions", [])
+                if actions:
+                    self.on_demand_hero_action_index = max(0, min(int(self.on_demand_hero_action_index), len(actions) - 1))
+                    action = actions[self.on_demand_hero_action_index].get("action", "") if isinstance(actions[self.on_demand_hero_action_index], dict) else str(actions[self.on_demand_hero_action_index])
+                    self.activate_on_demand_hero_action(action)
+                return
+            if self.on_demand_home_focus == "filters":
+                self.activate_on_demand_filter()
+                self.refresh_on_demand()
+                return
             sections = self.on_demand_render_sections or self.build_on_demand_home_sections()
             current_index = self.on_demand_section_item_indices.get(self.on_demand_section_index, 0)
             rendered_sections = self.video_window.on_demand_overlay.state.get("sections", [])
@@ -17530,6 +22286,11 @@ class ChannelSurfer(QWidget):
                 self.log_vault_select("select_return", reason="no_sections")
                 return
             section = sections[self.on_demand_section_index]
+            if not section.get("items"):
+                self.log_vault_select("select_return", reason="empty_section", section_key=section.get("key", ""))
+                self.status.setText(section.get("subtitle", "Nothing to open here yet."))
+                self.refresh_on_demand()
+                return
             current = max(0, min(self.on_demand_section_item_indices.get(self.on_demand_section_index, 0), len(section["items"]) - 1))
             self.on_demand_section_item_indices[self.on_demand_section_index] = current
             card = section["items"][current] if section.get("items") else {}
@@ -17554,7 +22315,25 @@ class ChannelSurfer(QWidget):
         target_index = self.on_demand_item_index if self.on_demand_item_index in indices else indices[0]
         item = items[target_index]
         if self.on_demand_detail_focus == "actions":
-            if self.on_demand_action_index == 0:
+            actions = self.build_on_demand_state().get("actions", [])
+            action = actions[self.on_demand_action_index].get("action", "") if actions and 0 <= self.on_demand_action_index < len(actions) else ""
+            if action == "toggle_watchlist":
+                self.toggle_on_demand_group_watchlist()
+                self.refresh_on_demand()
+                return
+            if action == "random_episode":
+                target = random.choice(items)
+                self.on_demand_item_index = items.index(target)
+                self.play_on_demand(target["path"], 0)
+                return
+            if action == "random":
+                cards = self.all_on_demand_group_cards()
+                if cards:
+                    card = random.choice(cards)
+                    self.open_on_demand_group(card["channel_index"], card["group_index"], 0, focus="actions")
+                    self.refresh_on_demand()
+                return
+            if action == "resume":
                 resume_ms = int(self.resume_state.get("entries", {}).get(item["path"], {}).get("position_ms", 0))
                 self.play_on_demand(item["path"], resume_ms)
                 return
@@ -17680,6 +22459,10 @@ class ChannelSurfer(QWidget):
         if duration_ms > 0 and position_ms >= max(0, duration_ms - 1500):
             if path in entries:
                 entries.pop(path, None)
+                self.on_demand_group_cards_cache = None
+                self.on_demand_home_sections_cache = {}
+                self.on_demand_detail_sections_cache = {}
+                self.on_demand_category_sections_cache = {}
                 save_json_file(RESUME_STATE_FILE, self.resume_state)
             return
         if position_ms < 500:
@@ -17698,6 +22481,10 @@ class ChannelSurfer(QWidget):
             "channel_name": channel_name,
             "show_name": metadata.get("show_name") or format_program_title(path),
         }
+        self.on_demand_group_cards_cache = None
+        self.on_demand_home_sections_cache = {}
+        self.on_demand_detail_sections_cache = {}
+        self.on_demand_category_sections_cache = {}
         save_json_file(RESUME_STATE_FILE, self.resume_state)
 
     def capture_current_frame(self):
@@ -17788,12 +22575,23 @@ class ChannelSurfer(QWidget):
         return os.path.join(THUMBNAIL_DIR, f"{file_cache_signature(path)}.jpg")
 
     def get_media_thumbnail(self, path):
+        if not path or str(path).startswith("dummy://"):
+            return QPixmap()
+        cached = self.media_thumbnail_cache.get(path)
+        if cached is not None:
+            perf_log("image.thumbnail.cache_hit", 0.0)
+            return cached
+        started_at = time.perf_counter()
         thumb_path = self.thumbnail_path_for_media(path)
         if os.path.exists(thumb_path):
-            pixmap = QPixmap(thumb_path)
+            pixmap = load_ui_pixmap(thumb_path)
             if not pixmap.isNull():
+                self.media_thumbnail_cache[path] = pixmap
+                perf_log("image.thumbnail.load", (time.perf_counter() - started_at) * 1000.0, source="cache")
                 return pixmap
-        if not FFMPEG_PATH:
+        if not FFMPEG_PATH or not SYNC_THUMBNAIL_GENERATION:
+            self.media_thumbnail_cache[path] = QPixmap()
+            perf_log("image.thumbnail.miss", (time.perf_counter() - started_at) * 1000.0, generated=False)
             return QPixmap()
         try:
             subprocess.run(
@@ -17817,7 +22615,12 @@ class ChannelSurfer(QWidget):
         except (subprocess.SubprocessError, OSError):
             return QPixmap()
         pixmap = QPixmap(thumb_path)
-        return pixmap if not pixmap.isNull() else QPixmap()
+        if not pixmap.isNull():
+            self.media_thumbnail_cache[path] = pixmap
+            perf_log("image.thumbnail.generate", (time.perf_counter() - started_at) * 1000.0)
+            return pixmap
+        self.media_thumbnail_cache[path] = QPixmap()
+        return QPixmap()
 
     def update_next_up_overlay(self):
         if self.playback_mode != "ondemand" or not self.current_on_demand_path:
@@ -17863,6 +22666,12 @@ class ChannelSurfer(QWidget):
 if __name__ == "__main__":
     locale.setlocale(locale.LC_ALL, "")
     app = QApplication(sys.argv)
+    app.setApplicationName(APP_NAME)
+    app.setApplicationVersion(APP_VERSION)
+    app.setOrganizationName("Mamaweegee")
+    icon_pixmap = load_brand_logo(512, 512, APP_ICON_PATH)
+    if not icon_pixmap.isNull():
+        app.setWindowIcon(QIcon(icon_pixmap))
     w = ChannelSurfer()
     w.show()
     sys.exit(app.exec())
