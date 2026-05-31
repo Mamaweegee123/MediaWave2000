@@ -8551,9 +8551,23 @@ class OnDemandOverlay(QWidget):
         selected = max(0, int(self.state.get("episode_selected", 0)))
         row_h = self.sleek_metric(78, 62, 96)
         gap = self.sleek_metric(8, 6, 10)
-        y = title_rect.bottom() + self.sleek_metric(10, 8, 14)
-        for index, item in enumerate(episodes[:max(1, (rect.bottom() - y) // max(1, row_h + gap))]):
-            row = QRect(rect.left() + 18, y, rect.width() - 36, row_h)
+        list_top = title_rect.bottom() + self.sleek_metric(10, 8, 14)
+        list_rect = QRect(rect.left() + 18, list_top, rect.width() - 36, max(0, rect.bottom() - list_top - 8))
+        total_h = len(episodes) * (row_h + gap)
+        max_offset = max(0.0, float(total_h - list_rect.height()))
+        focus_band = max(row_h, int(list_rect.height() * 0.24))
+        target_offset = max(0.0, min(max_offset, float(selected * (row_h + gap)) - focus_band))
+        if abs(target_offset - self.episode_list_target) > 0.5:
+            self.episode_list_target = target_offset
+            self.start_stream_animation()
+        scroll = int(round(self.episode_list_offset))
+        painter.save()
+        painter.setClipRect(list_rect)
+        for index, item in enumerate(episodes):
+            row_top = list_top + index * (row_h + gap) - scroll
+            if row_top + row_h < list_top or row_top > rect.bottom():
+                continue
+            row = QRect(rect.left() + 18, row_top, rect.width() - 36, row_h)
             focused = self.state.get("detail_focus") == "episodes" and index == selected
             painter.setPen(QPen(theme.get("vault_card_selected_border", theme["guide_card_selected_border"]) if focused else theme.get("vault_card_border", theme["guide_card_border"]), 2 if focused else 1))
             painter.setBrush(theme.get("vault_card_selected_bg", theme["guide_card_selected_bg"]) if focused else with_alpha(theme.get("vault_card_bg", theme["guide_program_bg"]), 166))
@@ -8570,7 +8584,7 @@ class OnDemandOverlay(QWidget):
             runtime = item.get("runtime", "")
             if runtime:
                 self.draw_sleek_elided(painter, QRect(row.right() - self.sleek_metric(82, 62, 94), row.top() + 8, self.sleek_metric(70, 52, 82), 22), runtime, self.sleek_font(theme, 10, QFont.Bold, 8, 13), theme.get("vault_secondary_text", theme["guide_secondary_text"]), Qt.AlignRight | Qt.AlignVCenter)
-            y += row_h + gap
+        painter.restore()
         painter.restore()
 
     def draw_sleek_now_playing_panel(self, painter, rect, episode_detail, theme):
