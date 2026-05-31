@@ -8654,7 +8654,7 @@ class OnDemandOverlay(QWidget):
             row = QRect(rect.left() + 18, row_top, rect.width() - 36, row_h)
             focused = self.state.get("detail_focus") == "episodes" and index == selected
             painter.setPen(QPen(theme.get("vault_card_selected_border", theme["guide_card_selected_border"]) if focused else theme.get("vault_card_border", theme["guide_card_border"]), 2 if focused else 1))
-            painter.setBrush(theme.get("vault_card_selected_bg", theme["guide_card_selected_bg"]) if focused else with_alpha(theme.get("vault_card_bg", theme["guide_program_bg"]), 166))
+            painter.setBrush(theme.get("vault_card_selected_bg", theme["guide_card_selected_bg"]) if focused else with_alpha(theme.get("vault_card_bg", theme["guide_card_bg"]), 166))
             painter.drawRoundedRect(row, theme.get("vault_card_radius", theme.get("cell_radius", 8)), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
             thumb = QRect(row.left(), row.top(), min(self.sleek_metric(160, 118, 190), row.width() // 4), row.height())
             self.draw_streaming_art_placeholder(painter, thumb.adjusted(1, 1, -1, -1), item.get("label", ""), "EPISODE", theme, item.get("artwork_path", ""), show_badge=False)
