@@ -8288,20 +8288,50 @@ class OnDemandOverlay(QWidget):
         current_key = self.state.get("home_filter", "featured")
         focused_index = int(self.state.get("filter_selected", 0))
         row_focused = self.state.get("home_focus") == "filters" and not self.state.get("nav_focused", False) and not self.settings_open
+        gap = self.sleek_metric(10, 7, 14)
+        chip_h = self.sleek_metric(28, 22, 34)
+
+        # First pass: measure chip widths and locate the focused chip's x range.
+        chip_left = []
+        chip_right = []
+        x = 0
+        for option in options:
+            label = option.get("label", "")
+            font = self.sleek_font(theme, 10, QFont.Bold, 8, 12)
+            width = min(self.sleek_metric(190, 118, 230), max(self.sleek_metric(96, 76, 128), QFontMetrics(font).horizontalAdvance(label.upper()) + self.sleek_metric(34, 24, 42)))
+            chip_left.append(x)
+            chip_right.append(x + width)
+            x = x + width + gap
+
+        # Compute scroll offset so the focused chip is fully visible.
+        safe_index = max(0, min(focused_index, len(chip_left) - 1))
+        visible_width = rect.width()
+        total_width = chip_right[-1] if chip_right else 0
+        max_scroll = max(0, total_width - visible_width)
+        target_scroll = getattr(self, "_filter_scroll_offset", 0)
+        # Scroll right if focused chip right edge is past the visible area.
+        if chip_right[safe_index] - target_scroll > visible_width:
+            target_scroll = chip_right[safe_index] - visible_width
+        # Scroll left if focused chip left edge is before the visible area.
+        if chip_left[safe_index] < target_scroll:
+            target_scroll = chip_left[safe_index]
+        # Clamp: never past start or past the max scrollable distance.
+        target_scroll = max(0, min(target_scroll, max_scroll))
+        self._filter_scroll_offset = target_scroll
+
         painter.save()
-        x = rect.left()
+        painter.setClipRect(rect)
+        painter.translate(-target_scroll, 0)
         for index, option in enumerate(options):
             label = option.get("label", "")
             key = option.get("key", "")
-            font = self.sleek_font(theme, 10, QFont.Bold, 8, 12)
-            width = min(self.sleek_metric(190, 118, 230), max(self.sleek_metric(96, 76, 128), QFontMetrics(font).horizontalAdvance(label.upper()) + self.sleek_metric(34, 24, 42)))
-            chip = QRect(x, rect.top() + max(0, (rect.height() - self.sleek_metric(28, 22, 34)) // 2), width, self.sleek_metric(28, 22, 34))
+            chip = QRect(rect.left() + chip_left[index], rect.top() + max(0, (rect.height() - chip_h) // 2), chip_right[index] - chip_left[index], chip_h)
             active = key == current_key or (row_focused and index == focused_index)
             self.draw_sleek_vault_chip(painter, chip, label, theme, active=active)
-            self.filter_hit_rects.append((self.map_interactive_rect(chip), index))
-            x = chip.right() + self.sleek_metric(10, 7, 14)
-            if x > rect.right() - self.sleek_metric(80, 60, 100):
-                break
+            # Hit rect uses actual screen position (before painter translation).
+            screen_chip = QRect(rect.left() + chip_left[index] - int(round(target_scroll)), chip.top(), chip.width(), chip.height())
+            if screen_chip.right() >= rect.left() and screen_chip.left() <= rect.right():
+                self.filter_hit_rects.append((self.map_interactive_rect(screen_chip), index))
         painter.restore()
 
     def draw_sleek_empty_vault(self, painter, rect, theme):
