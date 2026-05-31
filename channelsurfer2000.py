@@ -66,6 +66,7 @@ VAULT_DEBUG_LOGGING = os.environ.get("MEDIAWAVE_VAULT_DEBUG", "").strip().lower(
 PERF_LOGGING = os.environ.get("MEDIAWAVE_PERF", "").strip().lower() in {"1", "true", "yes", "on"}
 SYNC_THUMBNAIL_GENERATION = os.environ.get("MEDIAWAVE_SYNC_THUMBNAILS", "").strip().lower() in {"1", "true", "yes", "on"}
 REMOTE_METADATA_EXPERIMENTAL = os.environ.get("MEDIAWAVE_EXPERIMENTAL_REMOTE_METADATA", "").strip().lower() in {"1", "true", "yes", "on"}
+NETTV_DEBUG = os.environ.get("MEDIAWAVE_NETTV_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 GLOBAL_START = time.time() - random.randint(0, 86400)
 
@@ -1997,6 +1998,37 @@ def auto_schedule_anchor():
     now = int(time.time())
     half_hour = 30 * 60
     return now - (now % half_hour)
+
+
+_NETTV_WEEK_SECONDS = 7 * 86400
+
+
+def nettv_schedule_anchor(playlist_key):
+    # Derive a stable, per-playlist schedule anchor that survives app restarts.
+    #
+    # Algorithm:
+    #   1. Snap to the start of the current 7-day window from Unix epoch.
+    #   2. Add a per-playlist offset (deterministic hash of the playlist key,
+    #      modulo one week) so different playlists don't all "start" at the
+    #      same video.
+    #   3. If the result is in the future, step back one full week so the
+    #      anchor is always <= now.
+    #
+    # Result: same playlist_key + same wall-clock time → same anchor value
+    # across all app launches within the same week, giving consistent
+    # "what's airing now" calculations.
+    now = int(time.time())
+    week_base = now - (now % _NETTV_WEEK_SECONDS)
+    playlist_offset = int(stable_hash(playlist_key), 16) % _NETTV_WEEK_SECONDS
+    anchor = week_base + playlist_offset
+    if anchor > now:
+        anchor -= _NETTV_WEEK_SECONDS
+    return float(anchor)
+
+
+def _nettv_log(msg):
+    if NETTV_DEBUG:
+        print(f"[NetTV] {msg}", flush=True)
 
 
 def generate_auto_schedule(root_path, channel_name, file_paths):
@@ -4882,9 +4914,10 @@ class YouTubePlaylistChannel(Channel):
         self.playlist_url = (playlist_url or "").strip()
         self.playlist_id = youtube_playlist_id(self.playlist_url)
         self.playlist_key = youtube_playlist_cache_key(self.playlist_url)
-        self.start_time = auto_schedule_anchor()
+        self.start_time = nettv_schedule_anchor(self.playlist_key)
         self.schedule_anchor = self.start_time
         self.entries = []
+        _nettv_log(f"channel init  key={self.playlist_key!r}  anchor={self.start_time:.0f}")
         self.update_entries(entries or [])
 
     def set_schedule(self, paths, anchor_time):
@@ -4948,6 +4981,16 @@ class YouTubePlaylistChannel(Channel):
             rng.shuffle(self.schedule_entries)
         self.schedule_paths = [entry.get("path", "") for entry in self.schedule_entries]
         self.schedule_durations = [float(entry.get("duration", 900.0) or 900.0) for entry in self.schedule_entries]
+        if NETTV_DEBUG:
+            real_count = sum(1 for e in self.entries if not e.get("placeholder") and float(e.get("duration") or 0) > 0 and float(e.get("duration") or 0) != 900.0)
+            fallback_count = len(self.entries) - real_count
+            total_dur = sum(self.schedule_durations)
+            _nettv_log(
+                f"update_entries  entries={len(self.entries)}"
+                f"  real_durations={real_count}  fallback_900s={fallback_count}"
+                f"  total_schedule_duration={total_dur:.0f}s ({total_dur/3600:.2f}h)"
+                f"  anchor={self.schedule_anchor:.0f}"
+            )
 
     def get_current(self):
         entry, offset = self.get_current_entry_and_offset()
@@ -4959,13 +5002,24 @@ class YouTubePlaylistChannel(Channel):
     def get_current_youtube_entry_and_offset(self):
         entry, offset = self.get_current_entry_and_offset()
         if not entry:
+            _nettv_log(f"get_current  key={self.playlist_key!r}  → no entry (placeholder or empty)")
             return None, 0
         youtube_entry = dict(entry.get("youtube_entry") or {})
         if youtube_entry.get("placeholder"):
+            _nettv_log(f"get_current  key={self.playlist_key!r}  → placeholder entry, entries not yet loaded")
             return None, 0
         youtube_entry.setdefault("path", entry.get("path", ""))
         youtube_entry.setdefault("title", entry.get("title", "NetTV Video"))
         youtube_entry.setdefault("duration", float(entry.get("duration", 900.0) or 900.0))
+        if NETTV_DEBUG:
+            dur = float(entry.get("duration", 900.0) or 900.0)
+            dur_source = "fallback-900s" if dur == 900.0 else "real"
+            _nettv_log(
+                f"get_current  key={self.playlist_key!r}"
+                f"  title={youtube_entry.get('title')!r}"
+                f"  offset={offset:.1f}s  duration={dur:.0f}s({dur_source})"
+                f"  url={youtube_entry.get('url', '')!r}"
+            )
         return youtube_entry, offset
 
 
@@ -18148,6 +18202,7 @@ class ChannelSurfer(QWidget):
             updated_at = float(playlist_cache.get("updated_at", 0) or 0)
         if cached_entries and not force and time.time() - updated_at < 6 * 3600 and (not requires_playlist or len(cached_entries) > 1):
             self.last_nettv_error = ""
+            _nettv_log(f"load_playlist  key={key!r}  source=cache  entries={len(cached_entries)}")
             if progress_callback:
                 progress_callback(3, 3, "Using cached NetTV playlist", f"{len(cached_entries)} videos ready")
             return [dict(entry) for entry in cached_entries if isinstance(entry, dict)]
@@ -18239,6 +18294,7 @@ class ChannelSurfer(QWidget):
             }
             save_json_file(YOUTUBE_PLAYLIST_CACHE_FILE, self.youtube_playlist_cache_state)
         self.last_nettv_error = ""
+        _nettv_log(f"load_playlist  key={key!r}  source=yt-dlp  entries={len(entries)}")
         if progress_callback:
             progress_callback(3, 3, "NetTV playlist ready", f"{len(entries)} videos cached for the channel lineup")
         return [dict(entry) for entry in entries]
@@ -18250,8 +18306,10 @@ class ChannelSurfer(QWidget):
             return "", "This playlist item does not have a playable video URL."
         cached_video = cached_youtube_video_path(entry)
         if cached_video:
+            _nettv_log(f"resolve_stream  title={entry.get('title')!r}  source=local-cache  path={cached_video!r}")
             return cached_video, ""
         if not YTDLP_COMMAND:
+            _nettv_log(f"resolve_stream  title={entry.get('title')!r}  FAILED: yt-dlp not available")
             return "", "yt-dlp is not available, so MediaWave cannot resolve NetTV playlist videos yet."
 
         output_template = youtube_download_template(entry)
@@ -18293,11 +18351,13 @@ class ChannelSurfer(QWidget):
             if result.returncode == 0 and downloaded_path:
                 break
         if result is None:
+            _nettv_log(f"resolve_stream  title={entry.get('title')!r}  FAILED: {last_exception}")
             return "", f"Could not resolve this NetTV video: {last_exception}"
         downloaded_path = cached_youtube_video_path(entry)
         if result.returncode != 0 or not downloaded_path:
             message_lines = (result.stderr or result.stdout or "yt-dlp could not download this NetTV video.").strip().splitlines()
             message = message_lines[-1] if message_lines else "yt-dlp could not download this NetTV video."
+            _nettv_log(f"resolve_stream  title={entry.get('title')!r}  FAILED: {message}")
             return "", message
         with self.youtube_cache_lock:
             streams = self.youtube_playlist_cache_state.setdefault("streams", {})
@@ -18311,6 +18371,7 @@ class ChannelSurfer(QWidget):
                 "updated_at": time.time(),
             }
             save_json_file(YOUTUBE_PLAYLIST_CACHE_FILE, self.youtube_playlist_cache_state)
+        _nettv_log(f"resolve_stream  title={entry.get('title')!r}  OK  path={downloaded_path!r}")
         return downloaded_path, ""
 
     def find_youtube_entry_by_path(self, path):
