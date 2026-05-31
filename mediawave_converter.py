@@ -411,6 +411,62 @@ def encoder_summary(mode: str) -> str:
     return "Compatibility-first encoding is on."
 
 
+def _common_parent(paths: list) -> Path:
+    """Return the deepest common ancestor directory for a list of Paths."""
+    if not paths:
+        return Path.home()
+    resolved = [Path(p).resolve() for p in paths]
+    if len(resolved) == 1:
+        p = resolved[0]
+        return p.parent if p.is_file() else p
+    try:
+        common = Path(os.path.commonpath([str(p) for p in resolved]))
+        return common if common.is_dir() else common.parent
+    except ValueError:
+        p = resolved[0]
+        return p.parent if p.is_file() else p
+
+
+class DropZone(QFrame):
+    sources_dropped = Signal(list)  # list[str] of local paths
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setObjectName("dropZone")
+        self.setAcceptDrops(True)
+        self.setMinimumHeight(88)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        self._label = QLabel("Drop video files or folders here")
+        self._label.setObjectName("dropZoneLabel")
+        self._label.setAlignment(Qt.AlignCenter)
+        layout.addWidget(self._label)
+
+    @staticmethod
+    def _acceptable(path_str: str) -> bool:
+        p = Path(path_str)
+        return p.is_dir() or (p.is_file() and p.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS)
+
+    def dragEnterEvent(self, event) -> None:  # type: ignore[override]
+        if event.mimeData().hasUrls():
+            if any(self._acceptable(u.toLocalFile()) for u in event.mimeData().urls()):
+                event.acceptProposedAction()
+                return
+        event.ignore()
+
+    def dragLeaveEvent(self, event) -> None:  # type: ignore[override]
+        event.accept()
+
+    def dropEvent(self, event) -> None:  # type: ignore[override]
+        paths = [u.toLocalFile() for u in event.mimeData().urls()]
+        acceptable = [p for p in paths if self._acceptable(p)]
+        if acceptable:
+            self.sources_dropped.emit(acceptable)
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+
 class AdvancedSettingsDialog(QDialog):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -497,6 +553,7 @@ class ConversionOptions:
     recursive: bool
     skip_completed: bool
     audio_preference: str = "Auto"
+    explicit_files: "list[Path] | None" = None
 
     @property
     def aspect_ratio(self) -> float:
@@ -606,7 +663,10 @@ class BatchWorker(QThread):
         manifest = load_json(MANIFEST_FILE, {"version": 1, "entries": {}})
         entries = manifest.setdefault("entries", {})
         settings_hash = make_settings_hash(self.options.settings_payload())
-        candidates = video_candidates(source_root, output_root, self.options.recursive)
+        if self.options.explicit_files is not None:
+            candidates = list(self.options.explicit_files)
+        else:
+            candidates = video_candidates(source_root, output_root, self.options.recursive)
         self.queue_initialized.emit([str(path) for path in candidates])
 
         total = len(candidates)
@@ -733,7 +793,10 @@ class BatchWorker(QThread):
         return f"{stats.st_size}:{stats.st_mtime_ns}"
 
     def output_path_for(self, source_path: Path) -> Path:
-        relative_path = source_path.relative_to(self.options.source_root)
+        try:
+            relative_path = source_path.relative_to(self.options.source_root)
+        except ValueError:
+            return self.options.output_root / f"{source_path.stem}.mp4"
         filename = f"{relative_path.stem}.mp4"
         return self.options.output_root / relative_path.parent / filename
 
@@ -1105,6 +1168,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self.last_options: ConversionOptions | None = None
         self.source_rows: dict[str, int] = {}
         self.advanced_dialog: AdvancedSettingsDialog | None = None
+        self._source_paths: list[Path] = []
         self.setup_window()
         self.build_ui()
         self.apply_styles()
@@ -1175,13 +1239,29 @@ class MediaWaveConverterWindow(QMainWindow):
         settings_layout.setSpacing(16)
         root_layout.addWidget(settings_card)
 
-        source_label = QLabel("Where are the videos now?")
+        drop_zone = DropZone()
+        drop_zone.sources_dropped.connect(self._apply_sources)
+        settings_layout.addWidget(drop_zone)
+
+        source_label = QLabel("Or choose manually:")
+        source_label.setObjectName("hintText")
         self.source_edit = QLineEdit()
-        self.source_edit.setPlaceholderText("Choose the folder with your shows, movies, bumps, or blocks.")
+        self.source_edit.setPlaceholderText("Folder to scan for video files.")
+        files_button = QPushButton("Choose File(s)")
+        files_button.clicked.connect(self._pick_files)
         source_button = QPushButton("Choose Folder")
         source_button.clicked.connect(self.pick_source_folder)
+        self.source_summary_label = QLabel()
+        self.source_summary_label.setObjectName("hintText")
+        self.source_summary_label.hide()
+        source_row = QHBoxLayout()
+        source_row.setSpacing(10)
+        source_row.addWidget(self.source_edit, 1)
+        source_row.addWidget(files_button)
+        source_row.addWidget(source_button)
         settings_layout.addWidget(source_label)
-        settings_layout.addLayout(self.path_row(self.source_edit, source_button))
+        settings_layout.addLayout(source_row)
+        settings_layout.addWidget(self.source_summary_label)
 
         output_label = QLabel("Where should the finished files go?")
         self.output_edit = QLineEdit()
@@ -1518,6 +1598,15 @@ class MediaWaveConverterWindow(QMainWindow):
                 padding: 10px;
                 font-weight: 700;
             }
+            QFrame#dropZone {
+                background: rgba(55, 72, 80, 0.50);
+                border: 2px dashed rgba(255, 255, 255, 0.22);
+                border-radius: 14px;
+            }
+            QLabel#dropZoneLabel {
+                color: rgba(235, 244, 245, 0.60);
+                font-size: 15px;
+            }
             """
         )
 
@@ -1692,6 +1781,7 @@ class MediaWaveConverterWindow(QMainWindow):
                 "recursive": options.recursive,
                 "skip_completed": options.skip_completed,
                 "audio_preference": options.audio_preference,
+                "explicit_files": [str(f) for f in (options.explicit_files or [])],
             },
         )
 
@@ -1717,6 +1807,7 @@ class MediaWaveConverterWindow(QMainWindow):
                 recursive=bool(payload["recursive"]),
                 skip_completed=bool(payload["skip_completed"]),
                 audio_preference=payload.get("audio_preference", "Auto"),
+                explicit_files=[Path(p) for p in payload["explicit_files"]] if payload.get("explicit_files") else None,
             )
         except (KeyError, TypeError, ValueError):
             self.clear_session()
@@ -1727,6 +1818,8 @@ class MediaWaveConverterWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Choose Source Folder", current)
         if not folder:
             return
+        self._source_paths = []
+        self._refresh_source_display()
         self.source_edit.setText(folder)
         if not self.output_edit.text().strip():
             self.output_edit.setText(str(Path(folder) / "MediaWave Converted"))
@@ -1746,6 +1839,85 @@ class MediaWaveConverterWindow(QMainWindow):
             return
         QDesktopServices.openUrl(QUrl.fromLocalFile(output_root))
 
+    def _apply_sources(self, raw_paths: list) -> None:
+        """Accept a list of path strings (files and/or folders) from drop or file picker."""
+        files = [
+            Path(p) for p in raw_paths
+            if Path(p).is_file() and Path(p).suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS
+        ]
+        dirs = [Path(p) for p in raw_paths if Path(p).is_dir()]
+        if not files and not dirs:
+            return
+        self._source_paths = files + dirs
+        common = _common_parent(self._source_paths)
+        # Refuse root-level or single-level directories as the default output location
+        # (e.g. /, /Volumes, /Users).  Fall back to the first source's own parent.
+        if len(common.parts) < 3:
+            first = self._source_paths[0]
+            common = first.parent if first.is_file() else first
+        self.source_edit.setText(str(common))
+        self.output_edit.setText(str(common / "MediaWave Converted"))
+        self._refresh_source_display()
+        self.save_settings()
+
+    def _pick_files(self) -> None:
+        start_dir = self.source_edit.text().strip() or str(Path.home())
+        ext_list = " ".join(f"*{ext}" for ext in sorted(SUPPORTED_VIDEO_EXTENSIONS))
+        file_filter = f"Video Files ({ext_list});;All Files (*)"
+        paths, _ = QFileDialog.getOpenFileNames(self, "Choose Video Files", start_dir, file_filter)
+        if paths:
+            self._apply_sources(paths)
+
+    def _resolve_explicit_files(self) -> list:
+        """Expand self._source_paths into a flat, deduplicated list of video file Paths."""
+        dialog = self.ensure_advanced_dialog()
+        recursive = dialog.recursive_checkbox.isChecked()
+        pattern = "**/*" if recursive else "*"
+        files: list[Path] = []
+        seen: set[Path] = set()
+        for path in self._source_paths:
+            if path.is_file():
+                key = path.resolve()
+                if key not in seen and path.suffix.lower() in SUPPORTED_VIDEO_EXTENSIONS:
+                    seen.add(key)
+                    files.append(path)
+            elif path.is_dir():
+                for candidate in sorted(path.glob(pattern)):
+                    if not candidate.is_file():
+                        continue
+                    if candidate.name.startswith("."):
+                        continue
+                    if candidate.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+                        continue
+                    if "__mediawave_" in candidate.stem.lower():
+                        continue
+                    key = candidate.resolve()
+                    if key not in seen:
+                        seen.add(key)
+                        files.append(candidate)
+        return files
+
+    def _refresh_source_display(self) -> None:
+        if not self._source_paths:
+            self.source_summary_label.hide()
+            return
+        video_files = [p for p in self._source_paths if p.is_file()]
+        dirs = [p for p in self._source_paths if p.is_dir()]
+        if len(self._source_paths) == 1:
+            if video_files:
+                text = f"1 file: {video_files[0].name}"
+            else:
+                text = f"Folder: {dirs[0].name}"
+        else:
+            parts = []
+            if video_files:
+                parts.append(f"{len(video_files)} file{'s' if len(video_files) != 1 else ''}")
+            if dirs:
+                parts.append(f"{len(dirs)} folder{'s' if len(dirs) != 1 else ''}")
+            text = " + ".join(parts) + " ready to convert"
+        self.source_summary_label.setText(text)
+        self.source_summary_label.show()
+
     def current_target_size(self) -> tuple[int, int]:
         dialog = self.ensure_advanced_dialog()
         current_aspect = self.aspect_combo.currentText()
@@ -1757,15 +1929,29 @@ class MediaWaveConverterWindow(QMainWindow):
 
     def gather_options(self) -> ConversionOptions | None:
         dialog = self.ensure_advanced_dialog()
-        source_text = self.source_edit.text().strip()
         output_text = self.output_edit.text().strip()
-        source_root = Path(source_text).expanduser()
-        if not source_root.exists() or not source_root.is_dir():
-            QMessageBox.warning(self, "Missing Source", "Please choose a valid source folder.")
-            return None
+
+        if self._source_paths:
+            explicit_files = self._resolve_explicit_files()
+            if not explicit_files:
+                QMessageBox.warning(
+                    self,
+                    "No Video Files Found",
+                    "No supported video files were found in the selected sources.",
+                )
+                return None
+            source_root = _common_parent(explicit_files)
+        else:
+            source_text = self.source_edit.text().strip()
+            source_root = Path(source_text).expanduser()
+            if not source_root.exists() or not source_root.is_dir():
+                QMessageBox.warning(self, "Missing Source", "Please choose a valid source folder.")
+                return None
+            explicit_files = None
+
         if not output_text:
-            QMessageBox.warning(self, "Missing Output", "Please choose an output folder.")
-            return None
+            output_text = str(source_root / "MediaWave Converted")
+            self.output_edit.setText(output_text)
         output_root = Path(output_text).expanduser()
         if source_root.resolve() == output_root.resolve():
             output_root = source_root / "MediaWave Converted"
@@ -1785,6 +1971,7 @@ class MediaWaveConverterWindow(QMainWindow):
             recursive=dialog.recursive_checkbox.isChecked(),
             skip_completed=dialog.skip_checkbox.isChecked(),
             audio_preference=self.audio_pref_combo.currentText(),
+            explicit_files=explicit_files,
         )
 
     def start_batch(self) -> None:
@@ -1852,6 +2039,8 @@ class MediaWaveConverterWindow(QMainWindow):
         dialog.skip_checkbox.setChecked(options.skip_completed)
         if options.audio_preference in AUDIO_PREFERENCES:
             self.audio_pref_combo.setCurrentText(options.audio_preference)
+        self._source_paths = list(options.explicit_files) if options.explicit_files else []
+        self._refresh_source_display()
         size_label = f"{options.target_width} x {options.target_height}"
         index = dialog.size_combo.findText(size_label)
         if index >= 0:
