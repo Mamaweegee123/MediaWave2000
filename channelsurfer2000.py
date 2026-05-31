@@ -8330,11 +8330,10 @@ class OnDemandOverlay(QWidget):
         target = max(0.0, min(max_vertical, float(selected_section * (row_h + row_gap))))
         if abs(target - self.home_vertical_target) > 0.5:
             self.home_vertical_target = target
-        self.home_vertical_offset = target
 
         painter.save()
         painter.setClipRect(rect)
-        base_y = rect.top() - int(round(target))
+        base_y = rect.top() - int(round(self.home_vertical_offset))
         for section_index, section in enumerate(sections):
             row_rect = QRect(rect.left(), base_y + section_index * (row_h + row_gap), rect.width(), row_h)
             if row_rect.bottom() < rect.top() - row_gap or row_rect.top() > rect.bottom() + row_gap:
