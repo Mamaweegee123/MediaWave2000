@@ -7982,9 +7982,11 @@ class OnDemandOverlay(QWidget):
             self.draw_digital_clock_box(painter, clock_shell, time.strftime("%I:%M%p").lstrip("0").upper())
         elif theme.get("promised_future"):
             grad = QLinearGradient(clock_shell.topLeft(), clock_shell.bottomLeft())
-            grad.setColorAt(0.0, theme.get("vault_clock_top", theme["pf_time_top"]).lighter(118))
-            grad.setColorAt(0.48, theme.get("vault_clock_top", theme["pf_time_top"]))
-            grad.setColorAt(1.0, theme.get("vault_clock_bottom", theme["pf_time_bottom"]))
+            _pf_top = theme.get("pf_time_top", QColor(30, 120, 206, 252))
+            _pf_bot = theme.get("pf_time_bottom", QColor(2, 58, 138, 252))
+            grad.setColorAt(0.0, theme.get("vault_clock_top", _pf_top).lighter(118))
+            grad.setColorAt(0.48, theme.get("vault_clock_top", _pf_top))
+            grad.setColorAt(1.0, theme.get("vault_clock_bottom", _pf_bot))
             painter.setPen(QPen(theme.get("pf_bevel_highlight", QColor(255, 255, 255, 92)), 1))
             painter.setBrush(grad)
             painter.drawRoundedRect(clock_shell, theme.get("vault_radius", 14), theme.get("vault_radius", 14))
@@ -8383,7 +8385,7 @@ class OnDemandOverlay(QWidget):
             card_rect = QRect(viewport.left() + item_index * (card_w + gap) - int(round(offset)), viewport.top(), card_w, card_h)
             if card_rect.right() < viewport.left() or card_rect.left() > viewport.right():
                 continue
-            card_index = section_index * 1000 + item_index
+            card_index = section_index * 100000 + item_index
             if card_index == active_card_index:
                 focus_amount = 1.0 if previous_card_index == active_card_index else transition_progress
             elif card_index == previous_card_index:
