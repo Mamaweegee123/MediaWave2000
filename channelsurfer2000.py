@@ -3240,8 +3240,9 @@ def draw_sleek_bottom_nav_bar(
     ui_scale=1.0,
     previous_index=-1,
     transition_progress=1.0,
+    items=None,
 ):
-    items = [("back", "Back"), ("guide", "Guide"), ("vault", "Vault"), ("menu", "Menu")]
+    items = items or [("back", "Back"), ("guide", "Guide"), ("vault", "Vault"), ("menu", "Menu")]
     active_index = int(nav_index) if nav_focused else -1
     sleek_light = normalize_sleek_mode(mode) == "light"
     toggle_kind = "light" if not sleek_light else "dark"
@@ -3280,12 +3281,13 @@ def draw_sleek_bottom_nav_bar(
 
     inner = rect.adjusted(scaled_metric(14, ui_scale, 10, 18), scaled_metric(8, ui_scale, 6, 11), -scaled_metric(14, ui_scale, 10, 18), -scaled_metric(8, ui_scale, 6, 11))
     gap = scaled_metric(8, ui_scale, 5, 12)
-    widths = [
-        scaled_metric(92, ui_scale, 76, 112),
-        scaled_metric(112, ui_scale, 92, 132),
-        scaled_metric(108, ui_scale, 90, 128),
-        scaled_metric(106, ui_scale, 88, 126),
-    ]
+    default_widths = {
+        "back": scaled_metric(92, ui_scale, 76, 112),
+        "menu": scaled_metric(106, ui_scale, 88, 126),
+        "guide": scaled_metric(112, ui_scale, 92, 132),
+        "vault": scaled_metric(108, ui_scale, 90, 128),
+    }
+    widths = [default_widths.get(kind, scaled_metric(104, ui_scale, 84, 124)) for kind, _label in items]
     divider_gap = scaled_metric(14, ui_scale, 10, 20)
     toggle_size = min(inner.height(), scaled_metric(42, ui_scale, 34, 50))
     button_h = inner.height()
@@ -7590,8 +7592,12 @@ class OnDemandOverlay(QWidget):
         self.last_home_layout_debug_signature = None
         self.home_vertical_offset = 0.0
         self.home_vertical_target = 0.0
+        self.detail_vertical_offset = 0.0
+        self.detail_vertical_target = 0.0
         self.episode_list_offset = 0.0
         self.episode_list_target = 0.0
+        self.filter_scroll_offset = 0.0
+        self.filter_scroll_target = 0.0
         self.feature_previous = {}
         self.feature_current = {}
         self.feature_transition = 1.0
@@ -7599,6 +7605,8 @@ class OnDemandOverlay(QWidget):
         self.home_card_hit_rects = []
         self.hero_action_hit_rects = []
         self.filter_hit_rects = []
+        self.detail_action_hit_rects = []
+        self.hover_target = None
         self.skin_prev_rect = QRect()
         self.skin_next_rect = QRect()
         self.theme_prev_rect = QRect()
@@ -7675,21 +7683,37 @@ class OnDemandOverlay(QWidget):
         if not self.stream_anim_timer.isActive():
             self.stream_anim_timer.start()
 
+    def vault_selection_animates(self):
+        return self.skin_style() != "cable"
+
     def ease_toward(self, current, target, factor=0.24, snap=0.6):
         if abs(target - current) <= snap:
             return target, False
         return current + ((target - current) * factor), True
 
+    def vault_scroll_easing(self):
+        style = self.skin_style()
+        if style == "cable":
+            return 0.36, 1.2
+        if style == "flat":
+            return 0.28, 0.8
+        return 0.22, 0.7
+
     def advance_stream_animation(self):
         active = False
-        self.home_vertical_offset, moved = self.ease_toward(self.home_vertical_offset, self.home_vertical_target, factor=0.2, snap=0.4)
+        scroll_factor, scroll_snap = self.vault_scroll_easing()
+        self.home_vertical_offset, moved = self.ease_toward(self.home_vertical_offset, self.home_vertical_target, factor=scroll_factor, snap=scroll_snap)
         active = active or moved
-        self.episode_list_offset, moved = self.ease_toward(self.episode_list_offset, self.episode_list_target, factor=0.22, snap=0.4)
+        self.detail_vertical_offset, moved = self.ease_toward(self.detail_vertical_offset, self.detail_vertical_target, factor=scroll_factor, snap=scroll_snap)
+        active = active or moved
+        self.episode_list_offset, moved = self.ease_toward(self.episode_list_offset, self.episode_list_target, factor=scroll_factor, snap=scroll_snap)
+        active = active or moved
+        self.filter_scroll_offset, moved = self.ease_toward(self.filter_scroll_offset, self.filter_scroll_target, factor=0.26, snap=1.0)
         active = active or moved
         for key in list(set(self.home_row_offsets.keys()) | set(self.home_row_targets.keys())):
             current = self.home_row_offsets.get(key, 0.0)
             target = self.home_row_targets.get(key, 0.0)
-            value, moved = self.ease_toward(current, target, factor=0.24, snap=0.4)
+            value, moved = self.ease_toward(current, target, factor=0.26, snap=1.0)
             self.home_row_offsets[key] = value
             active = active or moved
         if self.feature_transition < 1.0:
@@ -7938,20 +7962,49 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_elided(self, painter, rect, text, font, color, flags=Qt.AlignLeft | Qt.AlignVCenter):
         painter.save()
-        painter.setClipRect(rect)
+        painter.setClipRect(rect, Qt.IntersectClip)
         painter.setFont(font)
         painter.setPen(color)
         painter.drawText(rect, flags | Qt.TextSingleLine, painter.fontMetrics().elidedText(str(text or ""), Qt.ElideRight, max(12, rect.width())))
         painter.restore()
 
-    def draw_sleek_vault_chip(self, painter, rect, text, theme, active=False):
+    def draw_sleek_vault_chip(self, painter, rect, text, theme, active=False, focused=False, hovered=False):
         painter.save()
-        painter.setPen(QPen(theme.get("vault_button_focused_border", theme["guide_card_selected_border"]) if active else theme.get("vault_card_border", theme["guide_divider"]), 1))
-        painter.setBrush(theme.get("vault_chip_selected_bg", theme["guide_chip_selected_bg"]) if active else theme.get("vault_chip_bg", theme["guide_chip_bg"]))
         radius = min(max(4, rect.height() // 2), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
+        accent_border = theme.get("vault_button_focused_border", theme["guide_card_selected_border"])
+        quiet_border = theme.get("vault_card_border", theme["guide_divider"])
+        chip_selected_bg = theme.get("vault_chip_selected_bg", theme["guide_chip_selected_bg"])
+        chip_bg = theme.get("vault_chip_bg", theme["guide_chip_bg"])
+        strong = focused or hovered
+        if strong:
+            painter.setPen(QPen(accent_border, 1))
+            painter.setBrush(chip_selected_bg)
+        elif active:
+            # Active = current filter/selection, but NOT keyboard-focused.
+            # Use quiet_border so it does not look the same as a focused chip.
+            dim_bg = QColor(chip_selected_bg.red(), chip_selected_bg.green(), chip_selected_bg.blue(), max(0, min(255, chip_selected_bg.alpha() // 3)))
+            painter.setPen(QPen(quiet_border, 1))
+            painter.setBrush(dim_bg)
+        else:
+            painter.setPen(QPen(quiet_border, 1))
+            painter.setBrush(chip_bg)
         painter.drawRoundedRect(rect, radius, radius)
+        if focused:
+            painter.setPen(QPen(theme.get("vault_focus_ring", theme.get("accent", accent_border)), 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
+        elif hovered:
+            painter.setPen(QPen(accent_border, 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
         painter.setFont(self.sleek_font(theme, 9, QFont.Bold, 7, 11))
-        painter.setPen(theme.get("vault_chip_selected_text", theme["guide_chip_selected_text"]) if active else theme.get("vault_chip_text", theme["guide_chip_text"]))
+        if strong:
+            text_color = theme.get("vault_chip_selected_text", theme["guide_chip_selected_text"])
+        elif active:
+            text_color = blend_color(theme.get("vault_chip_text", theme["guide_chip_text"]), theme.get("vault_chip_selected_text", theme["guide_chip_selected_text"]), 0.4)
+        else:
+            text_color = theme.get("vault_chip_text", theme["guide_chip_text"])
+        painter.setPen(text_color)
         painter.drawText(rect.adjusted(8, 0, -8, 0), Qt.AlignCenter, str(text or "").upper())
         painter.restore()
 
@@ -7973,9 +8026,7 @@ class OnDemandOverlay(QWidget):
 
         header_h = self.sleek_metric(64, 48, 84)
         header_rect = QRect(inner.left(), inner.top(), inner.width(), header_h)
-        nav_h = self.sleek_metric(58, 48, 68)
-        footer_w = min(inner.width() - self.sleek_metric(80, 42, 120), self.sleek_metric(560, 450, 650))
-        footer_rect = QRect(inner.center().x() - footer_w // 2, inner.bottom() - nav_h - self.sleek_metric(10, 8, 18), footer_w, nav_h)
+        footer_rect = self.vault_bottom_nav_rect(inner, theme)
 
         self.draw_sleek_vault_header(painter, header_rect, theme)
         view = self.state.get("view", "home")
@@ -8061,23 +8112,49 @@ class OnDemandOverlay(QWidget):
         gap = self.sleek_metric(18, 12, 28)
         side = self.sleek_metric(18, 10, 28)
         compact_hero = bool(self.state.get("hero_compact", False))
-        full_hero_h = max(self.sleek_metric(250, 190, 328), min(self.sleek_metric(364, 260, 430), int(inner.height() * 0.38)))
+        full_hero_h = max(self.sleek_metric(218, 176, 300), min(self.sleek_metric(330, 236, 390), int(inner.height() * 0.34)))
         compact_hero_h = max(self.sleek_metric(112, 92, 148), min(self.sleek_metric(154, 118, 178), int(inner.height() * 0.18)))
         hero_h = compact_hero_h if compact_hero else full_hero_h
         hero_rect = QRect(inner.left() + side, header_rect.bottom() + gap, inner.width() - side * 2, hero_h)
-        self.draw_sleek_vault_hero(painter, hero_rect, self.state.get("hero", {}), theme, compact=compact_hero)
 
         chips_h = self.sleek_metric(34, 28, 42)
         chips_rect = QRect(hero_rect.left(), hero_rect.bottom() + self.sleek_metric(14, 10, 20), hero_rect.width(), chips_h)
-        self.draw_sleek_vault_filter_row(painter, chips_rect, sections, theme)
 
         shelves_top = chips_rect.bottom() + self.sleek_metric(12, 8, 18)
-        safe_bottom = footer_rect.top() - self.sleek_metric(170, 124, 220)
-        shelves_rect = QRect(hero_rect.left(), shelves_top, hero_rect.width(), max(self.sleek_metric(150, 118, 190), safe_bottom - shelves_top))
-        if not sections:
-            self.draw_sleek_empty_vault(painter, shelves_rect, theme)
-            return
-        self.draw_sleek_vault_shelves(painter, shelves_rect, sections, theme)
+        shelves_rect = self.vault_content_viewport(
+            inner,
+            shelves_top,
+            footer_rect,
+            left=hero_rect.left(),
+            width=hero_rect.width(),
+        )
+
+        panel_bg = theme.get("vault_panel_bg", theme.get("guide_panel_bg", theme["guide_hero_panel_bg"]))
+
+        # Draw shelves first so the hero zone always paints on top of them.
+        # This matches the PF/STB approach and makes hero overlap geometrically
+        # impossible regardless of scroll animation state.
+        if shelves_rect.height() > 0:
+            painter.save()
+            painter.setClipRect(shelves_rect, Qt.IntersectClip)
+            if not sections:
+                self.draw_sleek_empty_vault(painter, shelves_rect, theme)
+            else:
+                self.draw_sleek_vault_shelves(painter, shelves_rect, sections, theme)
+                self.draw_vault_bottom_fade(painter, shelves_rect, theme)
+            painter.restore()
+
+        self.fill_vault_reserved_space(painter, inner, footer_rect, theme)
+
+        # Cover the hero+chips zone with an opaque fill so any row content that
+        # animates upward (before the clip catches it) is hidden.
+        hero_zone = QRect(inner.left(), header_rect.bottom(), inner.width(), max(0, shelves_top - header_rect.bottom()))
+        painter.fillRect(hero_zone, QColor(panel_bg.red(), panel_bg.green(), panel_bg.blue(), 255))
+
+        # Now draw hero and chips on top of everything.
+        self.draw_sleek_vault_hero(painter, hero_rect, self.state.get("hero", {}), theme, compact=compact_hero)
+        if sections:
+            self.draw_sleek_vault_filter_row(painter, chips_rect, sections, theme)
 
     def draw_sleek_vault_hero(self, painter, rect, detail, theme, compact=False):
         painter.save()
@@ -8132,7 +8209,8 @@ class OnDemandOverlay(QWidget):
                 action_key = str(action.get("action", label.lower()) if isinstance(action, dict) else label.lower())
                 button_w = self.sleek_metric(122, 96, 156)
                 button = QRect(rect.right() - pad - button_w, rect.center().y() - self.sleek_metric(18, 15, 23), button_w, self.sleek_metric(36, 30, 46))
-                self.draw_sleek_vault_button(painter, button, label, theme, active=action_key in {"resume", "play"}, focused=hero_focused, icon=action_key)
+                hovered = self.hover_target == ("hero", action_key)
+                self.draw_sleek_vault_button(painter, button, label, theme, active=False, focused=hero_focused, hovered=hovered, icon=action_key)
                 self.hero_action_hit_rects.append((self.map_interactive_rect(button), action_key))
 
             progress = max(0.0, min(1.0, float(detail.get("progress", 0.0) or 0.0)))
@@ -8184,7 +8262,7 @@ class OnDemandOverlay(QWidget):
         for idx, label in enumerate(chip_labels[:3]):
             width = min(copy_rect.width() // 2, max(self.sleek_metric(96, 76, 138), QFontMetrics(self.sleek_font(theme, 9, QFont.Bold, 7, 11)).horizontalAdvance(label.upper()) + self.sleek_metric(28, 20, 34)))
             chip = QRect(x, chip_y, width, self.sleek_metric(26, 20, 32))
-            self.draw_sleek_vault_chip(painter, chip, label, theme, active=idx == 0)
+            self.draw_sleek_vault_chip(painter, chip, label, theme, active=False)
             x = chip.right() + self.sleek_metric(10, 7, 14)
             if x > copy_rect.right() - self.sleek_metric(80, 60, 100):
                 break
@@ -8214,7 +8292,10 @@ class OnDemandOverlay(QWidget):
             x = copy_rect.left()
             selected_action = int(self.state.get("hero_action_selected", 0))
             hero_focused = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
-            previous, transition = sleek_focus_transition(self, "vault_hero_actions", selected_action if hero_focused else -1)
+            if hero_focused:
+                previous, transition = sleek_focus_transition(self, "vault_hero_actions", selected_action)
+            else:
+                previous, transition = -1, 1.0
             for index, action in enumerate(actions[:5]):
                 label = str(action.get("label", action) if isinstance(action, dict) else action)
                 action_key = str(action.get("action", label.lower()) if isinstance(action, dict) else label.lower())
@@ -8226,8 +8307,8 @@ class OnDemandOverlay(QWidget):
                     amount = 1.0 if previous == selected_action else transition
                 elif index == previous:
                     amount = 1.0 - transition
-                active = action_key in {"resume", "play"} and not hero_focused
-                self.draw_sleek_vault_button(painter, button, label, theme, active=active, focused=amount > 0.01, icon=action_key)
+                hovered = self.hover_target == ("hero", action_key)
+                self.draw_sleek_vault_button(painter, button, label, theme, active=False, focused=amount > 0.01, hovered=hovered, icon=action_key)
                 self.hero_action_hit_rects.append((self.map_interactive_rect(button), action_key))
                 x = button.right() + self.sleek_metric(10, 7, 14)
                 if x > copy_rect.right() - self.sleek_metric(80, 60, 100):
@@ -8297,13 +8378,17 @@ class OnDemandOverlay(QWidget):
             painter.drawEllipse(c, max(3, r // 2), max(3, r // 2))
         painter.restore()
 
-    def draw_sleek_vault_button(self, painter, rect, label, theme, active=False, focused=False, meta="", icon=""):
+    def draw_sleek_vault_button(self, painter, rect, label, theme, active=False, focused=False, hovered=False, meta="", icon=""):
         painter.save()
         radius = min(theme.get("vault_card_radius", theme.get("cell_radius", 8)), max(4, rect.height() // 4))
         if focused:
             painter.setPen(QPen(theme.get("vault_focus_glow", theme["guide_glow"]), self.sleek_metric(5, 3, 7)))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), radius, radius)
+        elif hovered:
+            painter.setPen(QPen(theme.get("vault_focus_glow", theme["guide_glow"]), self.sleek_metric(3, 2, 4)))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(rect.adjusted(3, 3, -3, -3), radius, radius)
         painter.setPen(QPen(theme.get("vault_button_focused_border", theme["guide_card_selected_border"]) if active or focused else theme.get("vault_button_border", theme["guide_card_border"]), 1 if not focused else 2))
         painter.setBrush(theme.get("vault_button_focused_bg", theme["guide_bottom_nav_selected_bg"]) if active or focused else theme.get("vault_button_bg", with_alpha(theme["guide_card_bg"], 210)))
         painter.drawRoundedRect(rect, radius, radius)
@@ -8362,7 +8447,7 @@ class OnDemandOverlay(QWidget):
         visible_width = rect.width()
         total_width = chip_right[-1] if chip_right else 0
         max_scroll = max(0, total_width - visible_width)
-        target_scroll = getattr(self, "_filter_scroll_offset", 0)
+        target_scroll = self.filter_scroll_target
         # Scroll right if focused chip right edge is past the visible area.
         if chip_right[safe_index] - target_scroll > visible_width:
             target_scroll = chip_right[safe_index] - visible_width
@@ -8371,19 +8456,27 @@ class OnDemandOverlay(QWidget):
             target_scroll = chip_left[safe_index]
         # Clamp: never past start or past the max scrollable distance.
         target_scroll = max(0, min(target_scroll, max_scroll))
-        self._filter_scroll_offset = target_scroll
+        self.filter_scroll_target = target_scroll
+        if self.vault_selection_animates():
+            if abs(self.filter_scroll_offset - self.filter_scroll_target) > 0.5:
+                self.start_stream_animation()
+            scroll_offset = self.filter_scroll_offset
+        else:
+            self.filter_scroll_offset = target_scroll
+            scroll_offset = target_scroll
 
         painter.save()
-        painter.setClipRect(rect)
-        painter.translate(-target_scroll, 0)
+        painter.setClipRect(rect, Qt.IntersectClip)
+        painter.translate(-scroll_offset, 0)
         for index, option in enumerate(options):
             label = option.get("label", "")
             key = option.get("key", "")
             chip = QRect(rect.left() + chip_left[index], rect.top() + max(0, (rect.height() - chip_h) // 2), chip_right[index] - chip_left[index], chip_h)
-            active = key == current_key or (row_focused and index == focused_index)
-            self.draw_sleek_vault_chip(painter, chip, label, theme, active=active)
+            is_selected = key == current_key
+            is_kbd_focused = row_focused and index == focused_index
+            self.draw_sleek_vault_chip(painter, chip, label, theme, active=is_selected, focused=is_kbd_focused, hovered=self.hover_target == ("filter", index))
             # Hit rect uses actual screen position (before painter translation).
-            screen_chip = QRect(rect.left() + chip_left[index] - int(round(target_scroll)), chip.top(), chip.width(), chip.height())
+            screen_chip = QRect(rect.left() + chip_left[index] - int(round(scroll_offset)), chip.top(), chip.width(), chip.height())
             if screen_chip.right() >= rect.left() and screen_chip.left() <= rect.right():
                 self.filter_hit_rects.append((self.map_interactive_rect(screen_chip), index))
         painter.restore()
@@ -8398,26 +8491,72 @@ class OnDemandOverlay(QWidget):
         painter.drawText(rect.adjusted(20, 0, -20, 0), Qt.AlignCenter, "Load a catalog to build your Vault.")
         painter.restore()
 
-    def draw_sleek_vault_shelves(self, painter, rect, sections, theme):
-        selected_section = max(0, min(int(self.state.get("selected_section", 0)), len(sections) - 1))
-        section_item_indices = self.state.get("section_item_indices", {})
+    def draw_sleek_vault_shelves(
+        self,
+        painter,
+        rect,
+        sections,
+        theme,
+        *,
+        focus_enabled=None,
+        selected_section=None,
+        section_item_indices=None,
+        vertical_state="home",
+    ):
+        if not sections or rect.isEmpty():
+            return
+        if section_item_indices is None:
+            section_item_indices = self.state.get("section_item_indices", {})
+        selected_section = max(0, min(int(self.state.get("selected_section", 0) if selected_section is None else selected_section), len(sections) - 1))
         selected_item_for_focus = max(0, int(section_item_indices.get(selected_section, 0)))
-        row_has_focus = self.state.get("home_focus") == "rows" and not self.state.get("nav_focused", False) and not self.settings_open
-        active_card_index = (selected_section * 1000 + selected_item_for_focus) if row_has_focus else -1
-        previous_card_index, card_transition_progress = sleek_focus_transition(self, "vault_card_focus", active_card_index)
+        default_focus = self.state.get("home_focus") == "rows" and not self.state.get("nav_focused", False) and not self.settings_open
+        row_has_focus = default_focus if focus_enabled is None else bool(focus_enabled)
+        active_card_index = (selected_section * 100000 + selected_item_for_focus) if row_has_focus else -1
+        if row_has_focus:
+            previous_card_index, card_transition_progress = sleek_focus_transition(self, "vault_card_focus", active_card_index)
+        else:
+            previous_card_index, card_transition_progress = -1, 1.0
         row_gap = self.sleek_metric(24, 16, 32)
         card_w = max(self.sleek_metric(210, 168, 284), min(self.sleek_metric(326, 236, 386), int(rect.width() * 0.22)))
         card_h = self.sleek_metric(152, 122, 190)
         row_h = card_h + self.sleek_metric(58, 44, 72)
         total_height = len(sections) * row_h + max(0, len(sections) - 1) * row_gap
         max_vertical = max(0.0, float(total_height - rect.height()))
+        self._last_max_vertical = max_vertical
         target = max(0.0, min(max_vertical, float(selected_section * (row_h + row_gap))))
-        if abs(target - self.home_vertical_target) > 0.5:
-            self.home_vertical_target = target
+        if vertical_state == "detail":
+            current_offset = self.detail_vertical_offset
+            current_target = self.detail_vertical_target
+        else:
+            current_offset = self.home_vertical_offset
+            current_target = self.home_vertical_target
+
+        if abs(target - current_target) > 0.5:
+            if vertical_state == "detail":
+                self.detail_vertical_target = target
+            else:
+                self.home_vertical_target = target
+            if self.vault_selection_animates():
+                self.start_stream_animation()
+            elif vertical_state == "detail":
+                self.detail_vertical_offset = target
+            else:
+                self.home_vertical_offset = target
+
+        if vertical_state == "detail":
+            current_offset = self.detail_vertical_offset if self.vault_selection_animates() else target
+        else:
+            current_offset = self.home_vertical_offset if self.vault_selection_animates() else target
+        draw_offset = max(0.0, min(max_vertical, current_offset))
+        if abs(draw_offset - current_offset) > 0.01:
+            if vertical_state == "detail":
+                self.detail_vertical_offset = draw_offset
+            else:
+                self.home_vertical_offset = draw_offset
 
         painter.save()
-        painter.setClipRect(rect)
-        base_y = rect.top() - int(round(self.home_vertical_offset))
+        painter.setClipRect(rect, Qt.IntersectClip)
+        base_y = rect.top() - int(round(draw_offset))
         for section_index, section in enumerate(sections):
             row_rect = QRect(rect.left(), base_y + section_index * (row_h + row_gap), rect.width(), row_h)
             if row_rect.bottom() < rect.top() - row_gap or row_rect.top() > rect.bottom() + row_gap:
@@ -8459,11 +8598,18 @@ class OnDemandOverlay(QWidget):
         target_offset = max(0.0, min(max_offset, float(selected_left - self.sleek_metric(42, 28, 58))))
         if abs(target_offset - self.home_row_targets.get(row_key, 0.0)) > 0.5:
             self.home_row_targets[row_key] = target_offset
-            self.start_stream_animation()
-        offset = self.home_row_offsets.get(row_key, target_offset)
+            if self.vault_selection_animates():
+                self.start_stream_animation()
+            else:
+                self.home_row_offsets[row_key] = target_offset
+        offset = self.home_row_offsets.get(row_key, target_offset) if self.vault_selection_animates() else target_offset
+        clamped_offset = max(0.0, min(max_offset, float(offset)))
+        if abs(clamped_offset - float(offset)) > 0.01:
+            self.home_row_offsets[row_key] = clamped_offset
+        offset = clamped_offset
 
         painter.save()
-        painter.setClipRect(viewport)
+        painter.setClipRect(viewport, Qt.IntersectClip)
         for item_index, item in enumerate(items):
             card_rect = QRect(viewport.left() + item_index * (card_w + gap) - int(round(offset)), viewport.top(), card_w, card_h)
             if card_rect.right() < viewport.left() or card_rect.left() > viewport.right():
@@ -8476,23 +8622,25 @@ class OnDemandOverlay(QWidget):
             else:
                 focus_amount = 0.0
             focused = focused_row and item_index == selected_item or focus_amount > 0.01
-            self.draw_sleek_vault_card(painter, card_rect, item, focused, theme, focus_amount=focus_amount)
+            hovered = self.hover_target == ("card", section_index, item_index)
+            self.draw_sleek_vault_card(painter, card_rect, item, focused, theme, focus_amount=focus_amount, hovered=hovered)
             self.home_card_hit_rects.append((self.map_interactive_rect(card_rect), section_index, item_index))
         painter.restore()
 
-    def draw_sleek_vault_card(self, painter, rect, item, focused, theme, focus_amount=1.0):
+    def draw_sleek_vault_card(self, painter, rect, item, focused, theme, focus_amount=1.0, hovered=False):
         painter.save()
         focus_amount = max(0.0, min(1.0, float(focus_amount if focused else 0.0)))
-        lift = int(round(self.sleek_metric(10, 3, 12) - (self.sleek_metric(5, 3, 12) * focus_amount)))
-        draw_rect = rect.adjusted(0, lift, 0, 0)
+        hover_amount = 0.22 if hovered and focus_amount <= 0.01 else 0.0
+        paint_amount = max(focus_amount, hover_amount)
+        draw_rect = rect
         radius = theme.get("vault_card_radius", theme.get("cell_radius", 8))
-        if focus_amount > 0.01:
-            painter.setOpacity(focus_amount)
+        if paint_amount > 0.01:
+            painter.setOpacity(paint_amount)
             painter.setPen(QPen(theme.get("vault_focus_glow", theme["guide_glow"]), self.sleek_metric(7, 4, 9)))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(draw_rect.adjusted(3, 3, -3, -3), radius, radius)
             painter.setOpacity(1.0)
-        painter.setPen(QPen(blend_color(theme.get("vault_card_border", theme["guide_card_border"]), theme.get("vault_card_selected_border", theme["guide_card_selected_border"]), focus_amount), 2 if focus_amount > 0.55 else 1))
+        painter.setPen(QPen(blend_color(theme.get("vault_card_border", theme["guide_card_border"]), theme.get("vault_card_selected_border", theme["guide_card_selected_border"]), paint_amount), 2 if focus_amount > 0.55 else 1))
         painter.setBrush(blend_color(theme.get("vault_card_bg", theme["guide_card_bg"]), theme.get("vault_card_selected_bg", theme["guide_card_selected_bg"]), focus_amount))
         painter.drawRoundedRect(draw_rect, radius, radius)
 
@@ -8519,7 +8667,72 @@ class OnDemandOverlay(QWidget):
             painter.drawRoundedRect(QRect(track.left(), track.top(), int(track.width() * progress), track.height()), track.height() // 2, track.height() // 2)
         painter.restore()
 
+    def vault_bottom_nav_rect(self, inner, theme):
+        nav_h = self.sleek_metric(58, 48, 68)
+        nav_margin = self.sleek_metric(10, 8, 18)
+        max_w = self.sleek_metric(700 if theme.get("sleek") else 560, 450, 760 if theme.get("sleek") else 650)
+        footer_w = min(inner.width() - self.sleek_metric(40, 10, 80), max_w)
+        footer_y = inner.bottom() - nav_h - nav_margin
+        if theme.get("sleek"):
+            return QRect(inner.center().x() - footer_w // 2, footer_y, footer_w, nav_h)
+        return QRect(inner.left() + self.sleek_metric(18, 10, 28), footer_y, footer_w, nav_h)
+
+    def vault_safe_bottom(self, footer_rect):
+        return footer_rect.top() - self.sleek_metric(16, 12, 24)
+
+    def vault_content_viewport(self, inner, top, footer_rect, left=None, width=None, bottom_margin=0):
+        x = inner.left() if left is None else int(left)
+        w = inner.width() if width is None else int(width)
+        y = max(inner.top(), int(top))
+        safe_bottom = max(y, min(inner.bottom() + 1, self.vault_safe_bottom(footer_rect) - max(0, int(bottom_margin))))
+        return QRect(x, y, max(0, w), max(0, safe_bottom - y))
+
+    def vault_reserved_rect(self, inner, footer_rect):
+        top = max(inner.top(), min(inner.bottom() + 1, self.vault_safe_bottom(footer_rect)))
+        return QRect(inner.left(), top, inner.width(), max(0, inner.bottom() - top + 1))
+
+    def fill_vault_reserved_space(self, painter, inner, footer_rect, theme):
+        guard = self.vault_reserved_rect(inner, footer_rect)
+        if guard.isEmpty():
+            return
+        panel_bg = theme.get("vault_panel_bg", theme.get("guide_panel_bg", theme["guide_hero_panel_bg"]))
+        painter.fillRect(guard, QColor(panel_bg.red(), panel_bg.green(), panel_bg.blue(), 255))
+
+    def draw_vault_bottom_fade(self, painter, clip_rect, theme):
+        """Paints a theme-aware fade inside a scrollable Vault viewport."""
+        if clip_rect.isEmpty():
+            return
+        if self.skin_style() == "cable":
+            return
+        elif theme.get("promised_future"):
+            fade_h = min(self.sleek_metric(42, 28, 58), max(0, clip_rect.height() // 3))
+            end_alpha = 116
+            start_at = 0.36
+        else:
+            fade_h = min(self.sleek_metric(36, 24, 50), max(0, clip_rect.height() // 3))
+            end_alpha = 104
+            start_at = 0.42
+        if fade_h <= 0:
+            return
+        panel_bg = theme.get("vault_panel_bg", theme.get("guide_panel_bg", theme["guide_hero_panel_bg"]))
+        fade_rect = QRect(clip_rect.left(), clip_rect.bottom() - fade_h + 1, clip_rect.width(), fade_h)
+        grad = QLinearGradient(fade_rect.topLeft(), fade_rect.bottomLeft())
+        grad.setColorAt(0.0, QColor(panel_bg.red(), panel_bg.green(), panel_bg.blue(), 0))
+        grad.setColorAt(start_at, QColor(panel_bg.red(), panel_bg.green(), panel_bg.blue(), 0))
+        grad.setColorAt(1.0, QColor(panel_bg.red(), panel_bg.green(), panel_bg.blue(), end_alpha))
+        painter.save()
+        painter.setClipRect(clip_rect, Qt.IntersectClip)
+        painter.setPen(Qt.NoPen)
+        painter.setBrush(grad)
+        painter.drawRect(fade_rect)
+        if theme.get("promised_future"):
+            gloss = QColor(255, 255, 255, 18)
+            painter.setPen(QPen(gloss, 1))
+            painter.drawLine(fade_rect.left(), fade_rect.top(), fade_rect.right(), fade_rect.top())
+        painter.restore()
+
     def draw_sleek_vault_detail(self, painter, inner, header_rect, footer_rect, theme):
+        self.detail_action_hit_rects = []
         detail = self.state.get("detail", {})
         media_type = self.state.get("media_type", detail.get("media_type", "tv"))
         if media_type == "movie":
@@ -8527,7 +8740,8 @@ class OnDemandOverlay(QWidget):
         else:
             self.draw_sleek_vault_show_detail(painter, inner, header_rect, footer_rect, theme)
 
-    def draw_sleek_vault_detail_header(self, painter, poster_rect, copy_rect, detail, theme):
+    def draw_sleek_vault_detail_header(self, painter, poster_rect, copy_rect, detail, theme, compact=False):
+        painter.save()
         self.draw_streaming_art_placeholder(
             painter,
             poster_rect,
@@ -8544,33 +8758,43 @@ class OnDemandOverlay(QWidget):
 
         chip_rect = QRect(copy_rect.left(), copy_rect.top(), self.sleek_metric(112, 82, 142), self.sleek_metric(26, 20, 32))
         self.draw_sleek_vault_chip(painter, chip_rect, detail.get("badge", "VAULT"), theme, active=True)
-        title_rect = QRect(copy_rect.left(), chip_rect.bottom() + self.sleek_metric(12, 8, 16), copy_rect.width(), self.sleek_metric(76, 54, 96))
-        painter.setFont(self.sleek_font(theme, 36, QFont.Bold, 25, 48))
+        title_h = self.sleek_metric(50, 38, 64) if compact else self.sleek_metric(76, 54, 96)
+        title_rect = QRect(copy_rect.left(), chip_rect.bottom() + self.sleek_metric(10, 7, 14), copy_rect.width(), title_h)
+        painter.setFont(self.sleek_font(theme, 28 if compact else 36, QFont.Bold, 21 if compact else 25, 38 if compact else 48))
         painter.setPen(theme.get("vault_primary_text", theme["guide_primary_text"]))
-        painter.setClipRect(title_rect)
+        painter.save()
+        painter.setClipRect(title_rect, Qt.IntersectClip)
         painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, str(detail.get("title", "")))
-        painter.setClipping(False)
-        meta_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(6, 4, 10), copy_rect.width(), self.sleek_metric(28, 22, 34))
+        painter.restore()
+        meta_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(5, 3, 8), copy_rect.width(), self.sleek_metric(24, 18, 30))
         self.draw_sleek_elided(painter, meta_rect, detail.get("subtitle", ""), self.sleek_font(theme, 13, QFont.DemiBold, 10, 16), theme.get("vault_secondary_text", theme["guide_secondary_text"]))
+        if compact:
+            painter.restore()
+            return
         summary_rect = QRect(copy_rect.left(), meta_rect.bottom() + self.sleek_metric(12, 8, 16), copy_rect.width(), self.sleek_metric(58, 42, 76))
-        painter.setClipRect(summary_rect)
+        painter.save()
+        painter.setClipRect(summary_rect, Qt.IntersectClip)
         painter.setFont(self.sleek_font(theme, 13, QFont.Normal, 10, 17))
         painter.setPen(theme.get("vault_secondary_text", theme["guide_secondary_text"]))
         painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, detail.get("summary", ""))
-        painter.setClipping(False)
+        painter.restore()
+        painter.restore()
 
     def draw_sleek_vault_actions(self, painter, rect, actions, selected_index, focused, theme):
         if not actions:
             return
         gap = self.sleek_metric(12, 8, 18)
         x = rect.left()
-        previous, progress = sleek_focus_transition(self, "vault_detail_actions", selected_index if focused else -1)
+        if focused:
+            previous, progress = sleek_focus_transition(self, "vault_detail_actions", selected_index)
+        else:
+            previous, progress = -1, 1.0
         for index, action in enumerate(actions):
             label = action.get("label", "")
             meta = action.get("meta", "")
             width = self.sleek_metric(156, 118, 220)
             if label in {"Random Episode", "Add to My Vault", "Remove from My Vault"}:
-                width = self.sleek_metric(190, 145, 250)
+                width = self.sleek_metric(210, 162, 270)
             if x + width > rect.right():
                 break
             button = QRect(x, rect.top(), width, rect.height())
@@ -8582,7 +8806,8 @@ class OnDemandOverlay(QWidget):
             icon_key = action.get("action", "")
             if icon_key == "toggle_watchlist" and label.lower().startswith("remove"):
                 icon_key = "remove_watchlist"
-            self.draw_sleek_vault_button(painter, button, label, theme, active=index == 0 and not focused, focused=amount > 0.01, meta=meta, icon=icon_key)
+            self.draw_sleek_vault_button(painter, button, label, theme, active=False, focused=amount > 0.01, hovered=self.hover_target == ("detail_action", index), meta=meta, icon=icon_key)
+            self.detail_action_hit_rects.append((self.map_interactive_rect(button), index))
             x = button.right() + gap
 
     def draw_sleek_vault_show_detail(self, painter, inner, header_rect, footer_rect, theme):
@@ -8591,15 +8816,31 @@ class OnDemandOverlay(QWidget):
         seasons = self.state.get("seasons", [])
         episodes = self.state.get("episode_items", [])
         episode_detail = self.state.get("episode_detail", {})
+        detail_compact = bool(self.state.get("detail_compact", False))
         side = self.sleek_metric(28, 18, 42)
-        top = header_rect.bottom() + self.sleek_metric(24, 16, 34)
-        bottom = footer_rect.top() - self.sleek_metric(22, 14, 30)
+        content_area = self.vault_content_viewport(inner, header_rect.bottom(), footer_rect)
+        top = content_area.top() + self.sleek_metric(24, 16, 34)
+        bottom = content_area.bottom() + 1
+        self.fill_vault_reserved_space(painter, inner, footer_rect, theme)
+
         poster_w = max(self.sleek_metric(260, 190, 360), min(self.sleek_metric(360, 260, 440), int(inner.width() * 0.25)))
-        poster_h = self.sleek_metric(390, 292, 500)
-        poster_rect = QRect(inner.left() + side, top, poster_w, min(poster_h, max(180, bottom - top - self.sleek_metric(260, 210, 300))))
-        copy_rect = QRect(poster_rect.right() + self.sleek_metric(34, 24, 48), top + self.sleek_metric(10, 6, 16), inner.right() - poster_rect.right() - side - self.sleek_metric(34, 24, 48), self.sleek_metric(245, 188, 310))
-        self.draw_sleek_vault_detail_header(painter, poster_rect, copy_rect, detail, theme)
-        actions_rect = QRect(copy_rect.left(), copy_rect.top() + self.sleek_metric(210, 160, 258), copy_rect.width(), self.sleek_metric(54, 42, 64))
+        if detail_compact:
+            poster_h = self.sleek_metric(150, 116, 196)
+            copy_h = self.sleek_metric(138, 108, 176)
+            actions_offset = self.sleek_metric(126, 96, 156)
+        else:
+            poster_h = self.sleek_metric(390, 292, 500)
+            copy_h = self.sleek_metric(245, 188, 310)
+            actions_offset = self.sleek_metric(210, 160, 258)
+
+        poster_rect = QRect(inner.left() + side, top, poster_w, min(poster_h, max(self.sleek_metric(140, 110, 180), bottom - top - self.sleek_metric(260, 210, 300))))
+        copy_rect = QRect(poster_rect.right() + self.sleek_metric(34, 24, 48), top + self.sleek_metric(10, 6, 16), inner.right() - poster_rect.right() - side - self.sleek_metric(34, 24, 48), copy_h)
+
+        painter.save()
+        painter.setClipRect(content_area, Qt.IntersectClip)
+
+        self.draw_sleek_vault_detail_header(painter, poster_rect, copy_rect, detail, theme, compact=detail_compact)
+        actions_rect = QRect(copy_rect.left(), copy_rect.top() + actions_offset, copy_rect.width(), self.sleek_metric(54, 42, 64))
         self.draw_sleek_vault_actions(painter, actions_rect, actions, self.state.get("action_selected", 0), self.state.get("detail_focus") == "actions", theme)
 
         seasons_rect = QRect(copy_rect.left(), actions_rect.bottom() + self.sleek_metric(22, 16, 28), copy_rect.width(), self.sleek_metric(42, 32, 52))
@@ -8608,23 +8849,33 @@ class OnDemandOverlay(QWidget):
             focused = self.state.get("detail_focus") == "seasons" and index == self.state.get("season_selected", 0)
             label = f"{season.get('label', 'Season')}   {season.get('count', '')}"
             w = min(self.sleek_metric(168, 118, 210), max(self.sleek_metric(110, 86, 134), QFontMetrics(self.sleek_font(theme, 11, QFont.Bold, 9, 14)).horizontalAdvance(label) + self.sleek_metric(32, 24, 40)))
-            self.draw_sleek_vault_chip(painter, QRect(x, seasons_rect.top(), w, seasons_rect.height()), label, theme, active=focused or index == self.state.get("season_selected", 0))
+            self.draw_sleek_vault_chip(painter, QRect(x, seasons_rect.top(), w, seasons_rect.height()), label, theme, active=index == self.state.get("season_selected", 0), focused=focused)
             x += w + self.sleek_metric(10, 7, 14)
 
         list_top = max(poster_rect.bottom() + self.sleek_metric(26, 18, 34), seasons_rect.bottom() + self.sleek_metric(18, 12, 26))
         list_h = max(0, bottom - list_top)
         list_rect = QRect(inner.left() + side, list_top, int(inner.width() * 0.68), list_h)
-        now_rect = QRect(list_rect.right() + self.sleek_metric(18, 12, 24), list_rect.top(), inner.right() - list_rect.right() - side - self.sleek_metric(18, 12, 24), list_rect.height())
-        self.draw_sleek_episode_panel(painter, list_rect, episodes, theme)
+        now_gap = self.sleek_metric(18, 12, 24)
+        now_rect = QRect(list_rect.right() + now_gap, list_rect.top(), max(0, inner.right() - list_rect.right() - side - now_gap), list_rect.height())
+        selected_season = max(0, min(int(self.state.get("season_selected", 0)), len(seasons) - 1)) if seasons else 0
+        season_label = seasons[selected_season].get("label", "") if seasons else ""
+        if not season_label:
+            season_label = "Season 1"
+        self.draw_sleek_episode_panel(painter, list_rect, episodes, theme, season_label=season_label)
         self.draw_sleek_now_playing_panel(painter, now_rect, episode_detail, theme)
+        if list_h > self.sleek_metric(64, 48, 80):
+            self.draw_vault_bottom_fade(painter, list_rect, theme)
 
-    def draw_sleek_episode_panel(self, painter, rect, episodes, theme):
+        painter.restore()
+
+    def draw_sleek_episode_panel(self, painter, rect, episodes, theme, season_label=""):
         painter.save()
         painter.setPen(QPen(theme.get("vault_card_border", theme["guide_card_border"]), 1))
         painter.setBrush(with_alpha(theme.get("vault_card_bg", theme["guide_card_bg"]), 176))
         painter.drawRoundedRect(rect, theme.get("vault_radius", theme.get("border_radius", 8)), theme.get("vault_radius", theme.get("border_radius", 8)))
         title_rect = QRect(rect.left() + 18, rect.top() + 12, rect.width() - 36, self.sleek_metric(30, 22, 36))
-        self.draw_sleek_elided(painter, title_rect, "Episodes", self.sleek_font(theme, 18, QFont.Bold, 14, 24), theme.get("vault_primary_text", theme["guide_primary_text"]))
+        heading = f"Episodes - {season_label}" if season_label else "Episodes"
+        self.draw_sleek_elided(painter, title_rect, heading, self.sleek_font(theme, 18, QFont.Bold, 14, 24), theme.get("vault_primary_text", theme["guide_primary_text"]))
         if not episodes:
             empty_rect = rect.adjusted(24, title_rect.bottom() + self.sleek_metric(18, 12, 24), -24, -24)
             painter.setFont(self.sleek_font(theme, 13, QFont.DemiBold, 10, 17))
@@ -8643,10 +8894,17 @@ class OnDemandOverlay(QWidget):
         target_offset = max(0.0, min(max_offset, float(selected * (row_h + gap)) - focus_band))
         if abs(target_offset - self.episode_list_target) > 0.5:
             self.episode_list_target = target_offset
-            self.start_stream_animation()
-        scroll = int(round(self.episode_list_offset))
+            if self.vault_selection_animates():
+                self.start_stream_animation()
+            else:
+                self.episode_list_offset = target_offset
+        current_scroll = self.episode_list_offset if self.vault_selection_animates() else target_offset
+        current_scroll = max(0.0, min(max_offset, float(current_scroll)))
+        if abs(current_scroll - self.episode_list_offset) > 0.01:
+            self.episode_list_offset = current_scroll
+        scroll = int(round(current_scroll))
         painter.save()
-        painter.setClipRect(list_rect)
+        painter.setClipRect(list_rect, Qt.IntersectClip)
         for index, item in enumerate(episodes):
             row_top = list_top + index * (row_h + gap) - scroll
             if row_top + row_h < list_top or row_top > rect.bottom():
@@ -8680,7 +8938,7 @@ class OnDemandOverlay(QWidget):
         painter.drawRoundedRect(rect, theme.get("vault_radius", theme.get("border_radius", 8)), theme.get("vault_radius", theme.get("border_radius", 8)))
         pad = self.sleek_metric(16, 12, 22)
         label_h = self.sleek_metric(28, 22, 34)
-        self.draw_sleek_elided(painter, QRect(rect.left() + pad, rect.top() + pad, rect.width() - pad * 2, label_h), "Now Playing", self.sleek_font(theme, 14, QFont.Bold, 11, 18), theme["accent"])
+        self.draw_sleek_elided(painter, QRect(rect.left() + pad, rect.top() + pad, rect.width() - pad * 2, label_h), "Preview", self.sleek_font(theme, 14, QFont.Bold, 11, 18), theme["accent"])
         art_top = rect.top() + self.sleek_metric(52, 40, 64)
         title_h = self.sleek_metric(28, 22, 34)
         art_h = min(self.sleek_metric(170, 120, 220), max(self.sleek_metric(34, 28, 44), rect.bottom() - art_top - title_h - pad))
@@ -8696,7 +8954,7 @@ class OnDemandOverlay(QWidget):
             self.draw_sleek_elided(painter, title, episode_detail.get("title", ""), self.sleek_font(theme, 13, QFont.Bold, 10, 17), theme.get("vault_primary_text", theme["guide_primary_text"]))
             summary = QRect(rect.left() + pad, title.bottom() + self.sleek_metric(8, 6, 12), rect.width() - pad * 2, max(0, rect.bottom() - title.bottom() - pad))
             if summary.height() >= self.sleek_metric(24, 18, 30):
-                painter.setClipRect(summary)
+                painter.setClipRect(summary, Qt.IntersectClip)
                 painter.setFont(self.sleek_font(theme, 10, QFont.Normal, 8, 13))
                 painter.setPen(theme.get("vault_secondary_text", theme["guide_secondary_text"]))
                 painter.drawText(summary, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, episode_detail.get("summary", ""))
@@ -8704,19 +8962,45 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_vault_movie_detail(self, painter, inner, header_rect, footer_rect, theme):
         detail = self.state.get("detail", {})
+        detail_compact = bool(self.state.get("detail_compact", False))
         side = self.sleek_metric(34, 22, 50)
-        top = header_rect.bottom() + self.sleek_metric(28, 18, 40)
-        bottom = footer_rect.top() - self.sleek_metric(22, 14, 30)
+        content_area = self.vault_content_viewport(inner, header_rect.bottom(), footer_rect)
+        top = content_area.top() + self.sleek_metric(28, 18, 40)
+        bottom = content_area.bottom() + 1
+        self.fill_vault_reserved_space(painter, inner, footer_rect, theme)
+
         poster_w = max(self.sleek_metric(250, 190, 360), min(self.sleek_metric(350, 250, 430), int(inner.width() * 0.24)))
-        poster_rect = QRect(inner.left() + side, top, poster_w, min(self.sleek_metric(440, 320, 560), bottom - top - self.sleek_metric(220, 170, 270)))
-        copy_rect = QRect(poster_rect.right() + self.sleek_metric(40, 28, 56), top + self.sleek_metric(6, 4, 10), inner.right() - poster_rect.right() - side - self.sleek_metric(40, 28, 56), self.sleek_metric(300, 230, 380))
-        self.draw_sleek_vault_detail_header(painter, poster_rect, copy_rect, detail, theme)
-        actions_rect = QRect(copy_rect.left(), copy_rect.top() + self.sleek_metric(220, 170, 280), copy_rect.width(), self.sleek_metric(54, 42, 64))
+        poster_h = self.sleek_metric(220, 164, 286) if detail_compact else self.sleek_metric(440, 320, 560)
+        copy_h = self.sleek_metric(168, 126, 216) if detail_compact else self.sleek_metric(300, 230, 380)
+        action_offset = self.sleek_metric(116, 88, 150) if detail_compact else self.sleek_metric(220, 170, 280)
+        poster_rect = QRect(inner.left() + side, top, poster_w, min(poster_h, max(self.sleek_metric(150, 116, 190), bottom - top - self.sleek_metric(180, 138, 230))))
+        copy_rect = QRect(poster_rect.right() + self.sleek_metric(40, 28, 56), top + self.sleek_metric(6, 4, 10), inner.right() - poster_rect.right() - side - self.sleek_metric(40, 28, 56), copy_h)
+
+        painter.save()
+        painter.setClipRect(content_area, Qt.IntersectClip)
+
+        self.draw_sleek_vault_detail_header(painter, poster_rect, copy_rect, detail, theme, compact=detail_compact)
+        actions_rect = QRect(copy_rect.left(), copy_rect.top() + action_offset, copy_rect.width(), self.sleek_metric(54, 42, 64))
         self.draw_sleek_vault_actions(painter, actions_rect, self.state.get("actions", []), self.state.get("action_selected", 0), self.state.get("detail_focus") == "actions", theme)
-        rows_top = poster_rect.bottom() + self.sleek_metric(28, 20, 36)
+        rows_top = max(poster_rect.bottom(), actions_rect.bottom()) + self.sleek_metric(28, 20, 36)
         rows_rect = QRect(inner.left() + side, rows_top, inner.width() - side * 2, max(0, bottom - rows_top))
         if rows_rect.height() > self.sleek_metric(64, 48, 82):
-            self.draw_sleek_vault_shelves(painter, rows_rect, self.state.get("related_sections", []), theme)
+            painter.save()
+            painter.setClipRect(rows_rect, Qt.IntersectClip)
+            self.draw_sleek_vault_shelves(
+                painter,
+                rows_rect,
+                self.state.get("related_sections", []),
+                theme,
+                focus_enabled=False,
+                selected_section=0,
+                section_item_indices={},
+                vertical_state="detail",
+            )
+            self.draw_vault_bottom_fade(painter, rows_rect, theme)
+            painter.restore()
+
+        painter.restore()
 
     def canvas_rect(self):
         margin = scaled_metric(10, self.ui_scale, 8)
@@ -9415,7 +9699,7 @@ class OnDemandOverlay(QWidget):
         path = QPainterPath()
         path.addRoundedRect(rect, 10, 10)
         painter.save()
-        painter.setClipPath(path)
+        painter.setClipPath(path, Qt.IntersectClip)
         aspect_mode = Qt.KeepAspectRatio if fit_mode == "fit" else Qt.KeepAspectRatioByExpanding
         pixmap = load_scaled_ui_pixmap(artwork_path, rect.size(), aspect_mode)
         if not pixmap.isNull():
@@ -9496,15 +9780,103 @@ class OnDemandOverlay(QWidget):
                     painter.drawText(line_rect, Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(line, Qt.ElideRight, text_rect.width()))
                     y += fm.height() + 4
             else:
-                initials = "".join(ch for ch in re.findall(r"[A-Za-z0-9]", title.upper())[:2]) or "MW"
-                painter.setFont(QFont(placeholder_family, max(scaled_metric(26, self.ui_scale, 20), rect.height() // 3), QFont.Bold))
-                painter.setPen(QColor(255, 255, 255, 210))
-                painter.drawText(rect, Qt.AlignCenter, initials)
+                cable = self.skin_style() == "cable"
+                accent = theme.get("accent", QColor(244, 226, 132))
+                title_text = str(title or APP_NAME).strip() or APP_NAME
+                badge_text = str(badge or "VAULT").strip().upper()
+                painter.setPen(Qt.NoPen)
+                if cable:
+                    painter.setBrush(QColor(0, 0, 0, 38))
+                    for y in range(rect.top() + 3, rect.bottom(), 5):
+                        painter.drawRect(rect.left(), y, rect.width(), 1)
+                    band_h = max(28, min(rect.height() // 3, 58))
+                    band = QRect(rect.left() + 8, rect.bottom() - band_h - 8, rect.width() - 16, band_h)
+                    painter.setPen(QPen(QColor(22, 26, 16, 210), 1))
+                    painter.setBrush(QColor(max(0, theme["header"].red() - 18), max(0, theme["header"].green() - 16), max(0, theme["header"].blue() - 12), 214))
+                    painter.drawRect(band)
+                    if show_badge and badge_text:
+                        badge_rect = QRect(rect.left() + 10, rect.top() + 10, min(rect.width() - 20, max(68, QFontMetrics(QFont(placeholder_family, 9, QFont.Bold)).horizontalAdvance(badge_text) + 18)), 22)
+                        painter.setPen(QPen(QColor(28, 24, 8, 220), 1))
+                        painter.setBrush(with_alpha(accent, 230))
+                        painter.drawRect(badge_rect)
+                        painter.setFont(QFont(placeholder_family, max(8, min(11, rect.height() // 12)), QFont.Bold))
+                        painter.setPen(theme.get("selected_text", QColor(26, 22, 8)))
+                        painter.drawText(badge_rect.adjusted(4, 0, -4, 0), Qt.AlignCenter | Qt.TextSingleLine, painter.fontMetrics().elidedText(badge_text, Qt.ElideRight, badge_rect.width() - 8))
+                    text_rect = band.adjusted(8, 3, -8, -3)
+                    title_font = QFont(placeholder_family, max(12, min(22, rect.height() // 8, rect.width() // 12)), QFont.Bold)
+                    painter.setFont(title_font)
+                    painter.setPen(theme.get("guide_primary_text", QColor(248, 248, 238)))
+                    wrapped = []
+                    words = title_text.upper().split()
+                    line = ""
+                    fm = QFontMetrics(title_font)
+                    for word in words:
+                        candidate = f"{line} {word}".strip()
+                        if line and fm.horizontalAdvance(candidate) > text_rect.width():
+                            wrapped.append(line)
+                            line = word
+                        else:
+                            line = candidate
+                    if line:
+                        wrapped.append(line)
+                    wrapped = (wrapped or [title_text.upper()])[:2]
+                    line_h = max(12, text_rect.height() // max(1, len(wrapped)))
+                    for i, line in enumerate(wrapped):
+                        row = QRect(text_rect.left(), text_rect.top() + i * line_h, text_rect.width(), line_h)
+                        self.draw_cable_text(painter, row, fm.elidedText(line, Qt.ElideRight, row.width()), painter.pen().color(), title_font, Qt.AlignLeft | Qt.AlignVCenter)
+                else:
+                    shine = QLinearGradient(rect.topLeft(), rect.bottomRight())
+                    shine.setColorAt(0.0, QColor(255, 255, 255, 72))
+                    shine.setColorAt(0.34, QColor(255, 255, 255, 18))
+                    shine.setColorAt(0.7, QColor(accent.red(), accent.green(), accent.blue(), 34))
+                    shine.setColorAt(1.0, QColor(255, 255, 255, 0))
+                    painter.setBrush(shine)
+                    painter.drawRoundedRect(rect.adjusted(2, 2, -2, -2), 10, 10)
+                    painter.setPen(QPen(QColor(255, 255, 255, 46), 2))
+                    for i, divisor in enumerate((5, 3, 2)):
+                        y = rect.top() + rect.height() // divisor
+                        painter.drawArc(QRect(rect.left() - rect.width() // 5, y - 28, rect.width() + rect.width() // 3, 58 + i * 12), 0, 180 * 16)
+                    for i in range(3):
+                        bubble = QRect(rect.right() - 30 - i * 28, rect.top() + 12 + i * 18, 10 + i * 5, 10 + i * 5)
+                        painter.setPen(QPen(QColor(255, 255, 255, 52), 1))
+                        painter.setBrush(QColor(255, 255, 255, 18))
+                        painter.drawEllipse(bubble)
+                    if show_badge and badge_text:
+                        badge_font = QFont(theme.get("font_ui", placeholder_family), max(8, min(11, rect.height() // 12)), QFont.Bold)
+                        badge_rect = QRect(rect.left() + 12, rect.top() + 12, min(rect.width() - 24, max(72, QFontMetrics(badge_font).horizontalAdvance(badge_text) + 20)), max(20, min(26, rect.height() // 6)))
+                        self.draw_rounded_gradient_box(painter, badge_rect, theme.get("pf_button_selected_top", accent.lighter(114)), theme.get("pf_button_selected_bottom", accent), theme.get("vault_button_focused_border", accent.darker(112)), radius=max(6, badge_rect.height() // 2))
+                        painter.setFont(badge_font)
+                        painter.setPen(theme.get("vault_button_focused_text", QColor(36, 32, 12)))
+                        painter.drawText(badge_rect.adjusted(5, 0, -5, 0), Qt.AlignCenter | Qt.TextSingleLine, painter.fontMetrics().elidedText(badge_text, Qt.ElideRight, badge_rect.width() - 10))
+                    text_rect = rect.adjusted(18, max(42, rect.height() // 4), -18, -18)
+                    title_font = QFont(theme.get("font_ui", placeholder_family), max(13, min(26, rect.height() // 6, rect.width() // 11)), QFont.Bold)
+                    painter.setFont(title_font)
+                    fm = QFontMetrics(title_font)
+                    lines = []
+                    line = ""
+                    for word in title_text.split():
+                        candidate = f"{line} {word}".strip()
+                        if line and fm.horizontalAdvance(candidate) > text_rect.width():
+                            lines.append(line)
+                            line = word
+                        else:
+                            line = candidate
+                    if line:
+                        lines.append(line)
+                    lines = (lines or [title_text])[:3]
+                    line_h = min(fm.height() + 2, max(14, text_rect.height() // max(1, len(lines))))
+                    block_h = line_h * len(lines)
+                    y = text_rect.top() + max(0, (text_rect.height() - block_h) // 2)
+                    painter.setPen(theme.get("vault_primary_text", theme.get("text", QColor(245, 248, 250))))
+                    for line in lines:
+                        row = QRect(text_rect.left(), y, text_rect.width(), line_h)
+                        painter.drawText(row, Qt.AlignLeft | Qt.AlignVCenter, fm.elidedText(line, Qt.ElideRight, row.width()))
+                        y += line_h
         painter.restore()
         painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
         painter.setBrush(Qt.NoBrush)
         painter.drawRoundedRect(rect, 10, 10)
-        if badge and show_badge and not theme.get("sleek"):
+        if badge and show_badge and not theme.get("sleek") and not pixmap.isNull():
             badge_rect = QRect(rect.left() + 8, rect.top() + 8, min(rect.width() - 16, scaled_metric(92, self.ui_scale, 72)), scaled_metric(18, self.ui_scale, 16))
             painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(255, 244, 188, 220))
@@ -9612,7 +9984,7 @@ class OnDemandOverlay(QWidget):
             painter.save()
             clip = QPainterPath()
             clip.addRoundedRect(thumb_rect, 10, 10)
-            painter.setClipPath(clip)
+            painter.setClipPath(clip, Qt.IntersectClip)
             painter.drawPixmap(thumb_rect, scaled, QRect(src_x, src_y, thumb_rect.width(), thumb_rect.height()))
             painter.restore()
             painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
@@ -9710,7 +10082,42 @@ class OnDemandOverlay(QWidget):
         )
 
     def mouseMoveEvent(self, event):
+        pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
+        target = None
+        for index, rect in enumerate(self.footer_button_rects):
+            if rect.contains(pos):
+                target = ("nav", index)
+                break
+        if target is None and self.state.get("view") == "home":
+            for rect, action_key in self.hero_action_hit_rects:
+                if rect.contains(pos):
+                    target = ("hero", action_key)
+                    break
+            if target is None:
+                for rect, filter_index in self.filter_hit_rects:
+                    if rect.contains(pos):
+                        target = ("filter", filter_index)
+                        break
+            if target is None:
+                for rect, section_index, item_index in self.home_card_hit_rects:
+                    if rect.contains(pos):
+                        target = ("card", section_index, item_index)
+                        break
+        elif target is None:
+            for rect, action_index in getattr(self, "detail_action_hit_rects", []):
+                if rect.contains(pos):
+                    target = ("detail_action", action_index)
+                    break
+        if target != self.hover_target:
+            self.hover_target = target
+            self.update()
         super().mouseMoveEvent(event)
+
+    def leaveEvent(self, event):
+        if self.hover_target is not None:
+            self.hover_target = None
+            self.update()
+        super().leaveEvent(event)
 
     def mousePressEvent(self, event):
         pos = event.position().toPoint() if hasattr(event, "position") else event.pos()
@@ -10089,6 +10496,29 @@ class OnDemandOverlay(QWidget):
         painter.drawText(rect, Qt.AlignCenter, label)
 
     def draw_footer(self, painter, rect, small_font, theme):
+        if theme.get("sleek"):
+            active_index = int(self.state.get("nav_index", 3)) if self.state.get("nav_focused", False) else -1
+            if self.state.get("nav_focused", False):
+                previous_nav_index, nav_transition_progress = sleek_focus_transition(self, "vault_nav_focus", active_index)
+            else:
+                previous_nav_index, nav_transition_progress = -1, 1.0
+            self.footer_button_rects = [
+                self.map_interactive_rect(button)
+                for button in draw_sleek_bottom_nav_bar(
+                    painter,
+                    rect,
+                    theme,
+                    self.sleek_mode,
+                    bool(self.state.get("nav_focused", False)),
+                    int(self.state.get("nav_index", 3)),
+                    3,
+                    self.sleek_scale_factor(),
+                    previous_index=previous_nav_index,
+                    transition_progress=nav_transition_progress,
+                    items=[("back", "Back"), ("menu", "Menu"), ("guide", "Guide"), ("vault", "Vault")],
+                )
+            ]
+            return
         if self.skin_style() == "cable":
             self.draw_bar(painter, rect, theme, radius=1)
             self.draw_universal_buttons(painter, rect, small_font, theme)
@@ -20651,7 +21081,7 @@ class ChannelSurfer(QWidget):
         self.refresh_on_demand()
 
     def ensure_on_demand_focus_state(self):
-        self.on_demand_nav_index = max(0, min(int(self.on_demand_nav_index), 3))
+        self.on_demand_nav_index = max(0, min(int(self.on_demand_nav_index), self.on_demand_nav_button_count() - 1))
         self.on_demand_settings_focus_index = max(0, min(int(self.on_demand_settings_focus_index), self.in_app_menu_close_index()))
         options = self.on_demand_filter_options()
         self.on_demand_filter_index = max(0, min(int(self.on_demand_filter_index), len(options) - 1))
@@ -21550,6 +21980,9 @@ class ChannelSurfer(QWidget):
             return 5
         return 5 if self.playback_mode == "ondemand" else 4
 
+    def on_demand_nav_button_count(self):
+        return 5 if self.video_window.on_demand_overlay.skin_style() == "flat" else 4
+
     def activate_universal_nav(self, source, index):
         if source == "guide" and self.video_window.guide_overlay.skin_style() == "flat":
             if index == 0:
@@ -21573,6 +22006,9 @@ class ChannelSurfer(QWidget):
             self.toggle_sleek_freak_mode()
             return
         if source == "vault":
+            if self.video_window.on_demand_overlay.skin_style() == "flat" and index == 4:
+                self.toggle_sleek_freak_mode()
+                return
             if index == 0:
                 self.on_demand_nav_focused = False
                 if self.on_demand_settings_open:
@@ -22000,6 +22436,7 @@ class ChannelSurfer(QWidget):
                 "thumbnail": episode_thumbnail,
             },
             "related_sections": self.build_on_demand_related_sections(self.on_demand_channel_index, self.on_demand_group_index, media_type),
+            "detail_compact": self.on_demand_nav_focused or self.on_demand_detail_focus in ("seasons", "episodes"),
         }
         perf_log(
             "vault.state.build",
@@ -22236,6 +22673,10 @@ class ChannelSurfer(QWidget):
     def on_demand_up(self):
         if not self.video_window.on_demand_overlay.isVisible():
             return
+        # Vault focus is intentionally zone-based: hero actions -> tabs -> rows
+        # -> bottom nav on home, and actions -> seasons -> episodes -> nav on
+        # detail. Mouse hover is tracked only by the overlay and never mutates
+        # these keyboard focus fields.
         if self.on_demand_settings_open:
             self.on_demand_settings_focus_index = (self.on_demand_settings_focus_index - 1) % self.in_app_menu_row_count()
             self.refresh_on_demand()
@@ -22248,6 +22689,11 @@ class ChannelSurfer(QWidget):
                 if sections:
                     self.on_demand_section_index = len(sections) - 1
                     self.on_demand_section_item_indices.setdefault(self.on_demand_section_index, 0)
+                    overlay = self.video_window.on_demand_overlay
+                    overlay.home_vertical_offset = 99999.0
+                    overlay.home_vertical_target = 99999.0
+                    overlay.home_row_offsets.clear()
+                    overlay.home_row_targets.clear()
             else:
                 group = self.current_on_demand_group()
                 seasons = self.build_on_demand_seasons(group)
@@ -22263,7 +22709,21 @@ class ChannelSurfer(QWidget):
             elif self.on_demand_home_focus == "filters":
                 self.on_demand_home_focus = "hero"
             else:
-                self.on_demand_home_focus = "hero"
+                # Up from hero: wrap to the last row and snap scroll directly to
+                # the bottom so there is no long animated slide from 0 to max.
+                sections = self.build_on_demand_home_sections()
+                if sections:
+                    self.on_demand_home_focus = "rows"
+                    self.on_demand_section_index = len(sections) - 1
+                    self.on_demand_section_item_indices.setdefault(self.on_demand_section_index, 0)
+                    overlay = self.video_window.on_demand_overlay
+                    # Snap to the real bottom on the first post-wrap paint using
+                    # a large sentinel; draw_sleek_vault_shelves clamps it to the
+                    # actual max_vertical for the compact-hero layout.
+                    overlay.home_vertical_offset = 99999.0
+                    overlay.home_vertical_target = 99999.0
+                    overlay.home_row_offsets.clear()
+                    overlay.home_row_targets.clear()
         else:
             if self.on_demand_detail_focus == "episodes":
                 group = self.current_on_demand_group()
@@ -22283,6 +22743,12 @@ class ChannelSurfer(QWidget):
                 current = order.index(self.on_demand_detail_focus) if self.on_demand_detail_focus in order else 0
                 if current > 0:
                     self.on_demand_detail_focus = order[current - 1]
+                    if self.on_demand_detail_focus == "actions":
+                        overlay = self.video_window.on_demand_overlay
+                        overlay.detail_vertical_offset = 0.0
+                        overlay.detail_vertical_target = 0.0
+                        overlay.episode_list_offset = 0.0
+                        overlay.episode_list_target = 0.0
         self.refresh_on_demand()
         return
 
@@ -22295,11 +22761,28 @@ class ChannelSurfer(QWidget):
             self.refresh_on_demand()
             return
         if self.on_demand_nav_focused:
-            self.on_demand_nav_focused = False
             if self.on_demand_view == "home":
+                # Wrap from bottom nav back to the hero/top of the home screen.
+                # Reset all scroll state so the full hero and first row are visible
+                # immediately without animating through stale positions.
+                self.on_demand_nav_focused = False
                 self.on_demand_home_focus = "hero"
-            else:
-                self.on_demand_detail_focus = "actions"
+                self.on_demand_hero_action_index = 0
+                self.on_demand_section_index = 0
+                overlay = self.video_window.on_demand_overlay
+                overlay.home_vertical_offset = 0.0
+                overlay.home_vertical_target = 0.0
+                overlay.home_row_offsets.clear()
+                overlay.home_row_targets.clear()
+                self.refresh_on_demand()
+                return
+            self.on_demand_nav_focused = False
+            self.on_demand_detail_focus = "actions"
+            overlay = self.video_window.on_demand_overlay
+            overlay.detail_vertical_offset = 0.0
+            overlay.detail_vertical_target = 0.0
+            overlay.episode_list_offset = 0.0
+            overlay.episode_list_target = 0.0
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
@@ -22409,7 +22892,7 @@ class ChannelSurfer(QWidget):
                 self.step_profile(1)
             return
         if self.on_demand_nav_focused:
-            if self.on_demand_nav_index < 3:
+            if self.on_demand_nav_index < self.on_demand_nav_button_count() - 1:
                 self.on_demand_nav_index += 1
             self.refresh_on_demand()
             return
