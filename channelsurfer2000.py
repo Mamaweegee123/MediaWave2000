@@ -8244,6 +8244,161 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_vault_hero(self, painter, rect, detail, theme, compact=False):
         painter.save()
+
+        # ── STB / cable branch ──────────────────────────────────────────────
+        if self.skin_style() == "cable":
+            cable_primary = theme.get("vault_primary_text", theme["guide_primary_text"])
+            cable_secondary = theme.get("vault_secondary_text", theme["guide_secondary_text"])
+            cable_accent = theme.get("guide_header_text", cable_primary)
+            gf_primary = guide_font_family("primary")
+            gf_secondary = guide_font_family("secondary")
+
+            # Panel background — cable beveled frame
+            draw_classic_cable_panel(painter, rect, theme, self.theme_name, inset=4, border_width=2, border_alpha=200)
+
+            pad = self.sleek_metric(18, 12, 26)
+            if compact:
+                art_w = min(self.sleek_metric(136, 104, 180), max(self.sleek_metric(92, 72, 128), int(rect.width() * 0.14)))
+                art_rect = QRect(rect.left() + pad, rect.top() + pad, art_w, rect.height() - pad * 2)
+                copy_rect = QRect(art_rect.right() + self.sleek_metric(16, 10, 22), rect.top() + pad, rect.right() - art_rect.right() - self.sleek_metric(24, 16, 36) - pad, rect.height() - pad * 2)
+                self.draw_streaming_art_placeholder(
+                    painter, art_rect, detail.get("title", ""), detail.get("badge", ""),
+                    theme, detail.get("artwork_path", ""), fit_mode="cover", show_badge=False,
+                    radius=theme.get("vault_card_radius", 2),
+                )
+                _compact_hf = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
+                _art_border = theme.get("vault_card_selected_border", theme["guide_card_selected_border"]) if _compact_hf else theme.get("vault_card_border", theme["guide_card_border"])
+                painter.setPen(QPen(_art_border, 2 if _compact_hf else 1))
+                painter.setBrush(Qt.NoBrush)
+                painter.drawRect(art_rect.adjusted(1, 1, -1, -1))
+
+                # "CONTINUE WATCHING" bar
+                cw_rect = QRect(copy_rect.left(), copy_rect.top(), copy_rect.width(), self.sleek_metric(18, 14, 22))
+                draw_classic_cable_bar(painter, cw_rect, theme, border_width=1, border_alpha=160)
+                self.draw_cable_text(painter, cw_rect, "CONTINUE WATCHING", cable_accent,
+                                     QFont(gf_primary, self.sleek_metric(9, 7, 11), QFont.Bold), Qt.AlignCenter)
+                title_rect = QRect(copy_rect.left(), cw_rect.bottom() + self.sleek_metric(4, 2, 6), copy_rect.width(), self.sleek_metric(32, 24, 40))
+                self.draw_cable_text(painter, title_rect, detail.get("title", f"{APP_NAME} Vault"),
+                                     cable_primary, QFont(gf_primary, self.sleek_metric(18, 14, 24), QFont.Bold), Qt.AlignLeft | Qt.AlignVCenter)
+                subtitle_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(2, 1, 4), copy_rect.width(), self.sleek_metric(18, 14, 22))
+                self.draw_cable_text(painter, subtitle_rect, detail.get("subtitle", ""),
+                                     cable_secondary, QFont(gf_secondary, self.sleek_metric(10, 8, 13), QFont.DemiBold), Qt.AlignLeft | Qt.AlignVCenter)
+
+                actions = detail.get("actions", [])
+                if actions:
+                    selected_action = int(self.state.get("hero_action_selected", 0))
+                    hero_focused = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
+                    action = actions[min(selected_action, len(actions) - 1)]
+                    label = str(action.get("label", action) if isinstance(action, dict) else action)
+                    action_key = str(action.get("action", label.lower()) if isinstance(action, dict) else label.lower())
+                    button_w = self.sleek_metric(118, 92, 150)
+                    button = QRect(rect.right() - pad - button_w, rect.center().y() - self.sleek_metric(16, 13, 20), button_w, self.sleek_metric(32, 26, 40))
+                    hovered = self.hover_target == ("hero", action_key)
+                    self.draw_slot_box(painter, button, theme, active=hero_focused or hovered)
+                    self.draw_cable_text(painter, button, label.upper(), cable_accent if (hero_focused or hovered) else cable_primary,
+                                         QFont(gf_primary, self.sleek_metric(10, 8, 13), QFont.Bold), Qt.AlignCenter)
+                    self.hero_action_hit_rects.append((self.map_interactive_rect(button), action_key))
+
+                progress = max(0.0, min(1.0, float(detail.get("progress", 0.0) or 0.0)))
+                if progress > 0:
+                    track = QRect(copy_rect.left(), rect.bottom() - pad - self.sleek_metric(4, 3, 5), max(60, min(copy_rect.width(), rect.width() // 3)), self.sleek_metric(4, 3, 5))
+                    painter.setPen(Qt.NoPen)
+                    painter.setBrush(theme.get("guide_progress_track", QColor(255, 255, 255, 46)))
+                    painter.drawRect(track)
+                    painter.setBrush(theme.get("guide_progress_fill", theme.get("selected_background", QColor(255, 255, 255, 200))))
+                    painter.drawRect(QRect(track.left(), track.top(), int(track.width() * progress), track.height()))
+                painter.restore()
+                return
+
+            # Full (non-compact) STB hero
+            art_w = max(self.sleek_metric(300, 220, 460), min(int(rect.width() * 0.36), self.sleek_metric(580, 380, 680)))
+            art_rect = QRect(rect.left() + pad, rect.top() + pad, art_w, rect.height() - pad * 2)
+            copy_rect = QRect(art_rect.right() + self.sleek_metric(22, 14, 32), art_rect.top(), rect.right() - art_rect.right() - self.sleek_metric(22, 14, 32) - pad, art_rect.height())
+
+            self.draw_streaming_art_placeholder(
+                painter, art_rect, detail.get("title", ""), detail.get("badge", ""),
+                theme, detail.get("artwork_path", ""), fit_mode="cover", show_badge=False,
+                radius=theme.get("vault_card_radius", 2),
+            )
+            _hero_focused = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
+            painter.setPen(QPen(theme.get("vault_card_selected_border", theme["guide_card_selected_border"]) if _hero_focused else theme.get("vault_card_border", theme["guide_card_border"]), 2 if _hero_focused else 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(art_rect.adjusted(1, 1, -1, -1))
+
+            # Badge bar
+            badge_text = str(detail.get("badge", "FEATURED") or "FEATURED").upper()
+            badge_rect = QRect(copy_rect.left(), copy_rect.top() + self.sleek_metric(6, 4, 10), min(copy_rect.width(), self.sleek_metric(130, 96, 180)), self.sleek_metric(22, 16, 28))
+            draw_classic_cable_bar(painter, badge_rect, theme, border_width=1, border_alpha=180)
+            self.draw_cable_text(painter, badge_rect, badge_text, cable_accent,
+                                 QFont(gf_primary, self.sleek_metric(9, 7, 11), QFont.Bold), Qt.AlignCenter)
+
+            media_label = str(detail.get("media_label", "") or "").strip()
+            if media_label:
+                ml_rect = QRect(badge_rect.right() + self.sleek_metric(8, 5, 12), badge_rect.top(), min(copy_rect.width(), self.sleek_metric(110, 80, 150)), badge_rect.height())
+                draw_classic_cable_bar(painter, ml_rect, theme, border_width=1, border_alpha=140)
+                self.draw_cable_text(painter, ml_rect, media_label.upper(), cable_secondary,
+                                     QFont(gf_primary, self.sleek_metric(9, 7, 11), QFont.Bold), Qt.AlignCenter)
+
+            title_top = badge_rect.bottom() + self.sleek_metric(12, 8, 18)
+            title_font = QFont(gf_primary, self.sleek_metric(28, 20, 40), QFont.Bold)
+            title_rect = QRect(copy_rect.left(), title_top, copy_rect.width(), min(self.sleek_metric(80, 58, 100), copy_rect.height() // 3))
+            self.draw_cable_text(painter, title_rect, str(detail.get("title", f"{APP_NAME} Vault") or ""),
+                                 cable_primary, title_font, Qt.AlignLeft | Qt.AlignTop)
+
+            subtitle_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(6, 4, 10), copy_rect.width(), self.sleek_metric(22, 16, 28))
+            self.draw_cable_text(painter, subtitle_rect, detail.get("subtitle", ""),
+                                 cable_secondary, QFont(gf_secondary, self.sleek_metric(11, 9, 14), QFont.DemiBold), Qt.AlignLeft | Qt.AlignVCenter)
+
+            summary = detail.get("summary", "")
+            summary_rect = QRect(copy_rect.left(), subtitle_rect.bottom() + self.sleek_metric(10, 6, 14), copy_rect.width(), max(0, copy_rect.bottom() - subtitle_rect.bottom() - self.sleek_metric(72, 56, 90)))
+            if summary_rect.height() >= self.sleek_metric(28, 20, 38) and summary:
+                summary_font = QFont(gf_secondary, self.sleek_metric(11, 9, 14), QFont.Normal)
+                painter.save()
+                painter.setClipRect(summary_rect, Qt.IntersectClip)
+                painter.setFont(summary_font)
+                shadow = QColor(0, 0, 0, 200)
+                for dx, dy in ((1, 0), (0, 1), (1, 1)):
+                    painter.setPen(shadow)
+                    painter.drawText(summary_rect.translated(dx, dy), Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, summary)
+                painter.setPen(cable_secondary)
+                painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, summary)
+                painter.restore()
+
+            actions = detail.get("actions", [])
+            if actions:
+                button_y = copy_rect.bottom() - self.sleek_metric(40, 32, 50)
+                x = copy_rect.left()
+                selected_action = int(self.state.get("hero_action_selected", 0))
+                hero_focused = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
+                for index, action in enumerate(actions[:5]):
+                    label = str(action.get("label", action) if isinstance(action, dict) else action)
+                    action_key = str(action.get("action", label.lower()) if isinstance(action, dict) else label.lower())
+                    is_active = hero_focused and index == selected_action
+                    hovered = self.hover_target == ("hero", action_key)
+                    font = QFont(gf_primary, self.sleek_metric(10, 8, 13), QFont.Bold)
+                    width = min(self.sleek_metric(170, 118, 210), max(self.sleek_metric(110, 84, 136), QFontMetrics(font).horizontalAdvance(label) + self.sleek_metric(40, 28, 54)))
+                    button = QRect(x, button_y, width, self.sleek_metric(34, 28, 42))
+                    self.draw_slot_box(painter, button, theme, active=is_active or hovered)
+                    self.draw_cable_text(painter, button, label.upper(), cable_accent if (is_active or hovered) else cable_primary,
+                                         font, Qt.AlignCenter)
+                    self.hero_action_hit_rects.append((self.map_interactive_rect(button), action_key))
+                    x = button.right() + self.sleek_metric(10, 7, 14)
+                    if x > copy_rect.right() - self.sleek_metric(70, 50, 90):
+                        break
+
+            progress = max(0.0, min(1.0, float(detail.get("progress", 0.0) or 0.0)))
+            if progress > 0:
+                track = QRect(copy_rect.left(), copy_rect.bottom() - self.sleek_metric(6, 4, 8), min(copy_rect.width(), self.sleek_metric(340, 200, 440)), self.sleek_metric(4, 3, 5))
+                painter.setPen(Qt.NoPen)
+                painter.setBrush(theme.get("guide_progress_track", QColor(255, 255, 255, 46)))
+                painter.drawRect(track)
+                fill = QRect(track.left(), track.top(), int(track.width() * progress), track.height())
+                painter.setBrush(theme.get("guide_progress_fill", theme.get("selected_background", QColor(255, 255, 255, 200))))
+                painter.drawRect(fill)
+            painter.restore()
+            return
+        # ── end STB branch ───────────────────────────────────────────────────
+
         radius = theme.get("vault_radius", theme.get("border_radius", 8))
         hero_bg = theme.get("vault_hero_background", theme["guide_hero_panel_bg"])
         painter.setPen(QPen(theme.get("vault_card_border", theme["guide_card_border"]), 1))
@@ -8839,6 +8994,70 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_vault_detail_header(self, painter, poster_rect, copy_rect, detail, theme, compact=False):
         painter.save()
+
+        # ── STB / cable branch ──────────────────────────────────────────────
+        if self.skin_style() == "cable":
+            cable_primary = theme.get("vault_primary_text", theme["guide_primary_text"])
+            cable_secondary = theme.get("vault_secondary_text", theme["guide_secondary_text"])
+            cable_accent = theme.get("guide_header_text", cable_primary)
+            gf_primary = guide_font_family("primary")
+            gf_secondary = guide_font_family("secondary")
+
+            _poster_radius = theme.get("vault_card_radius", 2)
+            self.draw_streaming_art_placeholder(
+                painter, poster_rect, detail.get("title", ""), detail.get("badge", ""),
+                theme, detail.get("artwork_path", ""), fit_mode="cover", show_badge=False,
+                radius=_poster_radius,
+            )
+            painter.setPen(QPen(theme.get("vault_card_selected_border", theme["guide_card_selected_border"]), 2))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRect(poster_rect.adjusted(1, 1, -1, -1))
+
+            # Badge bar
+            badge_text = str(detail.get("badge", "VAULT") or "VAULT").upper()
+            badge_rect = QRect(copy_rect.left(), copy_rect.top(), min(copy_rect.width(), self.sleek_metric(110, 82, 140)), self.sleek_metric(22, 16, 28))
+            draw_classic_cable_bar(painter, badge_rect, theme, border_width=1, border_alpha=180)
+            self.draw_cable_text(painter, badge_rect, badge_text, cable_accent,
+                                 QFont(gf_primary, self.sleek_metric(9, 7, 11), QFont.Bold), Qt.AlignCenter)
+
+            # Title
+            title_font_size = 22 if compact else 30
+            title_h = self.sleek_metric(44, 32, 56) if compact else self.sleek_metric(68, 48, 86)
+            title_rect = QRect(copy_rect.left(), badge_rect.bottom() + self.sleek_metric(8, 5, 12), copy_rect.width(), title_h)
+            self.draw_cable_text(painter, title_rect, str(detail.get("title", "") or ""),
+                                 cable_primary, QFont(gf_primary, self.sleek_metric(title_font_size, 14, title_font_size + 10), QFont.Bold),
+                                 Qt.AlignLeft | Qt.AlignTop)
+
+            # Subtitle / metadata bar
+            meta_rect = QRect(copy_rect.left(), title_rect.bottom() + self.sleek_metric(5, 3, 8), copy_rect.width(), self.sleek_metric(22, 16, 28))
+            draw_classic_cable_bar(painter, meta_rect, theme, border_width=1, border_alpha=120)
+            self.draw_cable_text(painter, meta_rect, detail.get("subtitle", ""),
+                                 cable_secondary, QFont(gf_secondary, self.sleek_metric(10, 8, 13), QFont.DemiBold),
+                                 Qt.AlignLeft | Qt.AlignVCenter)
+
+            if compact:
+                painter.restore()
+                return
+
+            # Summary
+            summary = detail.get("summary", "")
+            summary_rect = QRect(copy_rect.left(), meta_rect.bottom() + self.sleek_metric(10, 6, 14), copy_rect.width(), self.sleek_metric(56, 40, 72))
+            if summary:
+                summary_font = QFont(gf_secondary, self.sleek_metric(11, 9, 14), QFont.Normal)
+                painter.save()
+                painter.setClipRect(summary_rect, Qt.IntersectClip)
+                painter.setFont(summary_font)
+                shadow = QColor(0, 0, 0, 200)
+                for dx, dy in ((1, 0), (0, 1), (1, 1)):
+                    painter.setPen(shadow)
+                    painter.drawText(summary_rect.translated(dx, dy), Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, summary)
+                painter.setPen(cable_secondary)
+                painter.drawText(summary_rect, Qt.AlignLeft | Qt.AlignTop | Qt.TextWordWrap, summary)
+                painter.restore()
+            painter.restore()
+            return
+        # ── end STB branch ───────────────────────────────────────────────────
+
         _poster_radius = theme.get("vault_card_radius", theme.get("cell_radius", 8))
         self.draw_streaming_art_placeholder(
             painter,
