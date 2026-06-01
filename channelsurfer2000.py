@@ -7990,7 +7990,7 @@ class OnDemandOverlay(QWidget):
             painter.setBrush(chip_bg)
         painter.drawRoundedRect(rect, radius, radius)
         if focused:
-            painter.setPen(QPen(theme.get("vault_focus_ring", theme.get("accent", accent_border)), 2))
+            painter.setPen(QPen(theme.get("vault_focus_ring", theme.get("accent", accent_border)), max(2, self.sleek_metric(3, 2, 4))))
             painter.setBrush(Qt.NoBrush)
             painter.drawRoundedRect(rect.adjusted(1, 1, -1, -1), radius, radius)
         elif hovered:
@@ -8248,10 +8248,12 @@ class OnDemandOverlay(QWidget):
         hero_bg = theme.get("vault_hero_background", theme["guide_hero_panel_bg"])
         painter.setPen(QPen(theme.get("vault_card_border", theme["guide_card_border"]), 1))
         if theme.get("promised_future"):
+            _pf_top = theme.get("pf_header_top", hero_bg.lighter(118))
+            _pf_bot = theme.get("pf_header_bottom", theme.get("vault_panel_bg", hero_bg).darker(106))
             grad = QLinearGradient(rect.topLeft(), rect.bottomLeft())
-            grad.setColorAt(0.0, hero_bg.lighter(118))
-            grad.setColorAt(0.5, hero_bg)
-            grad.setColorAt(1.0, theme.get("vault_panel_bg", hero_bg).darker(106))
+            grad.setColorAt(0.0, _pf_top)
+            grad.setColorAt(0.5, _pf_bot)
+            grad.setColorAt(1.0, _pf_bot.darker(108))
             painter.setBrush(grad)
         else:
             painter.setBrush(hero_bg)
@@ -8272,6 +8274,7 @@ class OnDemandOverlay(QWidget):
                 detail.get("artwork_path", ""),
                 fit_mode="cover",
                 show_badge=False,
+                radius=theme.get("vault_card_radius", theme.get("cell_radius", 8)),
             )
             _compact_hf = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
             _art_border = theme.get("vault_card_selected_border", theme["guide_card_selected_border"]) if _compact_hf else theme.get("vault_card_border", theme["guide_card_border"])
@@ -8305,9 +8308,9 @@ class OnDemandOverlay(QWidget):
             if progress > 0:
                 track = QRect(copy_rect.left(), rect.bottom() - pad - self.sleek_metric(4, 3, 5), max(60, min(copy_rect.width(), rect.width() // 3)), self.sleek_metric(4, 3, 5))
                 painter.setPen(Qt.NoPen)
-                painter.setBrush(theme["guide_progress_track"])
+                painter.setBrush(theme.get("guide_progress_track", QColor(255, 255, 255, 46)))
                 painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
-                painter.setBrush(theme["guide_progress_fill"])
+                painter.setBrush(theme.get("guide_progress_fill", theme.get("selected_background", QColor(255, 255, 255, 200))))
                 painter.drawRoundedRect(QRect(track.left(), track.top(), int(track.width() * progress), track.height()), track.height() // 2, track.height() // 2)
             painter.restore()
             return
@@ -8334,6 +8337,7 @@ class OnDemandOverlay(QWidget):
             detail.get("artwork_path", ""),
             fit_mode="cover",
             show_badge=False,
+            radius=theme.get("vault_card_radius", theme.get("cell_radius", 8)),
         )
         _hero_focused = self.state.get("home_focus") == "hero" and not self.state.get("nav_focused", False) and not self.settings_open
         if _hero_focused:
@@ -8410,10 +8414,10 @@ class OnDemandOverlay(QWidget):
         if progress > 0:
             track = QRect(copy_rect.left(), copy_rect.bottom() - self.sleek_metric(6, 4, 8), min(copy_rect.width(), self.sleek_metric(360, 220, 470)), self.sleek_metric(4, 3, 5))
             painter.setPen(Qt.NoPen)
-            painter.setBrush(theme["guide_progress_track"])
+            painter.setBrush(theme.get("guide_progress_track", QColor(255, 255, 255, 46)))
             painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
             fill = QRect(track.left(), track.top(), int(track.width() * progress), track.height())
-            painter.setBrush(theme["guide_progress_fill"])
+            painter.setBrush(theme.get("guide_progress_fill", theme.get("selected_background", QColor(255, 255, 255, 200))))
             painter.drawRoundedRect(fill, fill.height() // 2, fill.height() // 2)
         painter.restore()
 
@@ -8739,7 +8743,7 @@ class OnDemandOverlay(QWidget):
         pad = self.sleek_metric(10, 8, 14)
         art_h = min(int(draw_rect.width() * 0.56), draw_rect.height() - self.sleek_metric(56, 44, 68))
         art_rect = QRect(draw_rect.left() + pad, draw_rect.top() + pad, draw_rect.width() - pad * 2, max(self.sleek_metric(66, 52, 92), art_h))
-        self.draw_streaming_art_placeholder(painter, art_rect, item.get("title", ""), item.get("badge", ""), theme, item.get("artwork_path", ""), show_badge=False)
+        self.draw_streaming_art_placeholder(painter, art_rect, item.get("title", ""), item.get("badge", ""), theme, item.get("artwork_path", ""), show_badge=False, radius=radius)
         badge = str(item.get("badge", "") or "").upper()
         if badge:
             badge_w = min(art_rect.width() - 14, max(self.sleek_metric(62, 50, 86), QFontMetrics(self.sleek_font(theme, 8, QFont.Bold, 7, 10)).horizontalAdvance(badge) + self.sleek_metric(18, 14, 24)))
@@ -8753,9 +8757,9 @@ class OnDemandOverlay(QWidget):
         if progress > 0:
             track = QRect(art_rect.left(), art_rect.bottom() - self.sleek_metric(6, 4, 7), art_rect.width(), self.sleek_metric(4, 3, 5))
             painter.setPen(Qt.NoPen)
-            painter.setBrush(theme["guide_progress_track"])
+            painter.setBrush(theme.get("guide_progress_track", QColor(255, 255, 255, 46)))
             painter.drawRoundedRect(track, track.height() // 2, track.height() // 2)
-            painter.setBrush(theme["guide_progress_fill"])
+            painter.setBrush(theme.get("guide_progress_fill", theme.get("selected_background", QColor(255, 255, 255, 200))))
             painter.drawRoundedRect(QRect(track.left(), track.top(), int(track.width() * progress), track.height()), track.height() // 2, track.height() // 2)
         painter.restore()
 
@@ -8835,6 +8839,7 @@ class OnDemandOverlay(QWidget):
 
     def draw_sleek_vault_detail_header(self, painter, poster_rect, copy_rect, detail, theme, compact=False):
         painter.save()
+        _poster_radius = theme.get("vault_card_radius", theme.get("cell_radius", 8))
         self.draw_streaming_art_placeholder(
             painter,
             poster_rect,
@@ -8844,6 +8849,7 @@ class OnDemandOverlay(QWidget):
             detail.get("artwork_path", ""),
             fit_mode="cover",
             show_badge=False,
+            radius=_poster_radius,
         )
         painter.setPen(QPen(theme.get("vault_card_selected_border", theme["guide_card_selected_border"]), 1))
         painter.setBrush(Qt.NoBrush)
@@ -8853,7 +8859,7 @@ class OnDemandOverlay(QWidget):
         self.draw_sleek_vault_chip(painter, chip_rect, detail.get("badge", "VAULT"), theme, active=True)
         title_h = self.sleek_metric(50, 38, 64) if compact else self.sleek_metric(76, 54, 96)
         title_rect = QRect(copy_rect.left(), chip_rect.bottom() + self.sleek_metric(10, 7, 14), copy_rect.width(), title_h)
-        painter.setFont(self.sleek_font(theme, 28 if compact else 36, QFont.Bold, 21 if compact else 25, 38 if compact else 48))
+        painter.setFont(self.sleek_font(theme, 28 if compact else 36, QFont.Bold, 16 if compact else 20, 38 if compact else 48))
         painter.setPen(theme.get("vault_primary_text", theme["guide_primary_text"]))
         painter.save()
         painter.setClipRect(title_rect, Qt.IntersectClip)
@@ -9008,7 +9014,7 @@ class OnDemandOverlay(QWidget):
             painter.setBrush(theme.get("vault_card_selected_bg", theme["guide_card_selected_bg"]) if focused else with_alpha(theme.get("vault_card_bg", theme["guide_card_bg"]), 166))
             painter.drawRoundedRect(row, theme.get("vault_card_radius", theme.get("cell_radius", 8)), theme.get("vault_card_radius", theme.get("cell_radius", 8)))
             thumb = QRect(row.left(), row.top(), min(self.sleek_metric(160, 118, 190), row.width() // 4), row.height())
-            self.draw_streaming_art_placeholder(painter, thumb.adjusted(1, 1, -1, -1), item.get("label", ""), "EPISODE", theme, item.get("artwork_path", ""), show_badge=False)
+            self.draw_streaming_art_placeholder(painter, thumb.adjusted(1, 1, -1, -1), item.get("label", ""), "EPISODE", theme, item.get("artwork_path", ""), show_badge=False, radius=theme.get("vault_card_radius", theme.get("cell_radius", 8)))
             text_left = thumb.right() + self.sleek_metric(14, 10, 18)
             ep_rect = QRect(text_left, row.top() + self.sleek_metric(8, 6, 10), row.width() - thumb.width() - self.sleek_metric(30, 20, 38), self.sleek_metric(18, 14, 22))
             self.draw_sleek_elided(painter, ep_rect, item.get("meta", ""), self.sleek_font(theme, 9, QFont.Bold, 8, 12), theme["accent"])
@@ -9040,7 +9046,7 @@ class OnDemandOverlay(QWidget):
         if isinstance(pixmap, QPixmap) and not pixmap.isNull():
             painter.drawPixmap(art, pixmap.scaled(art.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation), QRect(0, 0, art.width(), art.height()))
         else:
-            self.draw_streaming_art_placeholder(painter, art, episode_detail.get("title", ""), "NOW", theme, "", show_badge=False)
+            self.draw_streaming_art_placeholder(painter, art, episode_detail.get("title", ""), "NOW", theme, "", show_badge=False, radius=theme.get("vault_card_radius", theme.get("cell_radius", 8)))
         title_top = art.bottom() + self.sleek_metric(10, 7, 14)
         title = QRect(rect.left() + pad, title_top, rect.width() - pad * 2, max(0, min(title_h, rect.bottom() - title_top - pad)))
         if title.height() >= self.sleek_metric(16, 12, 20):
@@ -9771,7 +9777,7 @@ class OnDemandOverlay(QWidget):
                     painter.setPen(QColor(248, 248, 240))
                     painter.drawText(pill_rect, Qt.AlignCenter, progress_label)
 
-    def draw_streaming_art_placeholder(self, painter, rect, title, badge, theme, artwork_path="", fit_mode="cover", show_badge=True):
+    def draw_streaming_art_placeholder(self, painter, rect, title, badge, theme, artwork_path="", fit_mode="cover", show_badge=True, radius=None):
         grad = QLinearGradient(rect.topLeft(), rect.bottomRight())
         grad.setColorAt(
             0.0,
@@ -9800,8 +9806,10 @@ class OnDemandOverlay(QWidget):
                 255,
             ),
         )
+        if radius is None:
+            radius = theme.get("vault_card_radius", theme.get("cell_radius", 8))
         path = QPainterPath()
-        path.addRoundedRect(rect, 10, 10)
+        path.addRoundedRect(rect, radius, radius)
         painter.save()
         painter.setClipPath(path, Qt.IntersectClip)
         aspect_mode = Qt.KeepAspectRatio if fit_mode == "fit" else Qt.KeepAspectRatioByExpanding
@@ -9827,7 +9835,7 @@ class OnDemandOverlay(QWidget):
         else:
             painter.setPen(QPen(QColor(255, 255, 255, 40), 1))
             painter.setBrush(grad)
-            painter.drawRoundedRect(rect, 10, 10)
+            painter.drawRoundedRect(rect, radius, radius)
             placeholder_family = theme.get("font_primary", "Trebuchet MS") if theme.get("sleek") else guide_font_family("primary")
             if theme.get("sleek"):
                 shine = QRadialGradient(rect.center(), max(rect.width(), rect.height()) * 0.7)
@@ -9836,7 +9844,7 @@ class OnDemandOverlay(QWidget):
                 shine.setColorAt(1.0, QColor(accent.red(), accent.green(), accent.blue(), 0))
                 painter.setPen(Qt.NoPen)
                 painter.setBrush(shine)
-                painter.drawRoundedRect(rect, 10, 10)
+                painter.drawRoundedRect(rect, radius, radius)
                 label_rect = QRect()
                 label = (badge or "").upper()
                 if show_badge and label:
