@@ -1,0 +1,13 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=MediaWave
+GenericName=TV Channel Player
+Comment=Watch your personal TV channel collection
+Exec=/REPLACE_WITH_INSTALL_PATH/run_mediawave.sh
+Icon=/REPLACE_WITH_INSTALL_PATH/logos/MW2K_appicon.png
+Terminal=false
+Categories=AudioVideo;Video;Player;
+Keywords=tv;channels;video;player;mediawave;
+StartupNotify=true
+StartupWMClass=MediaWave2000

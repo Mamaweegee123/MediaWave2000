@@ -1,0 +1,75 @@
+============================================================
+  CHANNEL SETUP GUIDE
+============================================================
+
+CHANNEL FOLDER STRUCTURE
+-------------------------
+MediaWave treats each subfolder inside your catalog as one
+TV channel. The folder name becomes the channel name.
+
+Recommended layout:
+
+  Channels/
+    Channel Name/
+      Shows/
+        Show Title/
+          S01E01 - Episode Name.mp4
+          S01E02 - Episode Name.mp4
+        Another Show/
+      Movies/
+        Cool Movie (1985).mp4
+      Specials/
+        Holiday Special.mp4
+      Logos/
+        logo.png           ← channel bug / watermark logo
+
+MediaWave scans for video files recursively inside each
+channel folder, so nesting by category is optional —
+you can also put files directly in the channel folder.
+
+SUPPORTED VIDEO FORMATS
+-----------------------
+  .mp4  .mkv  .avi  .mov
+
+For best results, use the MediaWave Converter to prepare
+your videos before adding them to a channel folder.
+
+CHANNEL LOGOS (OPTIONAL)
+-------------------------
+Place a logo image inside a Logos/ subfolder of the channel:
+
+  Channel Name/Logos/logo.png
+
+Supported image formats: PNG (preferred), JPG, JPEG, BMP, GIF
+
+The logo appears as a small watermark overlay on-screen
+(called the "channel bug"). Enable it in Advanced Config.
+
+If no logo is found, MediaWave shows a text fallback.
+
+CHOOSING YOUR CATALOG
+---------------------
+Your catalog folder is the folder that CONTAINS your channel
+folders — not a channel folder itself.
+
+Example: if you have:
+  D:\My TV\Channels\HBO Classic\
+  D:\My TV\Channels\Comedy Central\
+
+Then choose:  D:\My TV\Channels\
+
+MediaWave remembers this path in settings. You can change
+it any time with "Choose Catalog…" on the main screen.
+
+USING AN EXTERNAL DRIVE
+------------------------
+You can keep your media on an external drive. MediaWave
+will notice if the drive is missing and prompt you to
+reconnect.
+
+MULTIPLE LIBRARIES
+------------------
+You can switch between different catalog folders using
+"Choose Catalog…". Each catalog is independent.
+
+============================================================

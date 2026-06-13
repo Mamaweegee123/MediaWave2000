@@ -1,0 +1,67 @@
+============================================================
+  COMMERCIAL SETUP GUIDE
+============================================================
+
+MediaWave can play real commercial breaks between episodes,
+just like broadcast TV.
+
+WHAT YOU NEED
+-------------
+A folder of short video clips (commercials, bumpers, promos,
+station IDs). These can be real ad recordings, custom clips,
+or anything you want.
+
+Recommended: convert them with MediaWave Converter first
+for the smoothest playback.
+
+SETTING UP YOUR COMMERCIALS FOLDER
+------------------------------------
+1. Put your commercial video files in a folder.
+   You can organize them however you like — flat or nested.
+
+   Example:
+     Commercials/
+       1980s/
+         ad_01.mp4
+         ad_02.mp4
+       Bumpers/
+         bumper_01.mp4
+
+2. In MediaWave, open "Advanced Config" from the main screen.
+
+3. Find the "Commercials" section.
+
+4. Enable commercials and select your Commercials folder.
+
+5. Choose how often you want commercial breaks to appear.
+
+6. Save and reload your catalog.
+
+DEFAULT LOCATION
+----------------
+If you are using the MediaWave Documents folder, a
+Commercials/ subfolder is created there automatically.
+You can use it as-is or choose any other folder.
+
+COMMERCIAL TIMING MODES
+------------------------
+  Between Episodes     - break plays between each episode
+  Timed Mid-Roll       - break plays every N minutes
+
+DENSITY SETTINGS
+----------------
+  Light     - 1-2 ads per break
+  Normal    - 2-4 ads per break
+  Heavy     - 4-6 ads per break
+
+PER-CHANNEL OVERRIDES
+---------------------
+In Advanced Config > My Catalog, you can override
+commercial settings for individual channels.
+
+DISABLING COMMERCIALS
+---------------------
+Uncheck "Enable Commercials" in Advanced Config at any time.
+The commercial library is not deleted — just paused.
+
+============================================================
