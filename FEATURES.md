@@ -1,9 +1,3 @@
-# MediaWave2000 — Full Feature List
-
-A complete reference of everything MediaWave2000 does. Use this as a checklist, a release reference, or a source to pull from when writing descriptions.
-
----
-
 ## Core Experience
 
 - **Live TV simulation** — plays your media library as a continuously running channel lineup, scheduled in real time
