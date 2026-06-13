@@ -1,4 +1,4 @@
-# MediaWave2000
+# Welcome to MediaWave2000!
 
 > **Turn your media library into a real cable TV experience.**
 
@@ -10,9 +10,9 @@ Put your videos in folders. Open MediaWave2000. Watch TV.
 
 ## What is this?
 
-MediaWave2000 is a desktop app that transforms your local video collection into a fully functional fake cable channel system — complete with a scrollable TV guide, scheduled programming, commercial breaks, and themed on-screen displays.
+MediaWave2000 is a desktop app that transforms your local video collection into a fully functional fake cable channel system — complete with a scrollable TV guide, "On-Demand" Vault, scheduled programming, commercial breaks, and themed on-screen displays.
 
-If you've ever tried **FieldStation42** and given up after day two of config files, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No Linux server. No YAML. Just folders.
+If you've ever tried **FieldStation42** and given up after day two of config files, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No Linux server. No .Json files. Just folders.
 
 ---
 
@@ -27,15 +27,15 @@ If you've ever tried **FieldStation42** and given up after day two of config fil
 
 See [FEATURES.md](FEATURES.md) for the full list, but here's the short version:
 
-- **Scrollable TV Guide** — browse your lineup like old-school digital cable
+- **Scrollable TV Guide** — browse your lineup like the old digital cable you know and love!
 - **The Vault** — on-demand section, like a local streaming library
 - **Auto-scheduling** — point it at a folder, it builds a channel. No config required.
 - **Commercial system** — plays ad breaks between episodes or on a timer
-- **Three visual themes** — 80s set-top box, mid-2000s "Promised Future," and modern Sleek Freak — each with color variants
-- **Channel logos** — custom watermark per channel, with position and size control
-- **Companion channels** — WeatherStar, RadioWave TV (music visualizer), NetTV (YouTube playlists)
+- **Three visual themes** — 80s set-top box, mid-2000s "Promised Future," and modernized "Sleek Freak" — each with multiple color variants
+- **Channel logos** — custom watermark per channel, with position and size control, timing, opacity and grayscale options
+- **Companion channels** — WeatherStar connectivity, RadioWave TV (music visualizer), NetTV (YouTube playlists)
 - **MediaWave Converter** — companion app to batch-prep files for smooth playback
-- Works on **Mac** and **Windows** (Linux coming)
+- Works on **Mac**, **Windows**, and **Linux**
 
 ---
 
@@ -57,11 +57,11 @@ My Catalog/
     music_video_01.mp4
 ```
 
-That's it. No metadata files. No renaming. Just folders.
+That's it. No metadata files. No renaming. As simple as I could make it :)
 
 ### 2. Download and open MediaWave2000
 
-→ **[Download the latest release](https://github.com/YOUR_USERNAME/MediaWave2000/releases)**
+→ **[Download the latest release](https://github.com/Mamaweegee123/MediaWave2000/releases)**
 
 - **Mac:** Open `MediaWave.app`
 - **Windows:** Run `MediaWave2000.exe`
@@ -83,7 +83,7 @@ HBO/
 
 **Commercials** — put short video clips in any folder and point MediaWave at it in Advanced Config. Real VHS-ripped ads work great.
 
-**Custom music** — drop audio files in `User Content/Music/` for the RadioWave TV companion channel.
+**Custom music** — drop audio files in `User Content/Music/` for the RadioWave TV companion channel, or keep them wherever you have them and just simply point MediaWave to the folder in "Advanced Config".
 
 Full setup guides are in the `docs/` folder inside the app.
 
@@ -107,7 +107,7 @@ MediaWave2000 ships with three visual themes, each with multiple color options:
 
 Beyond your own library, MediaWave includes three built-in channels:
 
-- **WeatherStar** — a local weather display channel in the style of the classic Weather Channel
+- **WeatherStar 4000+** — a local weather display channel in the style of the classic Weather Channel
 - **RadioWave TV** — plays your music library with a reactive audio visualizer
 - **NetTV** *(beta)* — paste a YouTube playlist URL and it generates a live channel schedule from the videos
 
@@ -115,7 +115,7 @@ Beyond your own library, MediaWave includes three built-in channels:
 
 ## MediaWave Converter
 
-A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to a clean H.264 MP4 with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
+A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to either .mp4,  with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
 
 Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 
@@ -125,16 +125,16 @@ Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 
 | Platform | Status |
 |----------|--------|
-| macOS | ✅ Available |
-| Windows | ✅ Available |
-| Linux | 🔜 Coming |
-| Raspberry Pi | 🔮 Planned |
+| macOS | Available |
+| Windows | Available |
+| Linux | Available |
+| Raspberry Pi | Planned |
 
 ---
 
 ## Roadmap
 
-- [ ] Linux build
+- [ ] Linux refinement
 - [ ] Custom theme support
 - [ ] EAS-style scrolling message system (in progress)
 - [ ] NetTV stability improvements (in progress)
@@ -146,13 +146,13 @@ Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 ## FAQ
 
 **Do I need to convert all my files?**
-No. Most modern MP4s play fine as-is. Use the Converter when something doesn't look right.
+Nope! Most modern MP4s play fine as-is. Use the Converter when something doesn't look right, or if you want all your files to be the same format, audio level etc.
 
 **Can I use an external drive or NAS?**
-Yes. Your catalog can live anywhere your system can read — USB drive, NAS, network share, wherever.
+Yes, your catalog can live anywhere your system can read — USB drive, NAS, network share, wherever.
 
 **Does this connect to the internet?**
-No, except for NetTV (YouTube) and WeatherStar (weather data). Your video library stays local.
+NetTV (YouTube) and WeatherStar (weather data) do, but Your video library stays local.
 
 **Is this free?**
 Yes. Free to download, no account required, no subscription.
