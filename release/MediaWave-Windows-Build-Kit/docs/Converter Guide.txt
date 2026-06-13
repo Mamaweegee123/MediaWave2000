@@ -1,0 +1,132 @@
+============================================================
+  MEDIAWAVE CONVERTER GUIDE
+============================================================
+
+MediaWave Converter prepares video files for the best
+possible playback inside MediaWave. It re-encodes videos to
+a consistent format and resolution.
+
+WHY CONVERT?
+------------
+  - Removes letterboxing / pillarboxing automatically
+  - Re-encodes to H.264 MP4 for smooth playback
+  - Normalizes resolution for consistent screen fit
+  - Handles subtitle burn-in (optional)
+  - Skips files already converted at the same settings
+
+QUICK START
+-----------
+1. Open MediaWave Converter.
+
+2. Drop video files or a folder onto the drop zone,
+   OR use "Choose Folder" to select a source folder.
+
+3. Set the output folder (defaults to MediaWave Converted
+   inside your MediaWave documents folder if it exists).
+
+4. Choose your target aspect ratio and quality.
+
+5. Press "Start Converting".
+
+OUTPUT FOLDER
+-------------
+By default, converted files go to:
+
+  Documents/MediaWave/Converted/
+
+or, in a portable release:
+
+  <app folder>/User Content/Converted/
+
+You can change the output folder to anywhere you like.
+Converted files are placed in a folder structure that
+mirrors your source, so you can tell them apart easily.
+
+SETTINGS
+---------
+Aspect Ratio
+  Classic TV (4:3)    - for old TV shows
+  Widescreen (16:9)   - for movies and modern shows
+  Ultra Wide (21:9)   - for cinematic content
+
+Quality
+  Best Picture        - highest quality, larger files
+  Balanced            - good quality, reasonable size
+  Compact             - smaller files, slight quality loss
+
+Encoder
+  Hardware (fast)     - uses GPU acceleration if available
+  Software (compat)   - always works, slightly slower
+
+Output File Type (Advanced Settings)
+  MP4 (Recommended)   - best everyday compatibility
+  MKV (Flexible)      - great for keeping text subtitles
+  AVI (Legacy)        - for older software and devices
+
+MP4 stays selected unless you change it. AVI is intentionally
+old-school, so copied subtitle tracks are skipped; burned-in
+subtitles still work because they become part of the picture.
+
+AUDIO LEVELING
+--------------
+"Level audio volume" can make episodes from different
+sources feel closer in volume. It is not magic, but it
+helps with super quiet files without simply blasting the
+volume.
+
+When enabled, MediaWave asks ffmpeg to normalize loudness
+with loudnorm, aiming for TV-friendly volume without
+clipping or crunchy blown-out sound. Source files are left
+alone; only the converted output gets the treatment.
+
+RENAME YOUR FILES
+-----------------
+The "Rename your Files!" tab can turn mixed-up show and
+movie filenames into clean formats:
+
+  Show Name S01E10 - Episode Name.mp4
+  Movie Name (1999).mp4
+
+Choose Shows or Movies, add your files, search for the
+right title, and review every proposed name before
+anything changes. Search all metadata sources at once, or
+focus on one when you already know where the best match
+lives.
+
+TVmaze is especially useful for episode names. AniList
+helps find anime titles, but usually does not include names
+for each individual episode. Movie matching uses the
+key-free Cinemeta catalog, with AniList helping out for
+anime movies.
+
+Movie years matter. A filename containing the release year
+gets a more confident match, and MediaWave will not prepare
+a movie when the filename year disagrees with the result.
+
+MediaWave blocks filename conflicts and saves an undo
+record for the latest rename batch.
+
+SKIPPING ALREADY-CONVERTED FILES
+----------------------------------
+"Skip files already finished with these settings" is ON
+by default. If you change settings, previously converted
+files will be re-converted.
+
+SUBTITLE BURN-IN
+----------------
+The converter can burn subtitles from embedded subtitle
+tracks directly into the video image. Enable this in
+the Advanced settings panel if you want hard-coded subs.
+
+FFMPEG REQUIRED
+---------------
+The converter uses ffmpeg for video processing.
+
+If you see a "video tools missing" message:
+  - On Windows: place ffmpeg.exe in the same folder as
+    MediaWave Converter.exe, OR install ffmpeg and add it
+    to your system PATH.
+  - On macOS: install ffmpeg via Homebrew:
+      brew install ffmpeg
+
+============================================================
