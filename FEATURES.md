@@ -81,7 +81,7 @@ Three complete visual themes, each with multiple color variants:
 
 Built-in channels that work alongside your own library:
 
-### WeatherStar
+### WeatherStar 4000+
 - Local weather display channel in the style of the classic Weather Channel
 - Shows current weather data
 
@@ -93,7 +93,7 @@ Built-in channels that work alongside your own library:
 ### NetTV *(Beta)*
 - Paste a YouTube playlist URL to generate a live channel schedule
 - Pulls video metadata and builds a schedule from the playlist contents
-- Currently works intermittently — listed as experimental
+- Currently works intermittently — experimental
 
 ---
 
@@ -101,6 +101,7 @@ Built-in channels that work alongside your own library:
 
 - **Scrolling alert messages** — display custom text banners across the screen in the style of Emergency Alert System broadcasts
 - User-configurable message content
+- 
 - Currently in development
 
 ---
@@ -120,13 +121,14 @@ Built-in channels that work alongside your own library:
 A separate standalone app included with MediaWave2000:
 
 - **Batch video conversion** — convert multiple files or whole folders at once
-- **H.264 MP4 output** — encodes to a clean, widely compatible format
+- **MP4, AVI, MKV** — encodes to a clean, widely compatible format
 - **Aspect ratio presets** — Classic TV (4:3), Widescreen (16:9), Ultra Wide (21:9)
 - **Letterbox/pillarbox removal** — automatically crops and scales to fill the target frame
 - **Quality presets** — Best Picture, Balanced, Compact
 - **Hardware encoding** — uses GPU acceleration if available; falls back to software
+- **Audio Leveling** - Levels out any file to an equal audio level, no more turning up a movie and then turning down the commercials!
 - **Audio language selection** — choose which audio track to keep from multi-track files
-- **Subtitle burn-in** — optionally burn embedded subtitle tracks into the video image
+- **Subtitle burn-in** — optionally burn embedded subtitle tracks into the video image *(Experimental)*
 - **Smart skip** — skips files already converted at the current settings
 - **Mirrored output folder structure** — converted files maintain source folder organization
 - **Powered by ffmpeg** — requires ffmpeg to be installed (Homebrew on Mac, PATH or local on Windows)
@@ -137,7 +139,7 @@ A separate standalone app included with MediaWave2000:
 
 - **macOS** — available now
 - **Windows** — available now
-- **Linux** — planned
+- **Linux** — available now
 - **Raspberry Pi** — planned (lightweight stripped-down build)
 - **Steam / Steam Deck** — long-term aspiration
 
@@ -148,11 +150,11 @@ A separate standalone app included with MediaWave2000:
 - EAS scrolling message system (in progress, partially working)
 - NetTV / YouTube channel stability (in progress, works intermittently)
 - Custom theme and font support (planned)
-- Linux build (planned)
+- Linux build (in progress)
 - Raspberry Pi build (planned)
 - Steam release (long-term)
 - Community theme sharing (community goal post-launch)
 
 ---
 
-*Last updated: v[VERSION] — [DATE]*
+*Last updated: v1.0.0 — [6-13-26]*
