@@ -65,3 +65,4 @@ youtube_video_cache/
 
 # Keep the bundled UI sound asset tracked.
 !assets/channel_switch.wav
+release/

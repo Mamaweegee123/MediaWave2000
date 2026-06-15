@@ -33,7 +33,7 @@ from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 
 APP_NAME = "MediaWave2000"
-APP_VERSION = "1.0.0"
+APP_VERSION = "0.1.0-beta"
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov")
 
 # ── Startup screen fixed palette ──────────────────────────────────────────────
@@ -82,6 +82,13 @@ def resource_base_dir():
 def writable_base_dir():
     if getattr(sys, "frozen", False):
         if sys.platform == "darwin":
+            # Portable mode: if User Content/Settings/ exists next to the .app bundle, use it.
+            # exe is at MediaWave.app/Contents/MacOS/<exe>; the .app parent is 3 levels up.
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            app_parent = os.path.normpath(os.path.join(exe_dir, "..", "..", ".."))
+            portable_path = os.path.join(app_parent, "User Content", "Settings")
+            if os.path.isdir(portable_path):
+                return portable_path
             path = os.path.join(os.path.expanduser("~/Library/Application Support"), APP_NAME)
             os.makedirs(path, exist_ok=True)
             return path
@@ -115,6 +122,13 @@ def default_mediawave_user_dir():
             portable = os.path.join(exe_dir, "User Content")
             if os.path.isdir(portable):
                 return portable
+        if sys.platform == "darwin":
+            # Portable mode: if User Content/ exists next to the .app bundle, suggest it.
+            exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+            app_parent = os.path.normpath(os.path.join(exe_dir, "..", "..", ".."))
+            portable = os.path.join(app_parent, "User Content")
+            if os.path.isdir(portable):
+                return portable
         return os.path.join(os.path.expanduser("~"), "Documents", "MediaWave")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "User Content")
 
@@ -129,6 +143,27 @@ def ensure_user_content_structure(base_dir):
 
 
 RESOURCE_DIR = resource_base_dir()
+
+
+def _bundled_tool_candidates(name):
+    """Return bundle-local paths to check before falling back to PATH/system dirs."""
+    candidates = []
+    if getattr(sys, "frozen", False):
+        exe = os.path.abspath(sys.executable)
+        exe_dir = os.path.dirname(exe)
+        # Contents/MacOS/ (same dir as the frozen executable)
+        candidates.append(os.path.join(exe_dir, name))
+        # Contents/Resources/bin/
+        resources = os.path.normpath(os.path.join(exe_dir, "..", "Resources"))
+        candidates.append(os.path.join(resources, "bin", name))
+        candidates.append(os.path.join(resources, name))
+        # _MEIPASS (PyInstaller extraction dir)
+        if hasattr(sys, "_MEIPASS"):
+            candidates.append(os.path.join(sys._MEIPASS, "bin", name))
+            candidates.append(os.path.join(sys._MEIPASS, name))
+    return candidates
+
+
 DATA_DIR = writable_base_dir()
 THUMBNAIL_DIR = os.path.join(DATA_DIR, "thumbnails")
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
@@ -215,7 +250,7 @@ FULL_APP_LOGO_PATH = resolve_resource_path(
 )
 APP_ICON_PATH = resolve_resource_path("logos/MW2K_appicon.png", "logos/MW2K.png")
 CLASSIC_APP_LOGO_PATH = resolve_resource_path("logos/mediawave80s.png")
-CLOCK_FONT_PATH = resolve_resource_path("ds_digital/DS-DIGIT.TTF")
+CLOCK_FONT_PATH = resolve_resource_path("Fonts/DS-Digital/DS-DIGIT.TTF")
 CRT_FONT_PATH = resolve_resource_path(
     "Fonts/Samsung CRT TV (extremely close to) 3x.ttf",
     "fonts/Samsung CRT TV (extremely close to) 3x.ttf",
@@ -2009,6 +2044,9 @@ def youtube_video_user_path(playlist_key, video_id, index=0):
 
 def resolve_ytdlp_command():
     candidates = []
+    for bundled in _bundled_tool_candidates("yt-dlp"):
+        if bundled and os.path.isfile(bundled):
+            candidates.append([bundled])
     binary = shutil.which("yt-dlp")
     if binary:
         candidates.append([binary])
@@ -3271,12 +3309,15 @@ def clear_catalog_lookup_caches():
 
 
 def resolve_ffprobe_path():
-    candidates = [
-        shutil.which("ffprobe"),
-        "/opt/homebrew/bin/ffprobe",
-        "/usr/local/bin/ffprobe",
-        "/usr/bin/ffprobe",
-    ]
+    candidates = (
+        _bundled_tool_candidates("ffprobe")
+        + [
+            shutil.which("ffprobe"),
+            "/opt/homebrew/bin/ffprobe",
+            "/usr/local/bin/ffprobe",
+            "/usr/bin/ffprobe",
+        ]
+    )
     for candidate in candidates:
         if candidate and os.path.isfile(candidate):
             return candidate
@@ -3287,12 +3328,15 @@ FFPROBE_PATH = resolve_ffprobe_path()
 
 
 def resolve_ffmpeg_path():
-    candidates = [
-        shutil.which("ffmpeg"),
-        "/opt/homebrew/bin/ffmpeg",
-        "/usr/local/bin/ffmpeg",
-        "/usr/bin/ffmpeg",
-    ]
+    candidates = (
+        _bundled_tool_candidates("ffmpeg")
+        + [
+            shutil.which("ffmpeg"),
+            "/opt/homebrew/bin/ffmpeg",
+            "/usr/local/bin/ffmpeg",
+            "/usr/bin/ffmpeg",
+        ]
+    )
     for candidate in candidates:
         if candidate and os.path.isfile(candidate):
             return candidate

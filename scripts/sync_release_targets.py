@@ -10,12 +10,13 @@ What this does (quick sync — default):
   2. Copies root channelsurfer2000.py  →  Linux Build Kit
   3. Copies root mediawave_converter.py to both build kits
   4. Copies root requirements.txt to both build kits
-  5. Runs scripts/assemble_mac_release.py to rebuild the macOS .app staging folder
+  5. Copies dev/ PyInstaller specs to the Windows Build Kit
+  6. Runs scripts/assemble_mac_release.py to rebuild the macOS .app staging folder
 
 What --assets adds (full sync):
   Syncs the static asset folders to both build kits so they never silently lag
   behind the main app:
-    assets/   logos/   docs/   ds_digital/   hooks/   Fonts/   icons/
+    assets/   logos/   docs/   hooks/   Fonts/   icons/
 
   Asset sync uses a recursive file-by-file comparison and only copies changed
   files, so it is fast if nothing changed.  Use it whenever you change art,
@@ -42,6 +43,7 @@ REPO = Path(__file__).resolve().parent.parent
 SOURCE = REPO / "channelsurfer2000.py"
 CONVERTER_SOURCE = REPO / "mediawave_converter.py"
 REQUIREMENTS_SOURCE = REPO / "requirements.txt"
+DEV_DIR = REPO / "dev"
 
 WIN_KIT_DIR = REPO / "release" / "MediaWave-Windows-Build-Kit"
 WIN_KIT_TARGET = WIN_KIT_DIR / "channelsurfer2000.py"
@@ -58,7 +60,6 @@ ASSET_DIRS = (
     "assets",
     "logos",
     "docs",
-    "ds_digital",
     "hooks",
     "Fonts",
     "icons",
@@ -172,6 +173,12 @@ def sync_windows_build_kit() -> None:
         _sync_file(CONVERTER_SOURCE, WIN_KIT_DIR / "mediawave_converter.py", "mediawave_converter.py → Windows")
     if REQUIREMENTS_SOURCE.exists():
         _sync_file(REQUIREMENTS_SOURCE, WIN_KIT_DIR / "requirements.txt", "requirements.txt → Windows")
+    for spec_name in ("MediaWave2000.spec", "MediaWaveConverter.spec"):
+        spec_source = DEV_DIR / spec_name
+        if spec_source.exists():
+            spec_target = WIN_KIT_DIR / "dev" / spec_name
+            spec_target.parent.mkdir(parents=True, exist_ok=True)
+            _sync_file(spec_source, spec_target, f"dev/{spec_name} → Windows")
 
 
 def sync_linux_build_kit() -> None:
