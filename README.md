@@ -163,7 +163,7 @@ Yes. Free to download, no account required, no subscription.
 
 <!-- Optional: shoutouts, inspirations, libraries used -->
 
-Inspired by the concept behind [FieldStation42](https://github.com/feldstation42) — built for everyone who loved the idea but couldn't get it working.
+Inspired by the concept behind [FieldStation42](https://github.com/fieldstation42) — built for everyone who loved the idea but couldn't get it working.
 
 ---
 
