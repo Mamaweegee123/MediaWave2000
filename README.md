@@ -2,7 +2,8 @@
 
 > **Turn your media library into a real cable TV experience.**
 
-<!-- SCREENSHOT OR GIF HERE — ideally the TV guide open on the 80s theme -->
+https://github.com/user-attachments/assets/b8bfc36f-36c0-465f-83b0-5d263874ba58
+
 
 Put your videos in folders. Open MediaWave2000. Watch TV.
 
