@@ -39,7 +39,7 @@ See [FEATURES.md](FEATURES.md) for the full list, but here's the short version:
 - **Channel logos** — custom watermark per channel, with position and size control, timing, opacity and grayscale options
 - **Companion channels** — WeatherStar connectivity, RadioWave TV (music visualizer), NetTV (YouTube playlists)
 - **MediaWave Converter** — companion app to batch-prep files for smooth playback
-- Works on **Mac**, **Windows**, and **Linux**
+- Works on **Mac**, **Windows**, and in the future, Linux.
 
 ---
 
