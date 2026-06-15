@@ -166,6 +166,21 @@ Yes. Free to download, no account required, no subscription.
 Inspired by the concept behind [FieldStation42](https://github.com/shane-mason/FieldStation42) — built for everyone who loved the idea but couldn't get it working, and everyone who misses watching cable TV.
 
 ---
+
+## Support MediaWave
+
+MediaWave is a passion project built in my spare time to bring back the nostalgia of scrolling through a TV Guide!
+
+If you've enjoyed using MediaWave and would like to support future development, you can buy me a coffee on Ko-fi:
+
+**☕ Support MediaWave:** https://ko-fi.com/Mamaweegee123
+
+Support is completely optional, but every contribution helps fund development, testing hardware, and future features. And keeping my belly full :)
+
+Thank you for checking out MediaWave!
+
+---
+
 **NO copyrighted media is included with MediaWave 2000. Users must supply their own legally obtained media files.** *Pwease >.<*
 
 
