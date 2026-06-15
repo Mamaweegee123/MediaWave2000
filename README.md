@@ -26,14 +26,6 @@ If you've ever tried **FieldStation42** and given up after day two of config fil
 <img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 51 00 PM" src="https://github.com/user-attachments/assets/97149040-1a1e-4152-bc0e-461fc858d5f1" />
 
 ---
-## Downloads
-
-Windows:
-Download MediaWave-v0.1.0-beta-Windows.zip
-
-macOS:
-Download MediaWave-v0.1.0-beta-macOS.zip
----
 
 ## Features
 
