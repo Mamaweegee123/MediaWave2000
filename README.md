@@ -2,7 +2,8 @@
 
 > **Turn your media library into a real cable TV experience.**
 
-https://github.com/user-attachments/assets/b8bfc36f-36c0-465f-83b0-5d263874ba58
+<img width="288" height="180" alt="Kapture 2026-06-14 at 21 13 51" src="https://github.com/user-attachments/assets/9cc72a69-b647-43a5-8338-ebb50590794f" />
+
 
 
 Put your videos in folders. Open MediaWave2000. Watch TV.
