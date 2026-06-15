@@ -105,8 +105,6 @@ MediaWave2000 ships with three visual themes, each with multiple color options:
 | **Promised Future** | Mid-2000s digital optimism |
 | **Sleek Freak** | Clean modern flat UI |
 
-<!-- Good place for a side-by-side theme comparison screenshot -->
-
 ---
 
 ## Companion Channels
@@ -167,10 +165,8 @@ Yes. Free to download, no account required, no subscription.
 
 ## Credits
 
-<!-- Optional: shoutouts, inspirations, libraries used -->
-
 Inspired by the concept behind [FieldStation42](https://github.com/shane-mason/FieldStation42) — built for everyone who loved the idea but couldn't get it working.
 
 ---
-
+**NO copyrighted media is included with MediaWave 2000. Users must supply their own legally obtained media files.** *Pwease >.<*
 *Tune in. Sit back. There is always something on.*
