@@ -12,7 +12,7 @@ Put your videos in folders. Open MediaWave2000. Watch TV.
 
 MediaWave2000 is a desktop app that transforms your local video collection into a fully functional fake cable channel system — complete with a scrollable TV guide, "On-Demand" Vault, scheduled programming, commercial breaks, and themed on-screen displays.
 
-If you've ever tried **FieldStation42** and given up after day two of config files, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No Linux server. No .Json files. Just folders.
+If you've ever tried **FieldStation42** and wanted something simpler to easily turn your media catalog into a working cable system, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No configuring schedules, no .Json files, just folders.
 
 ---
 
@@ -61,7 +61,7 @@ My Catalog/
     music_video_01.mp4
 ```
 
-That's it. No metadata files. No renaming. As simple as I could make it :)
+That's it! No metadata files. No renaming. As simple as I could make it :)
 
 ### 2. Download and open MediaWave2000
 
@@ -150,7 +150,7 @@ Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 **Do I need to convert all my files?**
 Nope! Most modern MP4s play fine as-is. Use the Converter when something doesn't look right, or if you want all your files to be the same format, audio level etc.
 
-**Can I use an external drive or NAS?**
+**Can I use an external drive?**
 Yes, your catalog can live anywhere your system can read — USB drive, NAS, network share, wherever.
 
 **Does this connect to the internet?**
