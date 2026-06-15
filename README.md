@@ -117,7 +117,7 @@ Beyond your own library, MediaWave includes three built-in channels:
 
 ## MediaWave Converter
 
-A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to either .mp4,  with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
+A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to either .mp4, .mkv, or .avi,  with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
 
 Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 
@@ -184,4 +184,4 @@ Thank you for checking out MediaWave!
 **NO copyrighted media is included with MediaWave 2000. Users must supply their own legally obtained media files.** *Pwease >.<*
 
 
-*Tune in. Sit back. There is always something on.*
+*Tune in. Sit back. There's always something on.*
