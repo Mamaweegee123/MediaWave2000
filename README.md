@@ -4,8 +4,6 @@
 
 <img width="288" height="180" alt="Kapture 2026-06-14 at 21 13 51" src="https://github.com/user-attachments/assets/9cc72a69-b647-43a5-8338-ebb50590794f" />
 
-
-
 Put your videos in folders. Open MediaWave2000. Watch TV.
 
 ---
@@ -20,8 +18,14 @@ If you've ever tried **FieldStation42** and given up after day two of config fil
 
 ## Screenshots
 
-<!-- Add 3–4 screenshots here — show different themes if possible -->
-<!-- Suggested shots: TV Guide open, Vault screen, WeatherStar channel, Settings/theme picker -->
+<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 50 10 PM" src="https://github.com/user-attachments/assets/3b067621-d439-4e72-9784-3e24ddfdd80f" />
+<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 50 22 PM" src="https://github.com/user-attachments/assets/0e07911e-8c8a-4c58-83b4-a3c898eb3fc8" />
+<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 50 39 PM" src="https://github.com/user-attachments/assets/46628089-2b56-4edc-b134-1382f47a080f" />
+
+<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 49 45 PM" src="https://github.com/user-attachments/assets/166b03b1-f7d1-435a-a04e-f69c7876d04e" />
+<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 51 00 PM" src="https://github.com/user-attachments/assets/97149040-1a1e-4152-bc0e-461fc858d5f1" />
+
+
 
 ---
 
