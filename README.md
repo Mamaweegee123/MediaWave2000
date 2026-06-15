@@ -127,14 +127,14 @@ Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 |----------|--------|
 | macOS | Available |
 | Windows | Available |
-| Linux | Available |
+| Linux | In Progress |
 | Raspberry Pi | Planned |
 
 ---
 
 ## Roadmap
 
-- [ ] Linux refinement
+- [ ] Linux release
 - [ ] Custom theme support
 - [ ] EAS-style scrolling message system (in progress)
 - [ ] NetTV stability improvements (in progress)
@@ -152,16 +152,10 @@ Nope! Most modern MP4s play fine as-is. Use the Converter when something doesn't
 Yes, your catalog can live anywhere your system can read — USB drive, NAS, network share, wherever.
 
 **Does this connect to the internet?**
-NetTV (YouTube) and WeatherStar (weather data) do, but Your video library stays local.
+NetTV (YouTube) and WeatherStar 4000+ do, but Your video library stays local.
 
 **Is this free?**
 Yes. Free to download, no account required, no subscription.
-
----
-
-## License
-
-<!-- Add your license here -->
 
 ---
 
