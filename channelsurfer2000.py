@@ -1571,6 +1571,135 @@ def airing_rules_diagnostics(config, known_channel_ids=None, known_title_keys=No
     return summary
 
 
+# -- Airing Rules preset definitions (used by UI) -----------------------------
+
+CHANNEL_RULE_PRESETS = [
+    ("Late Night Block",   "prefer_late_night"),
+    ("Weekend Block",      "prefer_weekends"),
+    ("Christmas Season",   "christmas_season"),
+    ("Spooky Season",      "spooky_season"),
+    ("Movie Night",        "prefer_movie_block"),
+    ("Block From Channel", "block_from_channel"),
+]
+
+# (label, rule_type or "" for "Normal"/no rule)
+SHOW_AIRING_PRESETS = [
+    ("Normal",                  ""),
+    ("Prefer Daytime",          "prefer_daytime"),
+    ("Prefer Late Night",       "prefer_late_night"),
+    ("Christmas Season",        "christmas_season"),
+    ("Spooky Season",           "spooky_season"),
+    ("Weekends Only",           "prefer_weekends"),
+    ("Block From This Channel", "block_from_channel"),
+]
+
+GENRE_AIRING_PRESETS = [
+    ("Normal",            ""),
+    ("Prefer Daytime",    "prefer_daytime"),
+    ("Prefer Late Night", "prefer_late_night"),
+    ("Weekends",          "prefer_weekends"),
+    ("Christmas Season",  "christmas_season"),
+    ("Spooky Season",     "spooky_season"),
+]
+
+
+def _fmt_time_ampm(hhmm):
+    """Convert '22:30' to '10:30 PM', or return hhmm unchanged."""
+    if not hhmm:
+        return hhmm
+    try:
+        hour, minute = int(hhmm[:2]), int(hhmm[3:5])
+        suffix = "AM" if hour < 12 else "PM"
+        display_hour = hour % 12 or 12
+        return f"{display_hour}:{minute:02d} {suffix}"
+    except (ValueError, IndexError):
+        return hhmm
+
+
+def airing_rule_summary(rule, channel_name=""):
+    """Return a plain-English one-line description of a rule dict."""
+    if not isinstance(rule, dict):
+        return "Unknown rule"
+    rule_type = rule.get("rule_type", "always_allowed")
+    enabled = rule.get("enabled", True)
+    prefix = "" if enabled else "[disabled] "
+    t_start = _fmt_time_ampm(rule.get("start_time") or "")
+    t_end = _fmt_time_ampm(rule.get("end_time") or "")
+    d_start = rule.get("start_date") or ""
+    d_end = rule.get("end_date") or ""
+    _type_map = {
+        "always_allowed":      "Always allowed to air",
+        "prefer_daytime":      "Prefer daytime scheduling",
+        "prefer_late_night":   "Prefer late night scheduling",
+        "prefer_weekends":     "Prefer weekends",
+        "prefer_weekdays":     "Prefer weekdays",
+        "prefer_movie_block":  "Prefer movie block scheduling",
+        "block_from_channel":  f"Blocked from {channel_name or 'this channel'}",
+        "christmas_season":    "Christmas season only",
+        "spooky_season":       "Spooky season only (Oct–Nov)",
+        "summer":              "Summer only",
+        "winter":              "Winter only",
+        "custom_date_range":   f"Date range {d_start} – {d_end}" if d_start or d_end else "Custom date range",
+        "only_between_times":  f"Only between {t_start} – {t_end}" if t_start or t_end else "Only between set times",
+        "blocked_between_times": f"Blocked between {t_start} – {t_end}" if t_start or t_end else "Blocked between set times",
+        "only_on_dates":       "Only on specific dates",
+        "blocked_on_dates":    "Blocked on specific dates",
+        "only_between_dates":  f"Only between {d_start} – {d_end}" if d_start or d_end else "Only between set dates",
+        "blocked_between_dates": f"Blocked between {d_start} – {d_end}" if d_start or d_end else "Blocked between set dates",
+    }
+    base = _type_map.get(rule_type, f"Rule: {rule_type}")
+    strength = rule.get("rule_strength", "hint")
+    if strength == "strict":
+        base += " (strict)"
+    elif strength == "strong_preference":
+        base += " (strong)"
+    return prefix + base
+
+
+def channel_takeover_summary(takeover):
+    """Return a plain-English one-line description of a Channel Takeover dict."""
+    if not isinstance(takeover, dict):
+        return "Unknown takeover"
+    name = takeover.get("takeover_name") or takeover.get("display_channel_name") or "Unnamed Takeover"
+    start = _fmt_time_ampm(takeover.get("start_time") or "")
+    end = _fmt_time_ampm(takeover.get("end_time") or "")
+    enabled = takeover.get("enabled", False)
+    prefix = "" if enabled else "[disabled] "
+    time_part = f" from {start} to {end}" if start or end else ""
+    days = takeover.get("days_of_week") or []
+    days_part = f" on {', '.join(d.capitalize() for d in days)}" if days else ""
+    seasonal = takeover.get("seasonal_preset") or ""
+    seasonal_part = f" ({seasonal.replace('_', ' ')})" if seasonal else ""
+    return f"{prefix}{name}{time_part}{days_part}{seasonal_part}"
+
+
+def gather_channel_shows(root_path, show_files):
+    """
+    Given a root_path (str) and a list of file paths for a channel, return a
+    deduplicated list of show dicts: {title, title_key, media_type}.
+    Caps at 300 unique titles. Safe even if show_files is empty.
+    """
+    seen = set()
+    results = []
+    for path in (show_files or []):
+        try:
+            local = parse_local_media(path)
+        except Exception:
+            continue
+        key = local.get("match_key", "")
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        results.append({
+            "title": local.get("show_name") or local.get("timeline_title") or key,
+            "title_key": key,
+            "media_type": local.get("media_type", "tv"),
+        })
+        if len(results) >= 300:
+            break
+    return sorted(results, key=lambda x: x["title"].lower())
+
+
 CHANNEL_BUG_SUPPORTED_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 CHANNEL_BUG_PREFERRED_NAMES = ("logo.png", "channel.png", "bug.png")
 CHANNEL_BUG_CORNER_OPTIONS = ("top-left", "top-right", "bottom-left", "bottom-right")
@@ -5647,6 +5776,20 @@ def build_themed_dialog_stylesheet(theme_name=DEFAULT_THEME_NAME, skin_name=DEFA
             color: {dim};
             background: rgba(22,26,58,180);
             border: 1px solid rgba(68,108,235,80);
+        }}
+        QPushButton#airingRulesBtn {{
+            font-size: 11px;
+            min-width: 110px;
+            padding: 3px 10px;
+            border-radius: 4px;
+            color: white;
+            background: rgba(200,30,30,240);
+            border: 2px solid yellow;
+        }}
+        QPushButton#airingRulesBtn:hover {{
+            background: rgba(50,80,200,240);
+            color: white;
+            border-color: rgba(120,170,255,220);
         }}
     """
 
@@ -20148,8 +20291,760 @@ class AdvancedCommercialSettingsDialog(QDialog):
         }
 
 
+class AiringRulesDialog(QDialog):
+    """Per-channel Airing Rules editor.
+
+    Phase 2: save/load only — no scheduler or guide behaviour is changed.
+    """
+
+    def __init__(self, channel_info, airing_rules_config, genre_tags=None, show_titles=None, parent=None):
+        super().__init__(parent)
+        self._channel_info = channel_info or {}
+        self._channel_id = self._channel_info.get("id", "")
+        self._channel_name = str(self._channel_info.get("name", "Channel") or "Channel").strip() or "Channel"
+        # Deep-copy so mutations don't escape on Cancel
+        self._cfg = json.loads(json.dumps(airing_rules_config if isinstance(airing_rules_config, dict) else airing_rules_config_defaults()))
+        self._genre_tags = list(genre_tags or [])
+        self._show_titles = list(show_titles or [])
+
+        self.setWindowTitle(f"Airing Rules — {self._channel_name}")
+        self.setModal(True)
+        self.resize(860, 680)
+        self.setMinimumSize(700, 520)
+        self.setStyleSheet(build_themed_dialog_stylesheet())
+
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
+
+        # ── Header ────────────────────────────────────────────────────────────
+        hdr = QWidget()
+        hdr.setObjectName("sectionCard")
+        hdr.setContentsMargins(0, 0, 0, 0)
+        hdr_layout = QVBoxLayout(hdr)
+        hdr_layout.setContentsMargins(20, 14, 20, 14)
+        hdr_layout.setSpacing(4)
+        title_lbl = QLabel(self._channel_name)
+        title_lbl.setObjectName("sectionHeader")
+        hdr_layout.addWidget(title_lbl)
+        desc_lbl = QLabel(
+            "Airing Rules let you guide when this channel, shows, movies, and genres should play. "
+            "MediaWave will still schedule normally unless you add rules."
+        )
+        desc_lbl.setObjectName("fieldHelp")
+        desc_lbl.setWordWrap(True)
+        hdr_layout.addWidget(desc_lbl)
+        outer.addWidget(hdr)
+
+        # ── Tabs ──────────────────────────────────────────────────────────────
+        self._tabs = QTabWidget()
+        self._tabs.setContentsMargins(8, 8, 8, 8)
+
+        self._tab_channel = self._build_channel_rules_tab()
+        self._tab_shows   = self._build_shows_tab()
+        self._tab_genres  = self._build_genres_tab()
+        self._tab_takeovers = self._build_takeovers_tab()
+
+        self._tabs.addTab(self._tab_channel,   "Channel Rules")
+        self._tabs.addTab(self._tab_shows,     "Shows & Movies")
+        self._tabs.addTab(self._tab_genres,    "Genres")
+        self._tabs.addTab(self._tab_takeovers, "Channel Takeovers")
+        outer.addWidget(self._tabs, 1)
+
+        # ── Footer ────────────────────────────────────────────────────────────
+        footer = QWidget()
+        footer.setObjectName("advFooter")
+        footer_row = QHBoxLayout(footer)
+        footer_row.setContentsMargins(16, 10, 16, 14)
+        footer_row.setSpacing(10)
+        footer_row.addStretch(1)
+        cancel_btn = QPushButton("Cancel")
+        cancel_btn.clicked.connect(self.reject)
+        footer_row.addWidget(cancel_btn)
+        self._save_btn = QPushButton("Save & Close")
+        self._save_btn.setObjectName("saveButton")
+        self._save_btn.clicked.connect(self._save_and_close)
+        footer_row.addWidget(self._save_btn)
+        outer.addWidget(footer)
+
+    # ── internal helpers ─────────────────────────────────────────────────────
+
+    def _channel_rules(self):
+        return [r for r in self._cfg.get("channel_rules", []) if r.get("target", {}).get("channel_id") == self._channel_id]
+
+    def _show_rules(self):
+        return [r for r in self._cfg.get("show_rules", []) if r.get("target", {}).get("channel_id") == self._channel_id]
+
+    def _genre_rules(self):
+        return [r for r in self._cfg.get("genre_rules", []) if r.get("target", {}).get("channel_id") == self._channel_id]
+
+    def _takeovers_for_channel(self):
+        return [t for t in self._cfg.get("channel_takeovers", []) if t.get("source_channel_id") == self._channel_id]
+
+    def _remove_channel_rule_by_type(self, rule_type):
+        self._cfg["channel_rules"] = [
+            r for r in self._cfg.get("channel_rules", [])
+            if not (r.get("target", {}).get("channel_id") == self._channel_id and r.get("rule_type") == rule_type)
+        ]
+
+    def _add_channel_rule(self, rule_type):
+        rule = normalize_airing_rule({
+            "level": "channel",
+            "rule_type": rule_type,
+            "rule_strength": "hint",
+            "enabled": True,
+            "target": {"channel_id": self._channel_id, "title": "", "title_key": "", "genre": "", "catalog_item_id": ""},
+        })
+        if "channel_rules" not in self._cfg:
+            self._cfg["channel_rules"] = []
+        self._cfg["channel_rules"].append(rule)
+
+    def _has_channel_rule(self, rule_type):
+        return any(
+            r.get("rule_type") == rule_type and r.get("enabled", True)
+            for r in self._channel_rules()
+        )
+
+    def _upsert_show_rule(self, title_key, title, rule_type):
+        """Add or update a show rule. Removes if rule_type is empty ('Normal')."""
+        self._cfg["show_rules"] = [
+            r for r in self._cfg.get("show_rules", [])
+            if not (r.get("target", {}).get("channel_id") == self._channel_id
+                    and r.get("target", {}).get("title_key") == title_key)
+        ]
+        if rule_type:
+            rule = normalize_airing_rule({
+                "level": "show",
+                "rule_type": rule_type,
+                "rule_strength": "hint",
+                "enabled": True,
+                "target": {"channel_id": self._channel_id, "title": title, "title_key": title_key,
+                           "genre": "", "catalog_item_id": ""},
+            })
+            self._cfg.setdefault("show_rules", []).append(rule)
+
+    def _upsert_genre_rule(self, genre, rule_type):
+        """Add or update a genre rule. Removes if rule_type is empty ('Normal')."""
+        self._cfg["genre_rules"] = [
+            r for r in self._cfg.get("genre_rules", [])
+            if not (r.get("target", {}).get("channel_id") == self._channel_id
+                    and r.get("target", {}).get("genre") == genre)
+        ]
+        if rule_type:
+            rule = normalize_airing_rule({
+                "level": "genre",
+                "rule_type": rule_type,
+                "rule_strength": "hint",
+                "enabled": True,
+                "target": {"channel_id": self._channel_id, "title": "", "title_key": "",
+                           "genre": genre, "catalog_item_id": ""},
+            })
+            self._cfg.setdefault("genre_rules", []).append(rule)
+
+    def _show_rule_type_for(self, title_key):
+        for r in self._show_rules():
+            if r.get("target", {}).get("title_key") == title_key and r.get("enabled", True):
+                return r.get("rule_type", "")
+        return ""
+
+    def _genre_rule_type_for(self, genre):
+        for r in self._genre_rules():
+            if r.get("target", {}).get("genre") == genre and r.get("enabled", True):
+                return r.get("rule_type", "")
+        return ""
+
+    @staticmethod
+    def _preset_label_for_type(rule_type, presets):
+        for label, rt in presets:
+            if rt == rule_type:
+                return label
+        return presets[0][0]  # "Normal" fallback
+
+    # ── Channel Rules tab ────────────────────────────────────────────────────
+
+    def _build_channel_rules_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        # Preset grid
+        presets_card = QWidget()
+        presets_card.setObjectName("sectionCard")
+        presets_layout = QVBoxLayout(presets_card)
+        presets_layout.setContentsMargins(14, 12, 14, 14)
+        presets_layout.setSpacing(8)
+        presets_hdr = QLabel("Quick Presets")
+        presets_hdr.setObjectName("sectionHeader")
+        presets_layout.addWidget(presets_hdr)
+        presets_hint = QLabel("Click a preset to toggle it on or off for this channel.")
+        presets_hint.setObjectName("fieldHelp")
+        presets_layout.addWidget(presets_hint)
+
+        grid = QGridLayout()
+        grid.setSpacing(8)
+        self._preset_btns = {}
+        for idx, (label, rule_type) in enumerate(CHANNEL_RULE_PRESETS):
+            btn = QPushButton(label)
+            btn.setCheckable(True)
+            btn.setChecked(self._has_channel_rule(rule_type))
+            btn.setMinimumHeight(36)
+            btn.setCursor(Qt.PointingHandCursor)
+            btn.toggled.connect(lambda checked, rt=rule_type: self._on_preset_toggled(rt, checked))
+            grid.addWidget(btn, idx // 3, idx % 3)
+            self._preset_btns[rule_type] = btn
+        presets_layout.addLayout(grid)
+        layout.addWidget(presets_card)
+
+        # Saved rules list
+        rules_card = QWidget()
+        rules_card.setObjectName("sectionCard")
+        rules_v = QVBoxLayout(rules_card)
+        rules_v.setContentsMargins(14, 12, 14, 14)
+        rules_v.setSpacing(6)
+        rules_hdr = QLabel("Active Channel Rules")
+        rules_hdr.setObjectName("sectionHeader")
+        rules_v.addWidget(rules_hdr)
+        self._channel_rules_list_widget = QWidget()
+        self._channel_rules_list_layout = QVBoxLayout(self._channel_rules_list_widget)
+        self._channel_rules_list_layout.setContentsMargins(0, 0, 0, 0)
+        self._channel_rules_list_layout.setSpacing(4)
+        rules_scroll = FocusScrollArea()
+        rules_scroll.setWidget(self._channel_rules_list_widget)
+        rules_scroll.setMinimumHeight(130)
+        rules_v.addWidget(rules_scroll)
+        layout.addWidget(rules_card, 1)
+
+        self._rebuild_channel_rules_list()
+
+        scroll_wrap = FocusScrollArea()
+        scroll_wrap.setWidget(content)
+        return scroll_wrap
+
+    def _on_preset_toggled(self, rule_type, checked):
+        if checked:
+            if not self._has_channel_rule(rule_type):
+                self._add_channel_rule(rule_type)
+        else:
+            self._remove_channel_rule_by_type(rule_type)
+        self._rebuild_channel_rules_list()
+
+    def _rebuild_channel_rules_list(self):
+        _clear_layout(self._channel_rules_list_layout)
+        rules = self._channel_rules()
+        if not rules:
+            lbl = QLabel("No channel rules set.")
+            lbl.setObjectName("fieldHelp")
+            self._channel_rules_list_layout.addWidget(lbl)
+            return
+        for rule in rules:
+            row = QHBoxLayout()
+            summary = airing_rule_summary(rule, self._channel_name)
+            lbl = QLabel(summary)
+            lbl.setObjectName("configLabel")
+            lbl.setWordWrap(True)
+            row.addWidget(lbl, 1)
+            rm_btn = QPushButton("Remove")
+            rm_btn.setFixedWidth(70)
+            rm_btn.setObjectName("catalogResetButton")
+            rm_btn.clicked.connect(lambda _=False, r=rule: self._remove_channel_rule_directly(r))
+            row.addWidget(rm_btn)
+            self._channel_rules_list_layout.addLayout(row)
+        self._channel_rules_list_layout.addStretch(1)
+        # Sync preset button states (may have been removed from list view)
+        for rule_type, btn in self._preset_btns.items():
+            btn.blockSignals(True)
+            btn.setChecked(self._has_channel_rule(rule_type))
+            btn.blockSignals(False)
+
+    def _remove_channel_rule_directly(self, rule):
+        rule_id = rule.get("id", "")
+        self._cfg["channel_rules"] = [r for r in self._cfg.get("channel_rules", []) if r.get("id") != rule_id]
+        self._rebuild_channel_rules_list()
+
+    # ── Shows & Movies tab ───────────────────────────────────────────────────
+
+    def _build_shows_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        if not self._show_titles:
+            card = QWidget()
+            card.setObjectName("sectionCard")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(16, 14, 16, 14)
+            lbl = QLabel("No shows or movies found for this channel.\n"
+                         "Load a catalog with media files to see titles here.")
+            lbl.setObjectName("fieldHelp")
+            lbl.setWordWrap(True)
+            cl.addWidget(lbl)
+            layout.addWidget(card)
+            layout.addStretch(1)
+            return self._wrap_scroll(content)
+
+        header_card = QWidget()
+        header_card.setObjectName("sectionCard")
+        hc = QVBoxLayout(header_card)
+        hc.setContentsMargins(14, 10, 14, 10)
+        count = len(self._show_titles)
+        capped = count > 200
+        count_lbl = QLabel(
+            f"{min(count, 200)} of {count} titles shown — scroll to see all."
+            if capped else f"{count} title{'s' if count != 1 else ''} found."
+        )
+        count_lbl.setObjectName("fieldHelp")
+        hc.addWidget(count_lbl)
+        note = QLabel("Set a preference per title. 'Normal' means no special rule.")
+        note.setObjectName("fieldHelp")
+        hc.addWidget(note)
+        # TODO Phase 3: add genre editing per title (read-only in Phase 2)
+        layout.addWidget(header_card)
+
+        rows_widget = QWidget()
+        rows_layout = QVBoxLayout(rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(4)
+
+        preset_labels = [lbl for lbl, _ in SHOW_AIRING_PRESETS]
+        self._show_combos = {}
+
+        for show in self._show_titles[:200]:
+            title_key = show.get("title_key", "")
+            title = show.get("title", title_key)
+            current_type = self._show_rule_type_for(title_key)
+            current_label = self._preset_label_for_type(current_type, SHOW_AIRING_PRESETS)
+
+            row_w = QWidget()
+            row_w.setObjectName("catalogRowHeader")
+            row_h = QHBoxLayout(row_w)
+            row_h.setContentsMargins(10, 6, 10, 6)
+            row_h.setSpacing(10)
+
+            lbl = QLabel(title)
+            lbl.setObjectName("configLabel")
+            lbl.setToolTip(f"title_key: {title_key}")
+            lbl.setMinimumWidth(200)
+            row_h.addWidget(lbl, 1)
+
+            combo = QComboBox()
+            combo.addItems(preset_labels)
+            combo.setCurrentText(current_label)
+            combo.setMinimumWidth(180)
+            combo.currentTextChanged.connect(
+                lambda text, tk=title_key, t=title: self._on_show_preset_changed(tk, t, text)
+            )
+            row_h.addWidget(combo)
+            self._show_combos[title_key] = combo
+            rows_layout.addWidget(row_w)
+
+        rows_layout.addStretch(1)
+        rows_scroll = FocusScrollArea()
+        rows_scroll.setWidget(rows_widget)
+        rows_scroll.setMinimumHeight(320)
+        layout.addWidget(rows_scroll, 1)
+        return self._wrap_scroll(content)
+
+    def _on_show_preset_changed(self, title_key, title, text):
+        rule_type = ""
+        for label, rt in SHOW_AIRING_PRESETS:
+            if label == text:
+                rule_type = rt
+                break
+        self._upsert_show_rule(title_key, title, rule_type)
+
+    # ── Genres tab ───────────────────────────────────────────────────────────
+
+    def _build_genres_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        if not self._genre_tags:
+            card = QWidget()
+            card.setObjectName("sectionCard")
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(16, 14, 16, 14)
+            lbl = QLabel(
+                "No genre tags found for this channel.\n"
+                "Add comma-separated Genre Tags in the channel's Config panel to enable genre-level rules."
+            )
+            lbl.setObjectName("fieldHelp")
+            lbl.setWordWrap(True)
+            cl.addWidget(lbl)
+            layout.addWidget(card)
+            layout.addStretch(1)
+            return self._wrap_scroll(content)
+
+        note_card = QWidget()
+        note_card.setObjectName("sectionCard")
+        nc = QVBoxLayout(note_card)
+        nc.setContentsMargins(14, 10, 14, 10)
+        nc.addWidget(QLabel(f"{len(self._genre_tags)} genre tag(s) from channel settings."))
+        note = QLabel("Set a preference per genre. 'Normal' means no special rule.")
+        note.setObjectName("fieldHelp")
+        nc.addWidget(note)
+        layout.addWidget(note_card)
+
+        rows_widget = QWidget()
+        rows_layout = QVBoxLayout(rows_widget)
+        rows_layout.setContentsMargins(0, 0, 0, 0)
+        rows_layout.setSpacing(4)
+
+        preset_labels = [lbl for lbl, _ in GENRE_AIRING_PRESETS]
+        self._genre_combos = {}
+
+        for genre in self._genre_tags:
+            current_type = self._genre_rule_type_for(genre)
+            current_label = self._preset_label_for_type(current_type, GENRE_AIRING_PRESETS)
+
+            row_w = QWidget()
+            row_w.setObjectName("catalogRowHeader")
+            row_h = QHBoxLayout(row_w)
+            row_h.setContentsMargins(10, 6, 10, 6)
+            row_h.setSpacing(10)
+
+            lbl = QLabel(genre)
+            lbl.setObjectName("configLabel")
+            row_h.addWidget(lbl, 1)
+
+            combo = QComboBox()
+            combo.addItems(preset_labels)
+            combo.setCurrentText(current_label)
+            combo.setMinimumWidth(180)
+            combo.currentTextChanged.connect(lambda text, g=genre: self._on_genre_preset_changed(g, text))
+            row_h.addWidget(combo)
+            self._genre_combos[genre] = combo
+            rows_layout.addWidget(row_w)
+
+        rows_layout.addStretch(1)
+        rows_scroll = FocusScrollArea()
+        rows_scroll.setWidget(rows_widget)
+        rows_scroll.setMinimumHeight(280)
+        layout.addWidget(rows_scroll, 1)
+        return self._wrap_scroll(content)
+
+    def _on_genre_preset_changed(self, genre, text):
+        rule_type = ""
+        for label, rt in GENRE_AIRING_PRESETS:
+            if label == text:
+                rule_type = rt
+                break
+        self._upsert_genre_rule(genre, rule_type)
+
+    # ── Channel Takeovers tab ─────────────────────────────────────────────────
+
+    def _build_takeovers_tab(self):
+        content = QWidget()
+        layout = QVBoxLayout(content)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        intro_card = QWidget()
+        intro_card.setObjectName("sectionCard")
+        ic = QVBoxLayout(intro_card)
+        ic.setContentsMargins(14, 12, 14, 12)
+        ic.setSpacing(4)
+        intro_hdr = QLabel("Channel Takeovers")
+        intro_hdr.setObjectName("sectionHeader")
+        ic.addWidget(intro_hdr)
+        intro_note = QLabel(
+            "Use this when a channel changes personality at certain times, "
+            "like Cartoon Network becoming Adult Swim at night, "
+            "or AMC becoming FearFest in October."
+        )
+        intro_note.setObjectName("fieldHelp")
+        intro_note.setWordWrap(True)
+        ic.addWidget(intro_note)
+        add_btn = QPushButton("+ Add Channel Takeover")
+        add_btn.setFixedWidth(200)
+        add_btn.clicked.connect(self._add_takeover)
+        ic.addWidget(add_btn)
+        layout.addWidget(intro_card)
+
+        self._takeovers_container = QWidget()
+        self._takeovers_layout = QVBoxLayout(self._takeovers_container)
+        self._takeovers_layout.setContentsMargins(0, 0, 0, 0)
+        self._takeovers_layout.setSpacing(8)
+
+        takeovers_scroll = FocusScrollArea()
+        takeovers_scroll.setWidget(self._takeovers_container)
+        takeovers_scroll.setMinimumHeight(340)
+        layout.addWidget(takeovers_scroll, 1)
+
+        self._rebuild_takeovers_list()
+
+        return self._wrap_scroll(content)
+
+    def _add_takeover(self):
+        takeover = normalize_channel_takeover({
+            "takeover_name": "",
+            "source_channel_id": self._channel_id,
+            "enabled": True,
+            "rule_strength": "hint",
+        })
+        self._cfg.setdefault("channel_takeovers", []).append(takeover)
+        self._rebuild_takeovers_list()
+
+    def _rebuild_takeovers_list(self):
+        _clear_layout(self._takeovers_layout)
+        takeovers = self._takeovers_for_channel()
+        if not takeovers:
+            lbl = QLabel("No Channel Takeovers configured for this channel.")
+            lbl.setObjectName("fieldHelp")
+            self._takeovers_layout.addWidget(lbl)
+            self._takeovers_layout.addStretch(1)
+            return
+        for takeover in takeovers:
+            self._takeovers_layout.addWidget(self._build_takeover_card(takeover))
+        self._takeovers_layout.addStretch(1)
+
+    def _build_takeover_card(self, takeover):
+        tid = takeover.get("id", "")
+
+        outer = QWidget()
+        outer.setObjectName("sectionCard")
+        outer_v = QVBoxLayout(outer)
+        outer_v.setContentsMargins(0, 0, 0, 0)
+        outer_v.setSpacing(0)
+
+        # Header row: summary + expand toggle + remove
+        hdr_w = QWidget()
+        hdr_w.setObjectName("catalogRowHeader")
+        hdr_h = QHBoxLayout(hdr_w)
+        hdr_h.setContentsMargins(12, 8, 12, 8)
+        hdr_h.setSpacing(8)
+
+        summary_lbl = QLabel(channel_takeover_summary(takeover))
+        summary_lbl.setObjectName("configLabel")
+        summary_lbl.setWordWrap(False)
+        hdr_h.addWidget(summary_lbl, 1)
+
+        expand_btn = QPushButton("Edit  ▾")
+        expand_btn.setObjectName("configToggleButton")
+        expand_btn.setCheckable(True)
+        expand_btn.setChecked(False)
+        hdr_h.addWidget(expand_btn)
+
+        rm_btn = QPushButton("Remove")
+        rm_btn.setObjectName("catalogResetButton")
+        rm_btn.clicked.connect(lambda _=False, t=takeover: self._remove_takeover(t))
+        hdr_h.addWidget(rm_btn)
+        outer_v.addWidget(hdr_w)
+
+        # Expandable form panel
+        form_panel = QWidget()
+        form_panel.setObjectName("catalogExpandPanel")
+        form_panel.setVisible(False)
+        fp = QFormLayout(form_panel)
+        fp.setContentsMargins(16, 12, 16, 14)
+        fp.setHorizontalSpacing(14)
+        fp.setVerticalSpacing(10)
+        fp.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
+
+        enabled_cb = QCheckBox("Enabled")
+        enabled_cb.setChecked(bool(takeover.get("enabled", True)))
+        fp.addRow("", enabled_cb)
+
+        name_input = QLineEdit(takeover.get("takeover_name", ""))
+        name_input.setPlaceholderText("e.g. Adult Swim, FearFest, Christmas")
+        fp.addRow("Takeover Name", name_input)
+
+        display_name_input = QLineEdit(takeover.get("display_channel_name", ""))
+        display_name_input.setPlaceholderText("Display name shown to viewers (optional)")
+        fp.addRow("Display Channel Name", display_name_input)
+
+        start_input = QLineEdit(takeover.get("start_time", ""))
+        start_input.setPlaceholderText("HH:MM  (24-hour, e.g. 22:00)")
+        fp.addRow("Start Time", start_input)
+
+        end_input = QLineEdit(takeover.get("end_time", ""))
+        end_input.setPlaceholderText("HH:MM  (24-hour, e.g. 06:00)")
+        fp.addRow("End Time", end_input)
+
+        # Days of week — row of checkboxes
+        days_widget = QWidget()
+        days_h = QHBoxLayout(days_widget)
+        days_h.setContentsMargins(0, 0, 0, 0)
+        days_h.setSpacing(6)
+        active_days = set(takeover.get("days_of_week") or [])
+        day_checks = {}
+        for day in AIRING_DAYS_OF_WEEK:
+            cb = QCheckBox(day.capitalize())
+            cb.setChecked(day in active_days)
+            days_h.addWidget(cb)
+            day_checks[day] = cb
+        days_h.addStretch(1)
+        fp.addRow("Days of Week", days_widget)
+
+        seasonal_combo = QComboBox()
+        seasonal_combo.addItem("— none —", "")
+        for sp in AIRING_SEASONAL_PRESETS:
+            seasonal_combo.addItem(sp.replace("_", " ").title(), sp)
+        current_sp = takeover.get("seasonal_preset", "")
+        for i in range(seasonal_combo.count()):
+            if seasonal_combo.itemData(i) == current_sp:
+                seasonal_combo.setCurrentIndex(i)
+                break
+        fp.addRow("Seasonal Preset", seasonal_combo)
+
+        strength_combo = QComboBox()
+        for s in AIRING_RULE_STRENGTHS:
+            strength_combo.addItem(s.replace("_", " ").title(), s)
+        cur_strength = takeover.get("rule_strength", "hint")
+        for i in range(strength_combo.count()):
+            if strength_combo.itemData(i) == cur_strength:
+                strength_combo.setCurrentIndex(i)
+                break
+        fp.addRow("Rule Strength", strength_combo)
+
+        logo_input = QLineEdit(takeover.get("display_logo_path", ""))
+        logo_input.setPlaceholderText("Path to logo image (optional)")
+        logo_btn = QPushButton("Browse")
+        logo_btn.setFixedWidth(70)
+        logo_btn.clicked.connect(lambda _=False, inp=logo_input: self._browse_file(inp, "Logo Image"))
+        logo_row = QWidget()
+        logo_row_h = QHBoxLayout(logo_row)
+        logo_row_h.setContentsMargins(0, 0, 0, 0)
+        logo_row_h.setSpacing(6)
+        logo_row_h.addWidget(logo_input, 1)
+        logo_row_h.addWidget(logo_btn)
+        fp.addRow("Display Logo", logo_row)
+
+        bug_input = QLineEdit(takeover.get("display_channel_bug_path", ""))
+        bug_input.setPlaceholderText("Path to channel bug/watermark image (optional)")
+        bug_btn = QPushButton("Browse")
+        bug_btn.setFixedWidth(70)
+        bug_btn.clicked.connect(lambda _=False, inp=bug_input: self._browse_file(inp, "Channel Bug"))
+        bug_row = QWidget()
+        bug_row_h = QHBoxLayout(bug_row)
+        bug_row_h.setContentsMargins(0, 0, 0, 0)
+        bug_row_h.setSpacing(6)
+        bug_row_h.addWidget(bug_input, 1)
+        bug_row_h.addWidget(bug_btn)
+        fp.addRow("Channel Bug", bug_row)
+
+        bumper_input = QLineEdit(takeover.get("optional_bumper_path", ""))
+        bumper_input.setPlaceholderText("Path to bumper video (optional)")
+        bumper_btn = QPushButton("Browse")
+        bumper_btn.setFixedWidth(70)
+        bumper_btn.clicked.connect(lambda _=False, inp=bumper_input: self._browse_file(inp, "Bumper Video"))
+        bumper_row = QWidget()
+        bumper_row_h = QHBoxLayout(bumper_row)
+        bumper_row_h.setContentsMargins(0, 0, 0, 0)
+        bumper_row_h.setSpacing(6)
+        bumper_row_h.addWidget(bumper_input, 1)
+        bumper_row_h.addWidget(bumper_btn)
+        fp.addRow("Bumper", bumper_row)
+
+        notes_input = QLineEdit(takeover.get("notes", ""))
+        notes_input.setPlaceholderText("Optional notes")
+        fp.addRow("Notes", notes_input)
+
+        # Apply button inside the form
+        apply_row = QHBoxLayout()
+        apply_row.addStretch(1)
+        apply_btn = QPushButton("Apply Changes")
+        apply_btn.setObjectName("saveButton")
+        apply_btn.clicked.connect(lambda _=False, t_id=tid, fields={
+            "enabled": enabled_cb,
+            "name": name_input,
+            "display_name": display_name_input,
+            "start": start_input,
+            "end": end_input,
+            "days": day_checks,
+            "seasonal": seasonal_combo,
+            "strength": strength_combo,
+            "logo": logo_input,
+            "bug": bug_input,
+            "bumper": bumper_input,
+            "notes": notes_input,
+            "summary_lbl": summary_lbl,
+        }: self._apply_takeover_fields(t_id, fields))
+        apply_row.addWidget(apply_btn)
+        fp.addRow("", apply_row)
+
+        outer_v.addWidget(form_panel)
+
+        def _toggle_expand(checked, btn=expand_btn, panel=form_panel):
+            panel.setVisible(checked)
+            btn.setText("Edit  ▴" if checked else "Edit  ▾")
+
+        expand_btn.toggled.connect(_toggle_expand)
+        return outer
+
+    def _apply_takeover_fields(self, tid, fields):
+        days_selected = [day for day, cb in fields["days"].items() if cb.isChecked()]
+        for takeover in self._cfg.get("channel_takeovers", []):
+            if takeover.get("id") != tid:
+                continue
+            takeover["enabled"] = fields["enabled"].isChecked()
+            takeover["takeover_name"] = fields["name"].text().strip()
+            takeover["display_channel_name"] = fields["display_name"].text().strip()
+            takeover["start_time"] = normalize_airing_time(fields["start"].text())
+            takeover["end_time"] = normalize_airing_time(fields["end"].text())
+            takeover["days_of_week"] = days_selected
+            takeover["seasonal_preset"] = fields["seasonal"].currentData() or ""
+            takeover["rule_strength"] = fields["strength"].currentData() or "hint"
+            takeover["display_logo_path"] = fields["logo"].text().strip()
+            takeover["display_channel_bug_path"] = fields["bug"].text().strip()
+            takeover["optional_bumper_path"] = fields["bumper"].text().strip()
+            takeover["notes"] = fields["notes"].text().strip()
+            fields["summary_lbl"].setText(channel_takeover_summary(takeover))
+            break
+
+    def _remove_takeover(self, takeover):
+        tid = takeover.get("id", "")
+        self._cfg["channel_takeovers"] = [
+            t for t in self._cfg.get("channel_takeovers", []) if t.get("id") != tid
+        ]
+        self._rebuild_takeovers_list()
+
+    def _browse_file(self, line_edit, caption):
+        start = line_edit.text().strip() or os.path.expanduser("~")
+        path, _ = QFileDialog.getOpenFileName(self, f"Select {caption}", start)
+        if path:
+            line_edit.setText(path)
+
+    # ── utilities ─────────────────────────────────────────────────────────────
+
+    @staticmethod
+    def _wrap_scroll(content):
+        scroll = FocusScrollArea()
+        scroll.setWidget(content)
+        return scroll
+
+    # ── save ──────────────────────────────────────────────────────────────────
+
+    def _save_and_close(self):
+        normalized = normalize_airing_rules_config(self._cfg)
+        save_airing_rules_config(normalized)
+        airing_rules_diagnostics(normalized)
+        self._cfg = normalized
+        self.accept()
+
+    def result_config(self):
+        """Return the final (possibly normalized) config after the dialog closes."""
+        return self._cfg
+
+
+def _clear_layout(layout):
+    """Remove all widgets/items from a layout without crashing."""
+    if layout is None:
+        return
+    while layout.count():
+        item = layout.takeAt(0)
+        if item.widget():
+            item.widget().deleteLater()
+        elif item.layout():
+            _clear_layout(item.layout())
+
+
 class AdvancedConfigDialog(QDialog):
-    def __init__(self, settings, channel_names=None, parent=None, channel_infos=None):
+    def __init__(self, settings, channel_names=None, parent=None, channel_infos=None,
+                 airing_rules_config=None, channel_shows_lookup=None, channel_genre_lookup=None):
         super().__init__(parent)
         self._init_settings = dict(settings or {})
         self.review_requested = False
@@ -20168,6 +21063,9 @@ class AdvancedConfigDialog(QDialog):
                 for index, name in enumerate(self.channel_names)
             ]
         self.catalog_rows = []
+        self._airing_rules_config = airing_rules_config if isinstance(airing_rules_config, dict) else airing_rules_config_defaults()
+        self._channel_shows_lookup = channel_shows_lookup if isinstance(channel_shows_lookup, dict) else {}
+        self._channel_genre_lookup = channel_genre_lookup if isinstance(channel_genre_lookup, dict) else {}
         self.commercials_settings = normalize_commercials_config((settings or {}).get("commercials", {}))
         self.advanced_commercials_settings = json.loads(json.dumps(self.commercials_settings))
         self.channel_commercial_overrides = json.loads(json.dumps(self.commercials_settings.get("channel_overrides", {})))
@@ -20612,10 +21510,6 @@ class AdvancedConfigDialog(QDialog):
         reset_all = QPushButton("Reset All")
         reset_all.clicked.connect(self.reset_all_catalog_rows)
         top_row.addWidget(reset_all)
-        airing_rules_placeholder = QPushButton("Airing Rules data support enabled")
-        airing_rules_placeholder.setEnabled(False)
-        airing_rules_placeholder.setToolTip("Airing Rules (Channel Takeovers, scheduling preferences) coming soon.")
-        top_row.addWidget(airing_rules_placeholder)
         catalog_layout.addLayout(top_row)
 
         header = QWidget()
@@ -20760,8 +21654,16 @@ class AdvancedConfigDialog(QDialog):
         tags_row.addWidget(tags_input, 1)
         exp_layout.addLayout(tags_row)
 
-        # Reset button inside panel
+        # Panel footer: Airing Rules button + Reset button
+        # Note: addWidget on exp_layout produces invisible widgets on macOS/Qt6;
+        # wrapping in QHBoxLayout and using addLayout is the workaround.
         panel_footer = QHBoxLayout()
+        panel_footer.setSpacing(8)
+        airing_rules_btn = QPushButton("Airing Rules…")
+        airing_rules_btn.setObjectName("airingRulesBtn")
+        airing_rules_btn.setToolTip("Open Airing Rules editor for this channel")
+        airing_rules_btn.clicked.connect(lambda _=False, ci=info, cid=channel_id: self._open_airing_rules(ci, cid))
+        panel_footer.addWidget(airing_rules_btn)
         panel_footer.addStretch(1)
         reset_btn = QPushButton("Reset to Default")
         reset_btn.setObjectName("catalogResetButton")
@@ -20828,6 +21730,20 @@ class AdvancedConfigDialog(QDialog):
     def reset_all_catalog_rows(self):
         for row in self.catalog_rows:
             self.reset_catalog_row(row)
+
+    def _open_airing_rules(self, channel_info, channel_id):
+        """Open the AiringRulesDialog for a specific channel."""
+        genre_tags = self._channel_genre_lookup.get(channel_id, [])
+        show_titles = self._channel_shows_lookup.get(channel_id, [])
+        dlg = AiringRulesDialog(
+            channel_info=channel_info,
+            airing_rules_config=self._airing_rules_config,
+            genre_tags=genre_tags,
+            show_titles=show_titles,
+            parent=self,
+        )
+        if dlg.exec() == QDialog.Accepted:
+            self._airing_rules_config = dlg.result_config()
 
     def collect_catalog_channel_settings(self):
         settings = {}
@@ -23262,11 +24178,37 @@ class ChannelSurfer(QWidget):
 
     @Slot()
     def open_advanced_configuration(self):
+        channel_infos = self.current_catalog_channel_infos()
+
+        # Build per-channel show and genre lookups for the Airing Rules editor.
+        channel_shows_lookup = {}
+        channel_genre_lookup = {}
+        catalog_settings = normalize_catalog_channel_settings(
+            self.app_settings.get("catalog_channel_settings", {})
+        )
+        for channel in getattr(self, "channels", []):
+            if getattr(channel, "channel_type", "media") != "media":
+                continue
+            cid = self.catalog_channel_id(channel)
+            root_path = getattr(channel, "root_path", "")
+            show_files = getattr(channel, "shows", [])
+            try:
+                channel_shows_lookup[cid] = gather_channel_shows(root_path, show_files)
+            except Exception:
+                channel_shows_lookup[cid] = []
+            tags_str = catalog_settings.get(cid, {}).get("vault_genre_tags", "")
+            channel_genre_lookup[cid] = [
+                t.strip() for t in tags_str.split(",") if t.strip()
+            ] if tags_str else []
+
         dialog = AdvancedConfigDialog(
             self.app_settings,
             [channel.name for channel in self.channels if getattr(channel, "channel_type", "media") == "media"],
             self,
-            channel_infos=self.current_catalog_channel_infos(),
+            channel_infos=channel_infos,
+            airing_rules_config=self.airing_rules_config,
+            channel_shows_lookup=channel_shows_lookup,
+            channel_genre_lookup=channel_genre_lookup,
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -23294,6 +24236,9 @@ class ChannelSurfer(QWidget):
         invalidate_channel_bug_cache()
         self.configure_channel_bug()
         save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        # Reload airing rules config in case the user saved rules during this session
+        self.airing_rules_config = load_airing_rules_config()
+        airing_rules_diagnostics(self.airing_rules_config)
         self.sync_main_qol_toggles()
         self.sync_overlay_qol_settings()
         self.status.setText("Advanced configuration saved.")
