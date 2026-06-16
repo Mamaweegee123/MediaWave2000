@@ -2,6 +2,7 @@
 
 import os
 import sys
+import certifi
 
 _spec_dir = os.path.dirname(os.path.abspath(SPEC))
 _base = os.path.dirname(_spec_dir)
@@ -19,6 +20,7 @@ datas = (
     + _dir_if_exists("Fonts", "Fonts")
     + _dir_if_exists("bin", "bin")
     + _dir_if_exists("docs", "docs")
+    + [(certifi.where(), "certifi")]
 )
 
 _icon_icns = os.path.join(_base, "icons", "mediawave_converter.icns")
@@ -34,7 +36,7 @@ a = Analysis(
     pathex=[_base],
     binaries=[],
     datas=datas,
-    hiddenimports=[],
+    hiddenimports=["certifi"],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -88,5 +90,5 @@ if sys.platform == "darwin":
         name="MediaWaveConverter.app",
         icon=_icon_icns if os.path.exists(_icon_icns) else None,
         bundle_identifier="com.mamaweegee.mediawaveconverter",
-        version="0.1.0-beta",
+        version="0.1.0",
     )

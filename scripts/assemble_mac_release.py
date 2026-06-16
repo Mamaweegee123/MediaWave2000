@@ -11,8 +11,15 @@ Outputs:
 Safe:
     Only ever deletes / replaces release/MediaWave/.
     Never touches anything outside the release/ directory.
+
+Docs:
+    START HERE.txt and the Supplemental Reading guides are copied
+    byte-for-byte from the canonical sources in docs/. This script never
+    rewrites or regenerates their content — if a canonical doc is missing,
+    assembly fails instead of substituting a generic placeholder.
 """
 
+import hashlib
 import shutil
 import sys
 import zipfile
@@ -24,6 +31,27 @@ DIST = REPO / "dist"
 RELEASE_ROOT = REPO / "release"
 STAGING = RELEASE_ROOT / "MediaWave"
 DOCS_SRC = REPO / "docs"
+
+# ── Canonical doc sources ────────────────────────────────────────────────────
+# Never rewritten or regenerated — copied verbatim from docs/. Assembly fails
+# loudly if one of these is missing.
+ROOT_DOCS = (
+    "START HERE.txt",
+)
+
+SUPPLEMENTAL_GUIDES = (
+    "Channel Setup Guide.txt",
+    "Commercial Setup Guide.txt",
+    "Converter Guide.txt",
+    "Troubleshooting.txt",
+)
+
+BETA_DOCS = (
+    "CHANGELOG.md",
+    "KNOWN_ISSUES.md",
+    "QUICKSTART.md",
+    "THIRD_PARTY_NOTICES.md",
+)
 
 # ── Placeholder text files ────────────────────────────────────────────────────
 PLACEHOLDERS = {
@@ -89,77 +117,21 @@ PLACEHOLDERS = {
     ),
 }
 
-START_HERE_TEXT = """\
-============================================================
-  WELCOME TO MEDIAWAVE
-============================================================
-
-GETTING STARTED
----------------
-1. Open MediaWave.app
-
-2. Press "Choose Catalog…" to select any folder that
-   contains your channel subfolders.
-
-   Your catalog can live ANYWHERE:
-     - An external hard drive
-     - A USB flash drive
-     - A NAS / network share
-     - Your Documents folder
-     - Any custom location
-
-   The User Content/Channels folder included here is just
-   a convenient starter — it is NOT required.
-
-3. Press "Watch TV ▶" to start watching.
-
-CHANNEL SETUP
--------------
-Each subfolder inside your catalog becomes one TV channel.
-The folder name becomes the channel name.
-
-  Channels/
-    HBO Classic/       ← becomes channel "HBO Classic"
-      show01.mp4
-    Comedy Central/    ← becomes channel "Comedy Central"
-      special.mp4
-
-Channel logos (optional):
-  Put a logo image in a Logos/ subfolder:
-    Channel Name/Logos/logo.png
-  Enable the channel bug in Advanced Config.
-
-COMMERCIALS (OPTIONAL)
------------------------
-Put commercial video clips in a folder (anywhere you like),
-then enable commercials and set the folder path in
-Advanced Config inside MediaWave.
-
-The User Content/Commercials folder is a convenient
-default location but is not required.
-
-CONVERTING VIDEOS
------------------
-Open MediaWave Converter.app to convert video files to a
-format that plays best in MediaWave.
-
-Converted files default to User Content/Converted/ when
-that folder exists.
-
-DOCS FOLDER
------------
-See the docs/ folder for detailed guides:
-  Channel Setup Guide.txt
-  Commercial Setup Guide.txt
-  Converter Guide.txt
-  Troubleshooting.txt
-
-============================================================
-"""
-
-
 def log(msg: str) -> None:
     print(msg)
+
+
+def fail(msg: str) -> None:
+    print(f"\n✗ ASSEMBLY ABORTED: {msg}\n", file=sys.stderr)
+    sys.exit(1)
+
+
+def sha256(path: Path) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 
 def safe_remove_staging() -> None:
@@ -195,31 +167,59 @@ def create_user_content() -> None:
         log(f"  Created {rel_path}")
 
 
-def copy_docs() -> None:
-    dst_docs = STAGING / "docs"
-    if DOCS_SRC.is_dir():
-        log(f"  Copying docs/ ...")
-        shutil.copytree(DOCS_SRC, dst_docs, dirs_exist_ok=True)
-    else:
-        log("  WARNING: docs/ source folder not found — creating empty docs/")
-        dst_docs.mkdir(parents=True, exist_ok=True)
+def copy_canonical_docs() -> list[tuple[Path, Path]]:
+    """Copy START HERE.txt, the Supplemental Reading guides, and the docs/
+    beta documents byte-for-byte from docs/. Never rewrites their content;
+    fails loudly if a required canonical doc is missing."""
+    copied: list[tuple[Path, Path]] = []
 
-    # Copy START HERE.txt to root (from docs/ if it exists there)
-    start_in_docs = dst_docs / "START HERE.txt"
-    start_in_root = STAGING / "START HERE.txt"
-    if start_in_docs.exists() and not start_in_root.exists():
-        shutil.copy2(start_in_docs, start_in_root)
-        log("  Copied START HERE.txt to release root from docs/")
+    log("  START HERE.txt (main folder, canonical, verbatim) ...")
+    for doc in ROOT_DOCS:
+        src = DOCS_SRC / doc
+        if not src.exists():
+            fail(f"Required canonical doc missing: {src}. Create it in docs/ — assembly will not generate a substitute.")
+        dst = STAGING / doc
+        shutil.copy2(src, dst)
+        copied.append((src, dst))
+        log(f"    {doc}  <-  {src.relative_to(REPO)}")
+
+    log("  Supplemental Reading/ (canonical, verbatim) ...")
+    sup = STAGING / "Supplemental Reading"
+    sup.mkdir(exist_ok=True)
+    for guide in SUPPLEMENTAL_GUIDES:
+        src = DOCS_SRC / guide
+        if not src.exists():
+            fail(f"Required canonical doc missing: {src}. Create it in docs/ — assembly will not generate a substitute.")
+        dst = sup / guide
+        shutil.copy2(src, dst)
+        copied.append((src, dst))
+        log(f"    {guide}  <-  {src.relative_to(REPO)}")
+
+    log("  docs/ (canonical beta documents, verbatim) ...")
+    docs_dst = STAGING / "docs"
+    docs_dst.mkdir(exist_ok=True)
+    for doc in BETA_DOCS:
+        src = DOCS_SRC / doc
+        if not src.exists():
+            fail(f"Required canonical doc missing: {src}. Create it in docs/ — assembly will not generate a substitute.")
+        dst = docs_dst / doc
+        shutil.copy2(src, dst)
+        copied.append((src, dst))
+        log(f"    {doc}  <-  {src.relative_to(REPO)}")
+
+    return copied
 
 
-def write_start_here() -> None:
-    target = STAGING / "START HERE.txt"
-    target.write_text(START_HERE_TEXT, encoding="utf-8")
-    log("  Wrote START HERE.txt at release root")
-    # Also keep a copy in docs/
-    docs_copy = STAGING / "docs" / "START HERE.txt"
-    docs_copy.parent.mkdir(parents=True, exist_ok=True)
-    docs_copy.write_text(START_HERE_TEXT, encoding="utf-8")
+def verify_staged_docs(copied_docs: list[tuple[Path, Path]]) -> None:
+    mismatches = []
+    for src, dst in copied_docs:
+        if not dst.exists():
+            mismatches.append(f"{dst.relative_to(STAGING)}: missing in staging")
+            continue
+        if sha256(src) != sha256(dst):
+            mismatches.append(f"{dst.relative_to(STAGING)}: content differs from canonical {src.relative_to(REPO)}")
+    if mismatches:
+        fail("Staged docs do not match canonical sources:\n  " + "\n  ".join(mismatches))
 
 
 def make_zip(no_zip: bool) -> Path | None:
@@ -312,11 +312,12 @@ def main() -> None:
     log("\nStep 3: Creating User Content folders ...")
     create_user_content()
 
-    log("\nStep 4: Copying docs ...")
-    copy_docs()
+    log("\nStep 4: Copying canonical docs ...")
+    copied_docs = copy_canonical_docs()
 
-    log("\nStep 5: Writing START HERE.txt ...")
-    write_start_here()
+    log("\nStep 5: Verifying staged docs match canonical sources ...")
+    verify_staged_docs(copied_docs)
+    log("  ✓ All staged docs are byte-for-byte identical to their canonical source")
 
     log("\nStep 6: Creating zip ...")
     zip_path = make_zip(no_zip)

@@ -3,8 +3,10 @@ import json
 import os
 import re
 import shutil
+import ssl
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -47,10 +49,167 @@ from PySide6.QtWidgets import (
 APP_NAME = "MediaWaveConverter"
 WINDOW_TITLE = "MediaWave Converter"
 PIPELINE_VERSION = "2026.04.11"
-DISPLAY_VERSION = "1.0.0"
+DISPLAY_VERSION = "0.1.0"
 TARGET_LUFS = -16
 TARGET_TP = -1.5
 TARGET_LRA = 11
+
+_ORIGINAL_SUBPROCESS_RUN = subprocess.run
+_ORIGINAL_SUBPROCESS_POPEN = subprocess.Popen
+
+
+def _safe_realpath(path: str | Path | None) -> str:
+    if not path:
+        return ""
+    try:
+        return str(Path(path).resolve())
+    except OSError:
+        return str(Path(path).absolute())
+
+
+def _app_bundle_path() -> Path | None:
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return None
+    exe = Path(sys.executable).resolve()
+    contents = exe.parent.parent
+    if contents.name == "Contents":
+        return contents.parent
+    return None
+
+
+def _startup_log_file() -> Path:
+    if sys.platform == "darwin":
+        bundle = _app_bundle_path()
+        portable = bundle.parent / "User Content" if bundle else None
+        if portable and portable.is_dir():
+            log_dir = portable / "Logs"
+        else:
+            log_dir = Path.home() / "Library" / "Logs" / "MediaWave"
+    else:
+        log_dir = Path.home() / ".mediawave" / "logs"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+        return log_dir / "converter-startup.log"
+    except OSError:
+        return Path(os.getenv("TMPDIR", "/tmp")) / "mediawave-converter-startup.log"
+
+
+STARTUP_LOG_FILE = _startup_log_file()
+
+
+def _converter_log_dir() -> Path:
+    if sys.platform == "darwin":
+        bundle = _app_bundle_path()
+        portable = bundle.parent / "User Content" if bundle else None
+        if portable and portable.is_dir():
+            log_dir = portable / "Logs" / "converter"
+        else:
+            log_dir = Path.home() / "Library" / "Logs" / "MediaWave" / "converter"
+    else:
+        log_dir = Path.home() / ".mediawave" / "logs" / "converter"
+    try:
+        log_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        log_dir = Path(os.getenv("TMPDIR", "/tmp")) / "mediawave-converter-logs"
+        log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+CONVERTER_LOG_DIR = _converter_log_dir()
+
+
+def write_conversion_log(source_path: Path, lines: list[str]) -> Path:
+    timestamp = time.strftime("%Y%m%d-%H%M%S")
+    safe_stem = "".join(c if c.isalnum() or c in " ._-" else "_" for c in source_path.stem)[:120]
+    log_file = CONVERTER_LOG_DIR / f"{timestamp}-{safe_stem}.log"
+    try:
+        with log_file.open("w", encoding="utf-8") as handle:
+            handle.write("\n".join(lines) + "\n")
+    except OSError:
+        pass
+    return log_file
+
+
+def startup_log(message: str) -> None:
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with STARTUP_LOG_FILE.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] {message}\n")
+    except OSError:
+        pass
+
+
+def _command_for_log(command: Any) -> str:
+    if isinstance(command, (list, tuple)):
+        return " ".join(str(part) for part in command)
+    return str(command)
+
+
+def _command_executable(command: Any) -> str:
+    if isinstance(command, (list, tuple)) and command:
+        return str(command[0])
+    if isinstance(command, str):
+        return command.split()[0] if command.split() else ""
+    return ""
+
+
+def _is_frozen_app_executable(path: str | Path | None) -> bool:
+    return bool(getattr(sys, "frozen", False) and path and _safe_realpath(path) == _safe_realpath(sys.executable))
+
+
+def _reject_self_spawn(command: Any) -> None:
+    exe = _command_executable(command)
+    if _is_frozen_app_executable(exe):
+        startup_log(f"BLOCKED self-spawn subprocess: {_command_for_log(command)}")
+        raise OSError("Refusing to launch the frozen MediaWave Converter executable as a helper process.")
+
+
+def run_subprocess(command: Any, *args: Any, **kwargs: Any) -> subprocess.CompletedProcess:
+    startup_log(f"subprocess.run: {_command_for_log(command)}")
+    _reject_self_spawn(command)
+    return _ORIGINAL_SUBPROCESS_RUN(command, *args, **kwargs)
+
+
+def popen_subprocess(command: Any, *args: Any, **kwargs: Any) -> subprocess.Popen:
+    startup_log(f"subprocess.Popen: {_command_for_log(command)}")
+    _reject_self_spawn(command)
+    return _ORIGINAL_SUBPROCESS_POPEN(command, *args, **kwargs)
+
+
+subprocess.run = run_subprocess
+subprocess.Popen = popen_subprocess
+
+try:
+    import certifi
+except ImportError:
+    certifi = None
+
+
+def metadata_ssl_context() -> ssl.SSLContext:
+    if certifi is not None:
+        return ssl.create_default_context(cafile=certifi.where())
+    return ssl.create_default_context()
+
+
+METADATA_SSL_CONTEXT = metadata_ssl_context()
+
+
+def metadata_error_message(provider: str, exc: BaseException) -> str:
+    text = str(exc)
+    reason = getattr(exc, "reason", None)
+    if reason:
+        text = str(reason)
+    lowered = text.lower()
+    if isinstance(reason, ssl.SSLError) or isinstance(exc, ssl.SSLError) or "certificate_verify_failed" in lowered:
+        return (
+            f"{provider}: secure connection failed because macOS could not verify the provider certificate. "
+            "MediaWave is using its bundled certificate list; try again after reconnecting to the internet."
+        )
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"{provider}: server returned HTTP {exc.code}."
+    if "timed out" in lowered or "timeout" in lowered:
+        return f"{provider}: request timed out."
+    return f"{provider}: {text or exc.__class__.__name__}"
 
 _SW_BG = QColor(13, 16, 38)
 _SW_HERO_TOP = QColor(9, 11, 27)
@@ -230,6 +389,16 @@ def app_data_dir() -> Path:
 
 DATA_DIR = app_data_dir()
 SETTINGS_FILE = DATA_DIR / "settings.json"
+startup_log("=" * 72)
+startup_log(f"{APP_NAME} {DISPLAY_VERSION} startup")
+startup_log(f"pid={os.getpid()} ppid={os.getppid()}")
+startup_log(f"sys.executable={sys.executable}")
+startup_log(f"sys.argv={sys.argv!r}")
+startup_log(f"frozen={getattr(sys, 'frozen', False)}")
+startup_log(f"app_bundle_path={_app_bundle_path() or '(none)'}")
+startup_log(f"resource_path={RESOURCE_DIR}")
+startup_log(f"data_dir={DATA_DIR}")
+startup_log(f"startup_log={STARTUP_LOG_FILE}")
 
 _CHECKBOX_CHECK_SVG = str(DATA_DIR / "checkbox_check.svg").replace("\\", "/")
 if not os.path.exists(_CHECKBOX_CHECK_SVG):
@@ -288,11 +457,30 @@ def resolve_resource_path(*candidates: str) -> Path | None:
 
 def resolve_executable(name: str) -> str | None:
     binary_name = f"{name}.exe" if os.name == "nt" else name
-    packaged = RESOURCE_DIR / "bin" / binary_name
-    if packaged.exists():
-        return str(packaged)
-    discovered = shutil.which(binary_name)
+    expected_names = {binary_name, name}
+
+    def valid(path: Path | str | None) -> str | None:
+        if not path:
+            return None
+        candidate = Path(path).resolve()
+        if not candidate.is_file():
+            startup_log(f"helper rejected {name}: missing {candidate}")
+            return None
+        if candidate.name not in expected_names:
+            startup_log(f"helper rejected {name}: unexpected basename {candidate}")
+            return None
+        if _is_frozen_app_executable(candidate):
+            startup_log(f"helper rejected {name}: equals sys.executable {candidate}")
+            return None
+        return str(candidate)
+
+    packaged = valid(RESOURCE_DIR / "bin" / binary_name)
+    if packaged:
+        startup_log(f"resolved {name}={packaged}")
+        return packaged
+    discovered = valid(shutil.which(binary_name))
     if discovered:
+        startup_log(f"resolved {name}={discovered}")
         return discovered
     common_locations = [
         Path("/opt/homebrew/bin") / binary_name,
@@ -300,8 +488,11 @@ def resolve_executable(name: str) -> str | None:
         Path("/usr/bin") / binary_name,
     ]
     for location in common_locations:
-        if location.exists():
-            return str(location)
+        helper = valid(location)
+        if helper:
+            startup_log(f"resolved {name}={helper}")
+            return helper
+    startup_log(f"resolved {name}=(missing)")
     return None
 
 
@@ -376,7 +567,10 @@ LOGO_PATH = resolve_resource_path(
     "logos/MediaWave-2000-2000-2000-MediaWave-2000.png",
 )
 CONVERTER_LOGO_PATH = resolve_resource_path("logos/MWConverter.png")
-CONVERTER_ICON_PATH = resolve_resource_path("logos/MWConverter_appicon.png")
+CONVERTER_ICON_PATH = resolve_resource_path(
+    "icons/source/mediawave_converter_icon_1024.png",
+    "logos/MWConverter_appicon.png",
+)
 PRIMARY_FONT_PATH = resolve_resource_path("Fonts/ArchivoNarrow-Bold.ttf")
 SECONDARY_FONT_PATH = resolve_resource_path("Fonts/ArchivoNarrow-SemiBold.ttf")
 
@@ -620,8 +814,8 @@ class MetadataSearchWorker(QThread):
         )
 
     def request_json(self, request: urllib.request.Request) -> Any:
-        request.add_header("User-Agent", "MediaWaveConverter/2026.04.11")
-        with urllib.request.urlopen(request, timeout=12) as response:
+        request.add_header("User-Agent", f"MediaWaveConverter/{DISPLAY_VERSION}")
+        with urllib.request.urlopen(request, timeout=12, context=METADATA_SSL_CONTEXT) as response:
             return json.loads(response.read().decode("utf-8"))
 
     def search_tvmaze(self) -> list[dict[str, Any]]:
@@ -715,17 +909,17 @@ class MetadataSearchWorker(QThread):
             try:
                 results.extend(self.search_tvmaze())
             except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-                errors.append(f"TVmaze: {exc}")
+                errors.append(metadata_error_message("TVmaze", exc))
         if self.media_type == "Movies" and self.provider in {"All databases", "Cinemeta"}:
             try:
                 results.extend(self.search_cinemeta())
             except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-                errors.append(f"Cinemeta: {exc}")
+                errors.append(metadata_error_message("Cinemeta", exc))
         if self.provider in {"All databases", "AniList"}:
             try:
                 results.extend(self.search_anilist())
             except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-                errors.append(f"AniList: {exc}")
+                errors.append(metadata_error_message("AniList", exc))
         if results:
             results.sort(key=lambda item: int(item.get("confidence", 0)), reverse=True)
             self.results_ready.emit(results)
@@ -747,9 +941,9 @@ class TVmazeEpisodeWorker(QThread):
         try:
             request = urllib.request.Request(
                 f"https://api.tvmaze.com/shows/{self.show_id}/episodes?specials=1",
-                headers={"User-Agent": "MediaWaveConverter/2026.04.11"},
+                headers={"User-Agent": f"MediaWaveConverter/{DISPLAY_VERSION}"},
             )
-            with urllib.request.urlopen(request, timeout=12) as response:
+            with urllib.request.urlopen(request, timeout=12, context=METADATA_SSL_CONTEXT) as response:
                 payload = json.loads(response.read().decode("utf-8"))
             episodes = {
                 f"{int(item.get('season') or 0)}:{int(item.get('number') or 0)}": str(item.get("name") or "")
@@ -758,7 +952,7 @@ class TVmazeEpisodeWorker(QThread):
             }
             self.episodes_ready.emit(episodes, "TVmaze")
         except (OSError, ValueError, urllib.error.URLError, urllib.error.HTTPError) as exc:
-            self.failed.emit(f"TVmaze episode lookup could not finish: {exc}")
+            self.failed.emit(metadata_error_message("TVmaze episode lookup", exc))
 
 
 def scan_length_for(duration: float) -> float:
@@ -1127,6 +1321,16 @@ class ConversionOptions:
         }
 
 
+def output_path_for_options(options: ConversionOptions, source_path: Path) -> Path:
+    extension = str(options.output_profile["extension"])
+    try:
+        relative_path = source_path.relative_to(options.source_root)
+    except ValueError:
+        return options.output_root / f"{source_path.stem}{extension}"
+    filename = f"{relative_path.stem}{extension}"
+    return options.output_root / relative_path.parent / filename
+
+
 @dataclass
 class AudioStreamInfo:
     ffmpeg_index: int
@@ -1231,6 +1435,10 @@ class BatchWorker(QThread):
         self._cancel_requested = False
         self._pause_requested = False
         self._active_process: subprocess.Popen[str] | None = None
+        self._queue_lock = threading.Lock()
+        self._pending_paths: list[Path] = []
+        self._known_sources: set[Path] = set()
+        self._last_log_path: Path | None = None
 
     def request_cancel(self) -> None:
         self._cancel_requested = True
@@ -1250,6 +1458,30 @@ class BatchWorker(QThread):
     def request_pause(self) -> None:
         self._pause_requested = True
 
+    def append_sources(self, paths: list[Path]) -> list[Path]:
+        accepted: list[Path] = []
+        with self._queue_lock:
+            for path in paths:
+                try:
+                    key = path.resolve()
+                except OSError:
+                    continue
+                if key in self._known_sources:
+                    continue
+                self._known_sources.add(key)
+                self._pending_paths.append(path)
+                accepted.append(path)
+        if accepted:
+            self.log_message.emit(f"Added {len(accepted)} file{'s' if len(accepted) != 1 else ''} to the running queue.")
+        return accepted
+
+    def _drain_pending_sources(self, candidates: list[Path]) -> None:
+        with self._queue_lock:
+            if not self._pending_paths:
+                return
+            candidates.extend(self._pending_paths)
+            self._pending_paths = []
+
     def run(self) -> None:
         if not FFMPEG_PATH or not FFPROBE_PATH:
             self.ffmpeg_missing.emit(
@@ -1266,10 +1498,13 @@ class BatchWorker(QThread):
             candidates = list(self.options.explicit_files)
         else:
             candidates = video_candidates(source_root, output_root, self.options.recursive)
+        with self._queue_lock:
+            self._known_sources = {path.resolve() for path in candidates}
         self.queue_initialized.emit([str(path) for path in candidates])
 
         total = len(candidates)
         processed = 0
+        previously_completed = 0
         skipped = 0
         failed = 0
         self.counters_changed.emit(total, processed, skipped, failed)
@@ -1281,11 +1516,18 @@ class BatchWorker(QThread):
             )
             return
 
-        for index, source_path in enumerate(candidates, start=1):
+        index = 0
+        while True:
+            self._drain_pending_sources(candidates)
             if self._cancel_requested:
                 break
             if self._pause_requested:
                 break
+            if index >= len(candidates):
+                break
+            source_path = candidates[index]
+            index += 1
+            total = len(candidates)
 
             output_path = self.output_path_for(source_path)
             row_key = str(source_path)
@@ -1299,18 +1541,19 @@ class BatchWorker(QThread):
                 and prior
                 and prior.get("source_signature") == signature
                 and prior_output
+                and Path(prior_output) == output_path
                 and Path(prior_output).exists()
             ):
-                skipped += 1
+                previously_completed += 1
                 self.row_update.emit(
                     row_key,
-                    "Skipped",
+                    "Completed",
                     "Already finished with these settings.",
                     prior_output,
                 )
-                self.log_message.emit(f"Skipped {source_path.name}: already converted.")
+                self.log_message.emit(f"Completed {source_path.name}: already converted at {Path(prior_output).name}.")
                 self.overall_progress.emit(int((index / total) * 100))
-                self.counters_changed.emit(total, processed, skipped, failed)
+                self.counters_changed.emit(total, processed + previously_completed, skipped, failed)
                 continue
 
             try:
@@ -1407,10 +1650,11 @@ class BatchWorker(QThread):
                     break
                 failed += 1
                 self.row_update.emit(row_key, "Problem", str(exc), str(output_path))
-                self.log_message.emit(f"Failed {source_path.name}: {exc}")
+                log_suffix = f" (log: {self._last_log_path})" if self._last_log_path else ""
+                self.log_message.emit(f"Failed {source_path.name}: {exc}{log_suffix}")
             finally:
                 self.overall_progress.emit(int((index / total) * 100))
-                self.counters_changed.emit(total, processed, skipped, failed)
+                self.counters_changed.emit(total, processed + previously_completed, skipped, failed)
                 self.file_progress.emit(0)
 
         canceled = self._cancel_requested
@@ -1425,6 +1669,7 @@ class BatchWorker(QThread):
             {
                 "total": total,
                 "processed": processed,
+                "previously_completed": previously_completed,
                 "skipped": skipped,
                 "failed": failed,
                 "canceled": canceled,
@@ -1440,13 +1685,7 @@ class BatchWorker(QThread):
         return f"{stats.st_size}:{stats.st_mtime_ns}"
 
     def output_path_for(self, source_path: Path) -> Path:
-        extension = str(self.options.output_profile["extension"])
-        try:
-            relative_path = source_path.relative_to(self.options.source_root)
-        except ValueError:
-            return self.options.output_root / f"{source_path.stem}{extension}"
-        filename = f"{relative_path.stem}{extension}"
-        return self.options.output_root / relative_path.parent / filename
+        return output_path_for_options(self.options, source_path)
 
     def probe_media(self, source_path: Path) -> ProbeInfo:
         command = [
@@ -1529,6 +1768,50 @@ class BatchWorker(QThread):
             audio_streams=audio_stream_infos,
             subtitle_streams=subtitle_stream_infos,
         )
+
+    def validate_output_file(self, output_path: Path, expected_duration: float) -> tuple[bool, str]:
+        MIN_OUTPUT_SIZE_BYTES = 4 * 1024
+        if not output_path.exists():
+            return False, "the output file was not created."
+        try:
+            size = output_path.stat().st_size
+        except OSError:
+            return False, "the output file could not be read after conversion."
+        if size < MIN_OUTPUT_SIZE_BYTES:
+            return False, f"the output file is only {size} bytes, which is too small to be a real video."
+
+        command = [
+            FFPROBE_PATH,
+            "-v",
+            "error",
+            "-print_format",
+            "json",
+            "-show_format",
+            "-show_streams",
+            str(output_path),
+        ]
+        completed = subprocess.run(command, capture_output=True, text=True)
+        if completed.returncode != 0:
+            return False, (completed.stderr.strip() or "ffprobe could not read the output file.")
+
+        try:
+            payload = json.loads(completed.stdout or "{}")
+        except json.JSONDecodeError:
+            return False, "ffprobe returned data that could not be understood."
+
+        streams = payload.get("streams", [])
+        has_playable_stream = any(s.get("codec_type") in {"video", "audio"} for s in streams)
+        if not has_playable_stream:
+            return False, "the output file has no playable video or audio streams."
+
+        try:
+            duration = float(payload.get("format", {}).get("duration") or 0)
+        except (TypeError, ValueError):
+            duration = 0.0
+        if duration <= 0:
+            return False, "the output file has no readable duration."
+
+        return True, ""
 
     def detect_crop(self, source_path: Path, probe: ProbeInfo) -> tuple[int, int, int, int]:
         source_width = probe.width
@@ -1902,6 +2185,22 @@ class BatchWorker(QThread):
                 output_path.unlink(missing_ok=True)
             raise RuntimeError("\n".join(ffmpeg_messages).strip() or "FFmpeg reported an error while transcoding.")
 
+        valid, validation_reason = self.validate_output_file(output_path, probe.duration)
+        log_lines = [
+            f"Source: {source_path}",
+            f"Output: {output_path}",
+            f"Command: {' '.join(str(part) for part in command)}",
+            f"FFmpeg return code: {return_code}",
+            "FFmpeg output (tail):",
+            *(ffmpeg_messages[-40:] or ["(none)"]),
+            f"Validation: {'PASSED' if valid else 'FAILED - ' + validation_reason}",
+        ]
+        self._last_log_path = write_conversion_log(source_path, log_lines)
+        if not valid:
+            if output_path.exists():
+                output_path.unlink(missing_ok=True)
+            raise RuntimeError(f"Conversion finished but the output file is broken: {validation_reason}")
+
     def is_subtitle_burn_failure(self, error_text: str) -> bool:
         lowered = error_text.lower()
         hints = ["subtitles", "subtitle", "libass", "filter", "unable to open", "error initializing"]
@@ -1998,6 +2297,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self._eta_file_progress = 0
         self._cancel_in_progress = False
         self._close_after_cancel = False
+        self._settings_loaded = False
         self._finish_timer = QTimer(self)
         self._finish_timer.setInterval(1000)
         self._finish_timer.timeout.connect(self.update_finish_timer)
@@ -2005,6 +2305,8 @@ class MediaWaveConverterWindow(QMainWindow):
         self.build_ui()
         self.apply_styles()
         self.load_settings()
+        self._settings_loaded = True
+        self.connect_settings_autosave()
         self.refresh_ffmpeg_status()
         self.refresh_main_summary()
         self.resume_button.setEnabled(self.load_session() is not None)
@@ -2667,13 +2969,6 @@ class MediaWaveConverterWindow(QMainWindow):
         batch_layout.addLayout(self.form_row("Repeat runs", self.skip_checkbox))
         layout.addWidget(batch_panel)
 
-        save_row = QHBoxLayout()
-        save_row.addStretch()
-        self.apply_settings_button = QPushButton("Apply Settings")
-        self.apply_settings_button.setObjectName("saveButton")
-        self.apply_settings_button.clicked.connect(self.apply_advanced_settings)
-        save_row.addWidget(self.apply_settings_button)
-        layout.addLayout(save_row)
         layout.addStretch()
 
         self.size_combo.currentTextChanged.connect(self.refresh_main_summary)
@@ -2695,10 +2990,6 @@ class MediaWaveConverterWindow(QMainWindow):
         self.output_format_note.setText(note)
         if hasattr(self, "encoder_combo"):
             self.encoder_combo.setEnabled(profile["video_codec"] != "mpeg4")
-        self.refresh_main_summary()
-
-    def apply_advanced_settings(self) -> None:
-        self.save_settings()
         self.refresh_main_summary()
 
     def switch_page(self, page_key: str) -> None:
@@ -2798,6 +3089,12 @@ class MediaWaveConverterWindow(QMainWindow):
             QScrollArea {
                 border: none;
                 background: transparent;
+            }
+            QWidget#pageBody {
+                background: rgba(13,16,38,255);
+            }
+            QScrollArea > QWidget > QWidget {
+                background: rgba(13,16,38,255);
             }
             QFrame#panel {
                 background: rgba(22,26,58,255);
@@ -3094,7 +3391,32 @@ class MediaWaveConverterWindow(QMainWindow):
             self.subtitle_pref_combo.setCurrentText(subtitle_pref)
         self.refresh_main_summary()
 
+    def connect_settings_autosave(self) -> None:
+        widgets = [
+            self.source_edit,
+            self.output_edit,
+            self.aspect_combo,
+            self.size_combo,
+            self.framing_combo,
+            self.framing_mode_combo,
+            self.quality_combo,
+            self.output_format_combo,
+            self.encoder_combo,
+            self.audio_pref_combo,
+            self.subtitle_pref_combo,
+        ]
+        for widget in widgets:
+            if isinstance(widget, QLineEdit):
+                widget.editingFinished.connect(self.save_settings)
+            elif isinstance(widget, QComboBox):
+                widget.currentTextChanged.connect(lambda _text: self.save_settings())
+        self.crop_slider.valueChanged.connect(lambda _value: self.save_settings())
+        for checkbox in (self.recursive_checkbox, self.skip_checkbox, self.audio_leveling_checkbox):
+            checkbox.toggled.connect(lambda _checked: self.save_settings())
+
     def save_settings(self) -> None:
+        if not getattr(self, "_settings_loaded", False):
+            return
         payload = {
             "source_root": self.source_edit.text().strip(),
             "output_root": self.output_edit.text().strip(),
@@ -3489,6 +3811,7 @@ class MediaWaveConverterWindow(QMainWindow):
         provider: str,
     ) -> None:
         show_title = safe_filename_part(str(result["title"]))
+        proposed_targets: set[Path] = set()
         for item in self._rename_files:
             if item.episode is None:
                 item.proposed_name = ""
@@ -3501,7 +3824,13 @@ class MediaWaveConverterWindow(QMainWindow):
             episode_title = safe_filename_part(episode_title)
             item.proposed_name = f"{show_title} S{season:02d}E{item.episode:02d} - {episode_title}{item.path.suffix.lower()}"
             target = item.path.with_name(item.proposed_name)
-            item.status = "Name already exists" if target.exists() and target != item.path else "Ready to rename"
+            if target in proposed_targets:
+                item.status = "Duplicate proposed name"
+            elif target.exists() and target != item.path:
+                item.status = "Name already exists"
+            else:
+                item.status = "Ready to rename"
+                proposed_targets.add(target)
         note = f"Preview matched with {provider}. Review every proposed name before renaming."
         if provider == "AniList":
             note += " AniList does not provide individual episode names, so unnamed episodes use “Episode N.”"
@@ -3644,6 +3973,9 @@ class MediaWaveConverterWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Choose Source Folder", current)
         if not folder:
             return
+        if self.worker and self.worker.isRunning():
+            self.append_sources_to_running_queue([Path(folder)])
+            return
         self._source_paths = []
         self._refresh_source_display()
         self.source_edit.setText(folder)
@@ -3651,6 +3983,7 @@ class MediaWaveConverterWindow(QMainWindow):
             mw_out = mediawave_converted_dir()
             self.output_edit.setText(str(mw_out if mw_out is not None else Path(folder) / "MediaWave Converted"))
         self.save_settings()
+        self.warn_current_source_collisions()
 
     def pick_output_folder(self) -> None:
         current = self.output_edit.text().strip() or self.source_edit.text().strip() or str(Path.home())
@@ -3676,6 +4009,9 @@ class MediaWaveConverterWindow(QMainWindow):
         dirs = [Path(p) for p in raw_paths if Path(p).is_dir()]
         if not files and not dirs:
             return
+        if self.worker and self.worker.isRunning():
+            self.append_sources_to_running_queue(files + dirs)
+            return
         self._source_paths = files + dirs
         common = _common_parent(self._source_paths)
         # Refuse root-level or single-level directories as the default output location
@@ -3688,6 +4024,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self.output_edit.setText(str(mw_out if mw_out is not None else common / "MediaWave Converted"))
         self._refresh_source_display()
         self.save_settings()
+        self.warn_current_source_collisions()
 
     def _pick_files(self) -> None:
         start_dir = self.source_edit.text().strip() or str(Path.home())
@@ -3725,6 +4062,124 @@ class MediaWaveConverterWindow(QMainWindow):
                         files.append(candidate)
         return files
 
+    def _expand_sources_to_files(self, paths: list[Path], recursive: bool | None = None) -> list[Path]:
+        recursive = self.recursive_checkbox.isChecked() if recursive is None else recursive
+        pattern = "**/*" if recursive else "*"
+        files: list[Path] = []
+        seen: set[Path] = set()
+        for path in paths:
+            if path.is_file():
+                candidates = [path]
+            elif path.is_dir():
+                candidates = sorted(path.glob(pattern))
+            else:
+                candidates = []
+            for candidate in candidates:
+                if not candidate.is_file():
+                    continue
+                if candidate.name.startswith("."):
+                    continue
+                if candidate.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+                    continue
+                if "__mediawave_" in candidate.stem.lower():
+                    continue
+                try:
+                    key = candidate.resolve()
+                except OSError:
+                    continue
+                if key not in seen:
+                    seen.add(key)
+                    files.append(candidate)
+        return files
+
+    def manifest_completed_output(self, options: ConversionOptions, source_path: Path, output_path: Path) -> bool:
+        manifest = load_json(MANIFEST_FILE, {"entries": {}})
+        entries = manifest.get("entries", {})
+        settings_hash = make_settings_hash(options.settings_payload())
+        try:
+            stats = source_path.stat()
+        except OSError:
+            return False
+        manifest_key = f"{source_path.resolve()}::{settings_hash}"
+        prior = entries.get(manifest_key) if isinstance(entries, dict) else None
+        if not isinstance(prior, dict):
+            return False
+        expected_signature = f"{stats.st_size}:{stats.st_mtime_ns}"
+        return (
+            options.skip_completed
+            and prior.get("source_signature") == expected_signature
+            and Path(str(prior.get("output_path", ""))) == output_path
+            and output_path.exists()
+        )
+
+    def validate_output_collisions(
+        self,
+        options: ConversionOptions,
+        files: list[Path],
+        existing_outputs: set[Path] | None = None,
+    ) -> tuple[list[Path], list[str]]:
+        existing_outputs = set(existing_outputs or set())
+        planned_outputs: dict[Path, Path] = {}
+        accepted: list[Path] = []
+        warnings: list[str] = []
+        for source_path in files:
+            output_path = output_path_for_options(options, source_path)
+            try:
+                output_key = output_path.resolve()
+            except OSError:
+                output_key = output_path.absolute()
+            if output_key in existing_outputs:
+                warnings.append(f"{source_path.name} would use an output path already in the running queue: {output_path.name}")
+                continue
+            if output_key in planned_outputs:
+                warnings.append(
+                    f"{source_path.name} and {planned_outputs[output_key].name} would both create {output_path.name}"
+                )
+                continue
+            if output_path.exists() and not self.manifest_completed_output(options, source_path, output_path):
+                warnings.append(f"{source_path.name} would overwrite existing file: {output_path}")
+                continue
+            planned_outputs[output_key] = source_path
+            accepted.append(source_path)
+        return accepted, warnings
+
+    def show_output_collision_warning(self, warnings: list[str]) -> None:
+        if not warnings:
+            return
+        startup_log("Output collisions:\n" + "\n".join(warnings))
+        if len(warnings) == 1:
+            message = "This file was not added because the converted output already exists."
+        else:
+            message = f"{len(warnings)} files were not added because their converted output already exists."
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Output Already Exists")
+        box.setText(message)
+        box.setDetailedText("\n".join(warnings))
+        box.setStandardButtons(QMessageBox.StandardButton.Ok)
+        box.exec()
+
+    def append_sources_to_running_queue(self, paths: list[Path]) -> None:
+        if not self.worker or not self.worker.isRunning():
+            return
+        files = self._expand_sources_to_files(paths, recursive=self.worker.options.recursive)
+        if not files:
+            QMessageBox.information(self, "No Video Files Found", "No supported video files were found in those sources.")
+            return
+        new_files = [path for path in files if str(path) not in self.source_rows]
+        existing_outputs: set[Path] = set()
+        for row in range(self.queue_table.rowCount()):
+            item = self.queue_table.item(row, 2)
+            if item and item.text().strip():
+                existing_outputs.add(Path(item.text().strip()).resolve())
+        accepted, warnings = self.validate_output_collisions(self.worker.options, new_files, existing_outputs)
+        self.show_output_collision_warning(warnings)
+        if not accepted:
+            return
+        self.add_queue_rows([str(path) for path in accepted])
+        self.worker.append_sources(accepted)
+        self.switch_page("queue")
+
     def _refresh_source_display(self) -> None:
         if not self._source_paths:
             self.source_summary_label.hide()
@@ -3747,6 +4202,16 @@ class MediaWaveConverterWindow(QMainWindow):
         self.source_summary_label.setText(text)
         self.source_summary_label.show()
         self.refresh_main_summary()
+
+    def warn_current_source_collisions(self) -> None:
+        options = self.gather_options()
+        if not options:
+            return
+        files = list(options.explicit_files) if options.explicit_files is not None else video_candidates(
+            options.source_root, options.output_root, options.recursive
+        )
+        _accepted, warnings = self.validate_output_collisions(options, files)
+        self.show_output_collision_warning(warnings)
 
     def current_target_size(self) -> tuple[int, int]:
         current_aspect = self.aspect_combo.currentText()
@@ -3820,6 +4285,24 @@ class MediaWaveConverterWindow(QMainWindow):
         options = self.gather_options()
         if not options:
             return
+        initial_files = list(options.explicit_files) if options.explicit_files is not None else video_candidates(
+            options.source_root, options.output_root, options.recursive
+        )
+        accepted, warnings = self.validate_output_collisions(options, initial_files)
+        if warnings:
+            self.show_output_collision_warning(warnings)
+        if not accepted and initial_files:
+            return
+        if len(accepted) != len(initial_files):
+            if options.explicit_files is not None:
+                options.explicit_files = accepted
+            else:
+                QMessageBox.warning(
+                    self,
+                    "Output Name Conflict",
+                    "Some folder items would overwrite existing output files. Choose a different output folder or remove the conflicts before starting.",
+                )
+                return
 
         self.last_options = options
         self.save_session(options)
@@ -3911,17 +4394,24 @@ class MediaWaveConverterWindow(QMainWindow):
 
     def initialize_queue(self, source_paths: list[str]) -> None:
         self.reset_queue()
+        self.add_queue_rows(source_paths)
+
+    def add_queue_rows(self, source_paths: list[str]) -> None:
         source_root = Path(self.source_edit.text().strip()).expanduser()
-        for row_index, source in enumerate(source_paths):
+        for source in source_paths:
+            if source in self.source_rows:
+                continue
             path = Path(source)
             try:
                 display_name = str(path.relative_to(source_root))
             except ValueError:
                 display_name = path.name
+            row_index = self.queue_table.rowCount()
             self.queue_table.insertRow(row_index)
             self.queue_table.setItem(row_index, 0, QTableWidgetItem(display_name))
             self.queue_table.setItem(row_index, 1, QTableWidgetItem("Waiting"))
-            self.queue_table.setItem(row_index, 2, QTableWidgetItem(""))
+            output_path = output_path_for_options(self.worker.options, path) if self.worker else Path("")
+            self.queue_table.setItem(row_index, 2, QTableWidgetItem(str(output_path) if self.worker else ""))
             self.source_rows[source] = row_index
 
     def reset_queue(self) -> None:
@@ -4041,11 +4531,13 @@ class MediaWaveConverterWindow(QMainWindow):
             return
 
         processed = summary.get("processed", 0)
+        previously_completed = summary.get("previously_completed", 0)
         skipped = summary.get("skipped", 0)
         failed = summary.get("failed", 0)
         total = summary.get("total", 0)
         self.append_log(
-            f"Batch finished. {processed} converted, {skipped} skipped, {failed} failed, {total} total."
+            f"Batch finished. {processed} converted, {previously_completed} already completed, "
+            f"{skipped} skipped, {failed} failed, {total} total."
         )
         self.set_finish_timer_text(f"Finished in {format_time_remaining(elapsed)}")
         self.clear_session()
@@ -4053,7 +4545,8 @@ class MediaWaveConverterWindow(QMainWindow):
         QMessageBox.information(
             self,
             "Batch Complete",
-            f"Finished files: {processed}\nSkipped: {skipped}\nProblems: {failed}\nFiles found: {total}",
+            f"Finished files: {processed}\nAlready completed: {previously_completed}\n"
+            f"Skipped: {skipped}\nProblems: {failed}\nFiles found: {total}",
         )
 
 

@@ -1,6 +1,12 @@
 #!/usr/bin/env python3
 """Prepare the macOS private beta ZIP for MediaWave v0.1.0-beta.
 
+All user-facing docs (START HERE.txt, the Supplemental Reading guides, and
+the docs/ beta documents) are copied byte-for-byte from the canonical
+sources in docs/. This script never rewrites or regenerates their content —
+if a canonical doc is missing, packaging fails instead of substituting a
+generic placeholder.
+
 Layout matches the Windows private beta exactly:
 
   MediaWave-v0.1.0-beta-macOS/
@@ -41,6 +47,7 @@ Outputs:
 import hashlib
 import json
 import os
+import plistlib
 import shutil
 import subprocess
 import sys
@@ -51,6 +58,7 @@ from pathlib import Path
 # ── Config ────────────────────────────────────────────────────────────────────
 
 BETA_VERSION = "0.1.0-beta"
+CONVERTER_VERSION = "0.1.0"
 STAGING_NAME = f"MediaWave-v{BETA_VERSION}-macOS"
 ZIP_NAME = f"{STAGING_NAME}.zip"
 
@@ -68,147 +76,13 @@ APP_CONV_SRC = DIST / "MediaWaveConverter.app"
 APP_MAIN_DST = STAGING / "MediaWave.app"
 APP_CONV_DST = STAGING / "MediaWave Converter.app"
 
-# ── Text content (matching Windows exactly) ───────────────────────────────────
+# ── Canonical doc sources ───────────────────────────────────────────────────
+# These files are never generated or rewritten by this script. They are
+# copied verbatim from docs/ and packaging fails loudly if one is missing.
 
-START_HERE = """\
-===============================================================================
-+-----------------------------------------------------------------------------+
-|                                                                             |
-|        __  __          _ _        __        __                              |
-|       |  \\/  | ___  __| (_) __ _  \\ \\      / /_ ___   _____                 |
-|       | |\\/| |/ _ \\/ _` | |/ _` |  \\ \\ /\\ / / _` \\ \\ / / _ \\                |
-|       | |  | |  __/ (_| | | (_| |   \\ V  V / (_| |\\ V /  __/                |
-|       |_|  |_|\\___|\\__,_|_|\\__,_|    \\_/\\_/ \\__,_| \\_/ \\___|                |
-|                                                                             |
-|                        WELCOME TO MEDIAWAVE 2000!                           |
-|                 Your Friendly Neighborhood Cable Box!                       |
-|                                                                             |
-|              Tune in. Sit back. There is always something on.               |
-|                                                                             |
-+-----------------------------------------------------------------------------+
-===============================================================================
-
-WHAT IS MEDIAWAVE?
-------------------
-MediaWave turns your own video collection into a browsable cable TV experience.
-Point it at a folder of videos, and it builds a full channel lineup — complete
-with a scrolling guide, commercial breaks, and channel watermark logos.
-
-It is not a streaming service. There are no subscriptions. No accounts.
-Your media, your channels, your TV.
-
--------------------------------------------------------------------------------
-
-GETTING STARTED
----------------
-1. Open MediaWave.app.
-
-2. Press "Choose Catalog..." to select your catalog folder.
-
-   A catalog is just the folder that CONTAINS your channel subfolders.
-   It can live anywhere:
-
-     - An external hard drive
-     - A USB flash drive
-     - A NAS / network share
-     - Your Documents folder
-     - Anywhere you want
-
-   The User Content/Channels folder included here is a convenient starter,
-   but you do not have to use it. No need to move your whole media library.
-
-3. Press "Watch TV >" to start watching.
-
--------------------------------------------------------------------------------
-
-CHANNEL SETUP
--------------
-Each subfolder inside your catalog becomes one TV channel.
-The folder name becomes the channel name.
-
-  Channels/
-    HBO/           <-- becomes channel "HBO"
-      show01.mp4
-    Comedy Central/        <-- becomes channel "Comedy Central"
-      special.mp4
-
-Channel logos (optional):
-  Drop a logo image in a Logos/ subfolder inside the channel folder:
-
-    Channel Name/Logos/logo.png
-
-  Enable the channel bug (watermark) in Advanced Config.
-  If no logo is found, MediaWave shows a text fallback instead.
-
-See: Supplemental Reading/Channel Setup Guide.txt
-
--------------------------------------------------------------------------------
-
-COMMERCIALS (OPTIONAL)
------------------------
-Put commercial clips, bumpers, promos, or station IDs in a folder anywhere,
-then point Advanced Config to it and enable commercials.
-
-The User Content/Commercials folder is ready to use as a starting point,
-but any folder works fine.
-
-See: Supplemental Reading/Commercial Setup Guide.txt
-
--------------------------------------------------------------------------------
-
-MEDIAWAVE CONVERTER (OPTIONAL)
--------------------------------
-Open MediaWave Converter.app if a video file gives MediaWave trouble.
-It re-encodes videos to a clean H.264 MP4 format with consistent framing.
-
-You do not need to convert everything. Most modern MP4s play fine as-is.
-
-Converted files default to User Content/Converted/ when that folder exists.
-
-See: Supplemental Reading/Converter Guide.txt
-
--------------------------------------------------------------------------------
-
-USER CONTENT FOLDER
--------------------
-The User Content folder included in this release is a convenient starter
-for keeping your catalog close to the app. It is entirely optional.
-
-  User Content/
-    Channels/     <-- starter catalog folder
-    Commercials/  <-- starter commercials folder
-    Converted/    <-- where Converter puts finished files
-    Fonts/        <-- custom fonts (optional)
-    Music/        <-- music for RadioWaveTV (optional)
-    Themes/       <-- custom themes (optional, future)
-    Settings/     <-- app settings are stored here (do not delete)
-    Cache/        <-- thumbnails and metadata (safe to clear)
-
-You can ignore any subfolder you do not need.
-
--------------------------------------------------------------------------------
-
-SUPPLEMENTAL READING
---------------------
-Guides are in the Supplemental Reading/ folder:
-
-  Channel Setup Guide.txt     - folder structure, logos, catalogs
-  Commercial Setup Guide.txt  - setting up ad breaks
-  Converter Guide.txt         - converting video files
-  Troubleshooting.txt         - when something goes sideways
-
--------------------------------------------------------------------------------
-
-IF SOMETHING LOOKS WRONG
--------------------------
-Check Troubleshooting.txt first. Common fixes are in there.
-
-If the app opens but nothing plays, the most common cause is selecting
-the wrong catalog folder — make sure you select the PARENT folder that
-contains your channel subfolders, not a channel folder itself.
-
-===============================================================================
-"""
+ROOT_DOCS = (
+    "START HERE.txt",
+)
 
 PLACEHOLDERS = {
     "User Content/Channels/Put Channel Folders Here.txt":
@@ -254,25 +128,21 @@ def fail(msg: str) -> None:
     sys.exit(1)
 
 
-def warn(msg: str) -> None:
-    print(f"  ⚠  WARNING: {msg}")
-
-
 # ── Guards ────────────────────────────────────────────────────────────────────
 
-def check_app_version(app_path: Path) -> None:
+def check_app_version(app_path: Path, expected_version: str = BETA_VERSION) -> None:
     plist = app_path / "Contents" / "Info.plist"
     if not plist.exists():
         fail(f"Info.plist not found: {plist}")
-    result = subprocess.run(
-        ["defaults", "read", str(plist), "CFBundleShortVersionString"],
-        capture_output=True, text=True, timeout=5,
-    )
-    version = result.stdout.strip()
-    if version != BETA_VERSION:
+    try:
+        with plist.open("rb") as handle:
+            version = str(plistlib.load(handle).get("CFBundleShortVersionString", "")).strip()
+    except (OSError, plistlib.InvalidFileException) as exc:
+        fail(f"Could not read Info.plist from {app_path.name}: {exc}")
+    if version != expected_version:
         fail(
             f"App version mismatch in {app_path.name}: "
-            f"expected '{BETA_VERSION}', got '{version}'. Rebuild first."
+            f"expected '{expected_version}', got '{version}'. Rebuild first."
         )
 
 
@@ -294,19 +164,11 @@ def find_bundled_tool(app_path: Path, name: str) -> Path | None:
 
 def check_bundled_tools_main(app_path: Path) -> dict[str, str]:
     found = {}
-    for tool in ("ffmpeg", "ffprobe"):
+    for tool in ("ffmpeg", "ffprobe", "yt-dlp"):
         p = find_bundled_tool(app_path, tool)
         if p is None:
             fail(f"Bundled '{tool}' not found inside {app_path.name}. Add to bin/ and rebuild.")
         found[tool] = str(p.relative_to(app_path))
-    # yt-dlp: confirmed in PYZ archive
-    toc = REPO / "build" / "MediaWave2000" / "PYZ-00.toc"
-    if toc.exists() and ("'yt_dlp'" in toc.read_text(errors="ignore") or '"yt_dlp"' in toc.read_text(errors="ignore")):
-        found["yt-dlp"] = "frozen in PYZ archive"
-    elif find_bundled_tool(app_path, "yt-dlp"):
-        found["yt-dlp"] = str(find_bundled_tool(app_path, "yt-dlp").relative_to(app_path))
-    else:
-        fail("yt-dlp not bundled. Add 'yt_dlp' to hiddenimports in dev/MediaWave2000.spec and rebuild.")
     return found
 
 
@@ -387,6 +249,18 @@ def copy_app(src: Path, dst: Path, label: str) -> None:
     shutil.copytree(src, dst, symlinks=True)
 
 
+def verify_staged_docs(copied_docs: list[tuple[Path, Path]]) -> None:
+    mismatches = []
+    for src, dst in copied_docs:
+        if not dst.exists():
+            mismatches.append(f"{dst.relative_to(STAGING)}: missing in staging")
+            continue
+        if sha256(src) != sha256(dst):
+            mismatches.append(f"{dst.relative_to(STAGING)}: content differs from canonical {src.relative_to(REPO)}")
+    if mismatches:
+        fail("Staged docs do not match canonical sources:\n  " + "\n  ".join(mismatches))
+
+
 def generate_package_manifest() -> str:
     lines = [f"MediaWave {BETA_VERSION} private beta", "Generated for manual review. Not published.", ""]
     for item in sorted(STAGING.rglob("*")):
@@ -408,6 +282,7 @@ def generate_build_info() -> dict:
     return {
         "component": "MediaWave2000",
         "version": BETA_VERSION,
+        "converter_version": CONVERTER_VERSION,
         "platform": "macOS",
         "built_at_utc": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "source_file": "channelsurfer2000.py",
@@ -423,8 +298,8 @@ def generate_build_info() -> dict:
 def create_staging(skip_staleness: bool) -> tuple[dict, dict]:
     log("\n=== Step 1: Verify app versions ===")
     check_app_version(APP_MAIN_SRC)
-    check_app_version(APP_CONV_SRC)
-    log(f"  ✓ Both apps: {BETA_VERSION}")
+    check_app_version(APP_CONV_SRC, CONVERTER_VERSION)
+    log(f"  ✓ MediaWave: {BETA_VERSION}; Converter: {CONVERTER_VERSION}")
 
     log("\n=== Step 2: Verify bundled tools ===")
     main_tools = check_bundled_tools_main(APP_MAIN_SRC)
@@ -448,8 +323,16 @@ def create_staging(skip_staleness: bool) -> tuple[dict, dict]:
     copy_app(APP_MAIN_SRC, APP_MAIN_DST, "MediaWave")
     copy_app(APP_CONV_SRC, APP_CONV_DST, "MediaWave Converter")
 
-    log("\n=== Step 6: START HERE.txt ===")
-    (STAGING / "START HERE.txt").write_text(START_HERE, encoding="utf-8")
+    log("\n=== Step 6: START HERE.txt (canonical, verbatim from docs/) ===")
+    copied_docs: list[tuple[Path, Path]] = []
+    for doc in ROOT_DOCS:
+        src_doc = DOCS_SRC / doc
+        if not src_doc.exists():
+            fail(f"Required canonical doc missing: {src_doc}. Create it in docs/ — packaging will not generate a substitute.")
+        dst_doc = STAGING / doc
+        shutil.copy2(src_doc, dst_doc)
+        copied_docs.append((src_doc, dst_doc))
+        log(f"  {doc}  <-  {src_doc.relative_to(REPO)}")
 
     log("\n=== Step 7: User Content folders ===")
     for rel, content in PLACEHOLDERS.items():
@@ -457,44 +340,50 @@ def create_staging(skip_staleness: bool) -> tuple[dict, dict]:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content, encoding="utf-8")
 
-    log("\n=== Step 8: Supplemental Reading (text guides) ===")
+    log("\n=== Step 8: Supplemental Reading (canonical, verbatim from docs/) ===")
     sup = STAGING / "Supplemental Reading"
     sup.mkdir(exist_ok=True)
     for guide in SUPPLEMENTAL_GUIDES:
         src_guide = DOCS_SRC / guide
-        if src_guide.exists():
-            shutil.copy2(src_guide, sup / guide)
-            log(f"  {guide}")
-        else:
-            warn(f"Missing guide: {guide}")
+        if not src_guide.exists():
+            fail(f"Required canonical doc missing: {src_guide}. Create it in docs/ — packaging will not generate a substitute.")
+        dst_guide = sup / guide
+        shutil.copy2(src_guide, dst_guide)
+        copied_docs.append((src_guide, dst_guide))
+        log(f"  {guide}  <-  {src_guide.relative_to(REPO)}")
 
-    log("\n=== Step 9: docs/ (beta documents) ===")
+    log("\n=== Step 9: docs/ (canonical beta documents, verbatim) ===")
     docs_dst = STAGING / "docs"
     docs_dst.mkdir(exist_ok=True)
     for doc in BETA_DOCS:
         src_doc = DOCS_SRC / doc
-        if src_doc.exists():
-            shutil.copy2(src_doc, docs_dst / doc)
-            log(f"  {doc}")
-        else:
-            warn(f"Missing: docs/{doc} — create it in the repo docs/ folder")
+        if not src_doc.exists():
+            fail(f"Required canonical doc missing: {src_doc}. Create it in docs/ — packaging will not generate a substitute.")
+        dst_doc = docs_dst / doc
+        shutil.copy2(src_doc, dst_doc)
+        copied_docs.append((src_doc, dst_doc))
+        log(f"  {doc}  <-  {src_doc.relative_to(REPO)}")
 
-    log("\n=== Step 10: PACKAGE_MANIFEST.txt ===")
+    log("\n=== Step 10: Verify staged docs match canonical sources exactly ===")
+    verify_staged_docs(copied_docs)
+    log("  ✓ All staged docs are byte-for-byte identical to their canonical source")
+
+    log("\n=== Step 11: PACKAGE_MANIFEST.txt (generated) ===")
     manifest = generate_package_manifest()
     (docs_dst / "PACKAGE_MANIFEST.txt").write_text(manifest, encoding="utf-8")
 
-    log("\n=== Step 11: BUILD_INFO.json ===")
+    log("\n=== Step 12: BUILD_INFO.json (generated) ===")
     build_info = generate_build_info()
     (STAGING / "BUILD_INFO.json").write_text(
         json.dumps(build_info, indent=4), encoding="utf-8"
     )
     log(f"  Built at: {build_info['built_at_utc']}")
 
-    log("\n=== Step 12: Guard — no forbidden files ===")
+    log("\n=== Step 13: Guard — no forbidden files ===")
     check_no_forbidden_files(STAGING)
     log("  ✓ Clean")
 
-    log("\n=== Step 13: Guard — no personal paths ===")
+    log("\n=== Step 14: Guard — no personal paths ===")
     check_no_personal_paths(STAGING)
     log("  ✓ Clean")
 
@@ -507,7 +396,7 @@ def make_zip(no_zip: bool) -> Path | None:
     if no_zip:
         return None
     zip_path = RELEASE_ROOT / ZIP_NAME
-    log(f"\n=== Step 14: Creating ZIP: {ZIP_NAME} ===")
+    log(f"\n=== Step 15: Creating ZIP: {ZIP_NAME} ===")
     if zip_path.exists():
         zip_path.unlink()
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED, allowZip64=True) as zf:

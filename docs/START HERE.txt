@@ -1,62 +1,135 @@
-============================================================
-  WELCOME TO MEDIAWAVE 2000
-============================================================
+===============================================================================
++-----------------------------------------------------------------------------+
+|                                                                             |
+|        __  __          _ _        __        __                              |
+|       |  \/  | ___  __| (_) __ _  \ \      / /_ ___   _____                 |
+|       | |\/| |/ _ \/ _` | |/ _` |  \ \ /\ / / _` \ \ / / _ \                |
+|       | |  | |  __/ (_| | | (_| |   \ V  V / (_| |\ V /  __/                |
+|       |_|  |_|\___|\__,_|_|\__,_|    \_/\_/ \__,_| \_/ \___|                |
+|                                                                             |
+|                        WELCOME TO MEDIAWAVE 2000!                           |
+|                 Your Friendly Neighborhood Cable Box!                       |
+|                                                                             |
+|              Tune in. Sit back. There is always something on.               |
+|                                                                             |
++-----------------------------------------------------------------------------+
+===============================================================================
 
-MediaWave turns your video library into a simulated TV
-experience — channels, commercial breaks, and all.
+WHAT IS MEDIAWAVE?
+------------------
+MediaWave turns your own video collection into a browsable cable TV experience.
+Point it at a folder of videos, and it builds a full channel lineup — complete
+with a scrolling guide, commercial breaks, and channel watermark logos.
 
-QUICK START
------------
-1. Open the MediaWave folder that was created in your
-   Documents folder (or press "Open MediaWave Folder"
-   inside the app).
+It is not a streaming service. There are no subscriptions. No accounts.
+Your media, your channels, your TV.
 
-2. Inside the Channels subfolder, create one folder per
-   channel. Each channel folder holds your video files.
+-------------------------------------------------------------------------------
 
-   Example:
-     Channels/
-       HBO Classic/
-         Shows/
-         Movies/
-       Comedy Central/
-         Specials/
+GETTING STARTED
+---------------
+1. Open MediaWave.app.
 
-3. Launch MediaWave, press "Choose Catalog…", and select
-   your Channels folder.
+2. Press "Choose Catalog..." to select your catalog folder.
 
-4. Press "Watch TV ▶" to start.
+   A catalog is just the folder that CONTAINS your channel subfolders.
+   It can live anywhere:
 
-YOUR MEDIA FOLDER
------------------
-MediaWave creates this folder the first time you launch:
+     - An external hard drive
+     - A USB flash drive
+     - A NAS / network share
+     - Your Documents folder
+     - Anywhere you want
 
-  Documents/MediaWave/
-    Channels/         ← put your channel folders here
-    Commercials/      ← optional commercial video clips
-    Music/            ← optional RadioWaveTV music
-    Fonts/            ← optional custom fonts
-    Themes/           ← optional custom themes
-    Converted/        ← MediaWave Converter output lands here
-    Settings/         ← app settings (don't delete)
-    Cache/            ← thumbnails and metadata (safe to clear)
+   The User Content/Channels folder included here is a convenient starter,
+   but you do not have to use it. No need to move your whole media library.
 
-You are NOT required to use this folder. You can choose any
-folder on any drive as your catalog — an external drive, a
-NAS share, whatever you like. MediaWave remembers your
-choice.
+3. Press "Watch TV >" to start watching.
 
-INCLUDED APPS
+-------------------------------------------------------------------------------
+
+CHANNEL SETUP
 -------------
-  MediaWave.exe          - the TV experience
-  MediaWave Converter.exe - convert videos to MediaWave format
+Each subfolder inside your catalog becomes one TV channel.
+The folder name becomes the channel name.
 
-MORE HELP
----------
-See the Docs folder for:
-  Channel Setup Guide.txt
-  Commercial Setup Guide.txt
-  Converter Guide.txt
-  Troubleshooting.txt
+  Channels/
+    HBO/           <-- becomes channel "HBO"
+      show01.mp4
+    Comedy Central/        <-- becomes channel "Comedy Central"
+      special.mp4
 
-============================================================
+Channel logos (optional):
+  Drop a logo image in a Logos/ subfolder inside the channel folder:
+
+    Channel Name/Logos/logo.png
+
+  Enable the channel bug (watermark) in Advanced Config.
+  If no logo is found, MediaWave shows a text fallback instead.
+
+See: docs/Channel Setup Guide.txt
+
+-------------------------------------------------------------------------------
+
+COMMERCIALS (OPTIONAL)
+-----------------------
+Put commercial clips, bumpers, promos, or station IDs in a folder anywhere,
+then point Advanced Config to it and enable commercials.
+
+The User Content/Commercials folder is ready to use as a starting point,
+but any folder works fine.
+
+See: docs/Commercial Setup Guide.txt
+
+-------------------------------------------------------------------------------
+
+MEDIAWAVE CONVERTER (OPTIONAL)
+-------------------------------
+Open MediaWave Converter.app if a video file gives MediaWave trouble.
+It re-encodes videos to a clean H.264 MP4 format with consistent framing.
+
+You do not need to convert everything. Most modern MP4s play fine as-is.
+
+Converted files default to User Content/Converted/ when that folder exists.
+
+See: docs/Converter Guide.txt
+
+-------------------------------------------------------------------------------
+
+USER CONTENT FOLDER
+-------------------
+The User Content folder included in this release is a convenient starter
+for keeping your catalog close to the app. It is entirely optional.
+
+  User Content/
+    Channels/     <-- starter catalog folder
+    Commercials/  <-- starter commercials folder
+    Converted/    <-- where Converter puts finished files
+    Fonts/        <-- custom fonts (optional)
+    Music/        <-- music for RadioWaveTV (optional)
+    Themes/       <-- custom themes (optional, future)
+
+You can ignore any subfolder you do not need.
+
+-------------------------------------------------------------------------------
+
+DOCS FOLDER
+-----------
+Guides are in the docs/ folder:
+
+  Channel Setup Guide.txt     - folder structure, logos, catalogs
+  Commercial Setup Guide.txt  - setting up ad breaks
+  Converter Guide.txt         - converting video files
+  Troubleshooting.txt         - when something goes sideways
+
+-------------------------------------------------------------------------------
+
+IF SOMETHING LOOKS WRONG
+-------------------------
+Check Troubleshooting.txt first. Common fixes are in there.
+
+If the app opens but nothing plays, the most common cause is selecting
+the wrong catalog folder — make sure you select the PARENT folder that
+contains your channel subfolders, not a channel folder itself.
+
+===============================================================================

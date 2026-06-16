@@ -3,6 +3,9 @@ import sys
 import time
 import random
 import subprocess
+import atexit
+import errno
+import multiprocessing
 import json
 import locale
 import math
@@ -69,6 +72,108 @@ REMOTE_METADATA_EXPERIMENTAL = os.environ.get("MEDIAWAVE_EXPERIMENTAL_REMOTE_MET
 NETTV_DEBUG = os.environ.get("MEDIAWAVE_NETTV_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
 
 GLOBAL_START = time.time() - random.randint(0, 86400)
+
+_ORIGINAL_SUBPROCESS_RUN = subprocess.run
+_ORIGINAL_SUBPROCESS_POPEN = subprocess.Popen
+
+
+def _safe_realpath(path):
+    if not path:
+        return ""
+    try:
+        return os.path.realpath(os.path.abspath(str(path)))
+    except OSError:
+        return os.path.abspath(str(path))
+
+
+def app_bundle_path():
+    if sys.platform != "darwin" or not getattr(sys, "frozen", False):
+        return ""
+    exe = _safe_realpath(sys.executable)
+    macos_dir = os.path.dirname(exe)
+    contents_dir = os.path.dirname(macos_dir)
+    if os.path.basename(contents_dir) == "Contents":
+        return os.path.dirname(contents_dir)
+    return ""
+
+
+def macos_app_parent_dir():
+    bundle = app_bundle_path()
+    if bundle:
+        return os.path.dirname(bundle)
+    return ""
+
+
+def startup_log_file():
+    if sys.platform == "darwin":
+        app_parent = macos_app_parent_dir()
+        portable_user_content = os.path.join(app_parent, "User Content") if app_parent else ""
+        if portable_user_content and os.path.isdir(portable_user_content):
+            log_dir = os.path.join(portable_user_content, "Logs")
+        else:
+            log_dir = os.path.join(os.path.expanduser("~/Library/Logs"), "MediaWave")
+    else:
+        log_dir = os.path.join(os.path.expanduser("~"), ".mediawave", "logs")
+    try:
+        os.makedirs(log_dir, exist_ok=True)
+        return os.path.join(log_dir, "startup.log")
+    except OSError:
+        return os.path.join(os.environ.get("TMPDIR") or "/tmp", "mediawave-startup.log")
+
+
+STARTUP_LOG_FILE = startup_log_file()
+
+
+def startup_log(message):
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    try:
+        with open(STARTUP_LOG_FILE, "a", encoding="utf-8") as handle:
+            handle.write(f"[{timestamp}] {message}\n")
+    except OSError:
+        pass
+
+
+def _command_for_log(command):
+    if isinstance(command, (list, tuple)):
+        return " ".join(str(part) for part in command)
+    return str(command)
+
+
+def _command_executable(command):
+    if isinstance(command, (list, tuple)) and command:
+        return str(command[0])
+    if isinstance(command, str):
+        return command.split()[0] if command.split() else ""
+    return ""
+
+
+def _is_frozen_app_executable(path):
+    if not path or not getattr(sys, "frozen", False):
+        return False
+    return _safe_realpath(path) == _safe_realpath(sys.executable)
+
+
+def _reject_self_spawn(command):
+    exe = _command_executable(command)
+    if _is_frozen_app_executable(exe):
+        startup_log(f"BLOCKED self-spawn subprocess: {_command_for_log(command)}")
+        raise OSError("Refusing to launch the frozen MediaWave app executable as a helper process.")
+
+
+def run_subprocess(command, *args, **kwargs):
+    startup_log(f"subprocess.run: {_command_for_log(command)}")
+    _reject_self_spawn(command)
+    return _ORIGINAL_SUBPROCESS_RUN(command, *args, **kwargs)
+
+
+def popen_subprocess(command, *args, **kwargs):
+    startup_log(f"subprocess.Popen: {_command_for_log(command)}")
+    _reject_self_spawn(command)
+    return _ORIGINAL_SUBPROCESS_POPEN(command, *args, **kwargs)
+
+
+subprocess.run = run_subprocess
+subprocess.Popen = popen_subprocess
 
 
 def resource_base_dir():
@@ -164,7 +269,47 @@ def _bundled_tool_candidates(name):
     return candidates
 
 
+def _expected_tool_names(name):
+    names = {name}
+    if os.name == "nt":
+        names.add(f"{name}.exe")
+    return names
+
+
+def valid_helper_path(path, expected_name):
+    """Return an absolute helper path only when it cannot be the app executable."""
+    if not path:
+        return None
+    candidate = _safe_realpath(path)
+    expected_names = _expected_tool_names(expected_name)
+    if not os.path.isfile(candidate):
+        startup_log(f"helper rejected {expected_name}: missing {candidate}")
+        return None
+    if os.path.basename(candidate) not in expected_names:
+        startup_log(f"helper rejected {expected_name}: unexpected basename {candidate}")
+        return None
+    if _is_frozen_app_executable(candidate):
+        startup_log(f"helper rejected {expected_name}: equals sys.executable {candidate}")
+        return None
+    return candidate
+
+
+def log_startup_environment():
+    startup_log("=" * 72)
+    startup_log(f"{APP_NAME} {APP_VERSION} startup")
+    startup_log(f"pid={os.getpid()} ppid={os.getppid()}")
+    startup_log(f"sys.executable={sys.executable}")
+    startup_log(f"sys.argv={sys.argv!r}")
+    startup_log(f"frozen={getattr(sys, 'frozen', False)}")
+    startup_log(f"app_bundle_path={app_bundle_path() or '(none)'}")
+    startup_log(f"resource_path={RESOURCE_DIR}")
+    startup_log(f"portable_parent={macos_app_parent_dir() or '(none)'}")
+    startup_log(f"data_dir={DATA_DIR}")
+    startup_log(f"startup_log={STARTUP_LOG_FILE}")
+
+
 DATA_DIR = writable_base_dir()
+log_startup_environment()
 THUMBNAIL_DIR = os.path.join(DATA_DIR, "thumbnails")
 os.makedirs(THUMBNAIL_DIR, exist_ok=True)
 YOUTUBE_VIDEO_CACHE_DIR = os.path.join(DATA_DIR, "youtube_video_cache")
@@ -2045,26 +2190,32 @@ def youtube_video_user_path(playlist_key, video_id, index=0):
 def resolve_ytdlp_command():
     candidates = []
     for bundled in _bundled_tool_candidates("yt-dlp"):
-        if bundled and os.path.isfile(bundled):
-            candidates.append([bundled])
+        helper = valid_helper_path(bundled, "yt-dlp")
+        if helper:
+            candidates.append(([helper], True))
     binary = shutil.which("yt-dlp")
-    if binary:
-        candidates.append([binary])
+    helper = valid_helper_path(binary, "yt-dlp")
+    if helper:
+        candidates.append(([helper], False))
     for path in ("/opt/homebrew/bin/yt-dlp", "/usr/local/bin/yt-dlp"):
-        if path and os.path.exists(path):
-            candidates.append([path])
+        helper = valid_helper_path(path, "yt-dlp")
+        if helper:
+            candidates.append(([helper], False))
     python_bin = sys.executable or ""
-    if python_bin:
-        candidates.append([python_bin, "-m", "yt_dlp"])
+    if python_bin and not getattr(sys, "frozen", False):
+        candidates.append(([python_bin, "-m", "yt_dlp"], False))
     seen = set()
     unique = []
-    for command in candidates:
+    for command, is_bundled in candidates:
         key = tuple(command)
         if key in seen:
             continue
         seen.add(key)
-        unique.append(command)
-    for command in unique:
+        unique.append((command, is_bundled))
+    for command, is_bundled in unique:
+        if getattr(sys, "frozen", False) and is_bundled:
+            startup_log(f"resolved yt-dlp={' '.join(command)}")
+            return command
         try:
             result = subprocess.run(
                 command + ["--version"],
@@ -2074,9 +2225,11 @@ def resolve_ytdlp_command():
                 text=True,
             )
             if result.returncode == 0:
+                startup_log(f"resolved yt-dlp={' '.join(command)}")
                 return command
         except Exception:
             continue
+    startup_log("resolved yt-dlp=(missing)")
     return []
 
 
@@ -3319,8 +3472,11 @@ def resolve_ffprobe_path():
         ]
     )
     for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
-            return candidate
+        helper = valid_helper_path(candidate, "ffprobe")
+        if helper:
+            startup_log(f"resolved ffprobe={helper}")
+            return helper
+    startup_log("resolved ffprobe=(missing)")
     return None
 
 
@@ -3338,12 +3494,64 @@ def resolve_ffmpeg_path():
         ]
     )
     for candidate in candidates:
-        if candidate and os.path.isfile(candidate):
-            return candidate
+        helper = valid_helper_path(candidate, "ffmpeg")
+        if helper:
+            startup_log(f"resolved ffmpeg={helper}")
+            return helper
+    startup_log("resolved ffmpeg=(missing)")
     return None
 
 
 FFMPEG_PATH = resolve_ffmpeg_path()
+
+
+def _pid_is_running(pid):
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError as exc:
+        return exc.errno == errno.EPERM
+
+
+def acquire_single_instance_lock():
+    lock_path = os.path.join(DATA_DIR, "mediawave2000.lock")
+    os.makedirs(os.path.dirname(lock_path), exist_ok=True)
+    while True:
+        try:
+            fd = os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as handle:
+                handle.write(f"{os.getpid()}\n{time.time()}\n")
+            startup_log(f"single-instance lock acquired: {lock_path}")
+
+            def _release_lock():
+                try:
+                    with open(lock_path, "r", encoding="utf-8") as handle:
+                        locked_pid = int((handle.readline() or "0").strip() or "0")
+                    if locked_pid == os.getpid():
+                        os.unlink(lock_path)
+                        startup_log(f"single-instance lock released: {lock_path}")
+                except (OSError, ValueError):
+                    pass
+
+            atexit.register(_release_lock)
+            return lock_path
+        except FileExistsError:
+            try:
+                with open(lock_path, "r", encoding="utf-8") as handle:
+                    existing_pid = int((handle.readline() or "0").strip() or "0")
+            except (OSError, ValueError):
+                existing_pid = 0
+            if _pid_is_running(existing_pid):
+                startup_log(f"second instance exiting; active pid={existing_pid} lock={lock_path}")
+                return None
+            startup_log(f"removing stale single-instance lock: {lock_path} pid={existing_pid}")
+            try:
+                os.unlink(lock_path)
+            except OSError:
+                startup_log(f"second instance exiting; could not remove lock={lock_path}")
+                return None
 
 
 def load_tmdb_token():
@@ -29889,7 +30097,10 @@ class ChannelSurfer(QWidget):
 # ---------------- RUN ---------------- #
 
 if __name__ == "__main__":
+    multiprocessing.freeze_support()
     locale.setlocale(locale.LC_ALL, "")
+    if acquire_single_instance_lock() is None:
+        sys.exit(0)
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
     app.setApplicationVersion(APP_VERSION)
