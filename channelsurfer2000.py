@@ -1203,6 +1203,370 @@ def catalog_channel_id_from_info(info):
     return f"media-name:{normalize_title(info.get('name', 'channel'))}"
 
 
+# ---------------- Airing Rules (Phase 1: data model, storage, diagnostics) ---------------- #
+#
+# "Airing Rules" is the umbrella system for customizing when/where channels, shows, movies,
+# and genres are allowed to air. "Channel Takeovers" are time-based channel identity changes
+# (e.g. Cartoon Network -> Adult Swim overnight, AMC -> FearFest in October).
+#
+# Phase 1 only defines, loads, saves, validates, and reports on this data. It does not change
+# scheduling or playback behavior.
+
+AIRING_RULES_VERSION = 1
+AIRING_RULES_FILE = os.path.join(DATA_DIR, "airing_rules.json")
+
+AIRING_RULE_LEVELS = ("channel", "show", "genre")
+
+AIRING_RULE_BASIC_TYPES = (
+    "always_allowed",
+    "prefer_daytime",
+    "prefer_late_night",
+    "prefer_weekends",
+    "prefer_weekdays",
+    "prefer_movie_block",
+    "block_from_channel",
+)
+AIRING_SEASONAL_PRESETS = (
+    "christmas_season",
+    "spooky_season",
+    "summer",
+    "winter",
+    "custom_date_range",
+)
+AIRING_RULE_STRICT_TYPES = (
+    "only_between_times",
+    "blocked_between_times",
+    "only_on_dates",
+    "blocked_on_dates",
+    "only_between_dates",
+    "blocked_between_dates",
+)
+AIRING_RULE_TYPES = AIRING_RULE_BASIC_TYPES + AIRING_SEASONAL_PRESETS + AIRING_RULE_STRICT_TYPES
+
+AIRING_RULE_STRENGTHS = ("hint", "strong_preference", "strict")
+
+AIRING_DAYS_OF_WEEK = ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+
+
+def normalize_airing_rule_strength(value):
+    text = str(value or "hint").strip().lower()
+    if text not in AIRING_RULE_STRENGTHS:
+        return "hint"
+    return text
+
+
+def normalize_airing_rule_type(value):
+    text = str(value or "").strip().lower()
+    if text not in AIRING_RULE_TYPES:
+        return ""
+    return text
+
+
+def normalize_seasonal_preset(value):
+    text = str(value or "").strip().lower()
+    if text not in AIRING_SEASONAL_PRESETS:
+        return ""
+    return text
+
+
+def normalize_days_of_week(value):
+    if isinstance(value, str):
+        candidates = re.split(r"[,\s]+", value.strip().lower())
+    elif isinstance(value, (list, tuple, set)):
+        candidates = [str(item).strip().lower() for item in value]
+    else:
+        candidates = []
+    return [day for day in AIRING_DAYS_OF_WEEK if day in candidates]
+
+
+def normalize_airing_time(value):
+    text = str(value or "").strip()
+    match = re.match(r"^([0-2]?\d):([0-5]\d)$", text)
+    if not match:
+        return ""
+    hour = int(match.group(1))
+    if hour > 23:
+        return ""
+    return f"{hour:02d}:{match.group(2)}"
+
+
+def normalize_airing_date(value):
+    text = str(value or "").strip()
+    match = re.match(r"^(\d{4})-(\d{2})-(\d{2})$", text)
+    if not match:
+        return ""
+    month, day = int(match.group(2)), int(match.group(3))
+    if not (1 <= month <= 12 and 1 <= day <= 31):
+        return ""
+    return text
+
+
+def airing_rule_target_defaults():
+    return {
+        "channel_id": "",
+        "title": "",
+        "title_key": "",
+        "genre": "",
+        "catalog_item_id": "",
+    }
+
+
+def normalize_airing_rule_target(value):
+    merged = merge_dict_defaults(value if isinstance(value, dict) else {}, airing_rule_target_defaults())
+    title = str(merged.get("title", "") or "").strip()
+    title_key = str(merged.get("title_key", "") or "").strip()
+    merged["title"] = title
+    merged["title_key"] = title_key or (normalize_title(title) if title else "")
+    merged["channel_id"] = str(merged.get("channel_id", "") or "").strip()
+    merged["genre"] = str(merged.get("genre", "") or "").strip()
+    merged["catalog_item_id"] = str(merged.get("catalog_item_id", "") or "").strip()
+    return merged
+
+
+def airing_rule_defaults():
+    return {
+        "id": "",
+        "level": "channel",
+        "enabled": True,
+        "rule_type": "always_allowed",
+        "rule_strength": "hint",
+        "target": airing_rule_target_defaults(),
+        "start_time": "",
+        "end_time": "",
+        "only_on_dates": [],
+        "blocked_on_dates": [],
+        "start_date": "",
+        "end_date": "",
+        "seasonal_preset": "",
+        "notes": "",
+    }
+
+
+def normalize_airing_rule(value):
+    merged = merge_dict_defaults(value if isinstance(value, dict) else {}, airing_rule_defaults())
+    level = str(merged.get("level", "channel") or "channel").strip().lower()
+    merged["level"] = level if level in AIRING_RULE_LEVELS else "channel"
+    merged["enabled"] = bool(merged.get("enabled", True))
+    merged["rule_type"] = normalize_airing_rule_type(merged.get("rule_type")) or "always_allowed"
+    merged["rule_strength"] = normalize_airing_rule_strength(merged.get("rule_strength"))
+    merged["target"] = normalize_airing_rule_target(merged.get("target"))
+    merged["start_time"] = normalize_airing_time(merged.get("start_time"))
+    merged["end_time"] = normalize_airing_time(merged.get("end_time"))
+    merged["start_date"] = normalize_airing_date(merged.get("start_date"))
+    merged["end_date"] = normalize_airing_date(merged.get("end_date"))
+    merged["seasonal_preset"] = normalize_seasonal_preset(merged.get("seasonal_preset"))
+    only_dates = merged.get("only_on_dates")
+    blocked_dates = merged.get("blocked_on_dates")
+    merged["only_on_dates"] = [d for d in (normalize_airing_date(x) for x in (only_dates if isinstance(only_dates, list) else [])) if d]
+    merged["blocked_on_dates"] = [d for d in (normalize_airing_date(x) for x in (blocked_dates if isinstance(blocked_dates, list) else [])) if d]
+    merged["notes"] = str(merged.get("notes", "") or "").strip()
+    if not merged.get("id"):
+        merged["id"] = stable_hash(json.dumps(merged, sort_keys=True, default=str))
+    return merged
+
+
+def channel_takeover_defaults():
+    return {
+        "id": "",
+        "enabled": False,
+        "takeover_name": "",
+        "source_channel_id": "",
+        "display_channel_name": "",
+        "display_logo_path": "",
+        "display_channel_bug_path": "",
+        "start_time": "",
+        "end_time": "",
+        "days_of_week": [],
+        "start_date": "",
+        "end_date": "",
+        "seasonal_preset": "",
+        "optional_bumper_path": "",
+        "optional_station_id_path": "",
+        "rule_strength": "hint",
+        "notes": "",
+    }
+
+
+def normalize_channel_takeover(value):
+    merged = merge_dict_defaults(value if isinstance(value, dict) else {}, channel_takeover_defaults())
+    merged["enabled"] = bool(merged.get("enabled", False))
+    merged["takeover_name"] = str(merged.get("takeover_name", "") or "").strip()
+    merged["source_channel_id"] = str(merged.get("source_channel_id", "") or "").strip()
+    merged["display_channel_name"] = str(merged.get("display_channel_name", "") or "").strip()
+    merged["display_logo_path"] = str(merged.get("display_logo_path", "") or "").strip()
+    merged["display_channel_bug_path"] = str(merged.get("display_channel_bug_path", "") or "").strip()
+    merged["start_time"] = normalize_airing_time(merged.get("start_time"))
+    merged["end_time"] = normalize_airing_time(merged.get("end_time"))
+    merged["days_of_week"] = normalize_days_of_week(merged.get("days_of_week"))
+    merged["start_date"] = normalize_airing_date(merged.get("start_date"))
+    merged["end_date"] = normalize_airing_date(merged.get("end_date"))
+    merged["seasonal_preset"] = normalize_seasonal_preset(merged.get("seasonal_preset"))
+    merged["optional_bumper_path"] = str(merged.get("optional_bumper_path", "") or "").strip()
+    merged["optional_station_id_path"] = str(merged.get("optional_station_id_path", "") or "").strip()
+    merged["rule_strength"] = normalize_airing_rule_strength(merged.get("rule_strength"))
+    merged["notes"] = str(merged.get("notes", "") or "").strip()
+    if not merged.get("id"):
+        merged["id"] = stable_hash(json.dumps(merged, sort_keys=True, default=str))
+    return merged
+
+
+def airing_rules_config_defaults():
+    return {
+        "airing_rules_version": AIRING_RULES_VERSION,
+        "channel_rules": [],
+        "show_rules": [],
+        "genre_rules": [],
+        "channel_takeovers": [],
+    }
+
+
+def _normalize_airing_rule_list(raw, level):
+    items = raw if isinstance(raw, list) else []
+    result = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        rule = normalize_airing_rule(item)
+        rule["level"] = level
+        result.append(rule)
+    return result
+
+
+def normalize_airing_rules_config(data):
+    merged = merge_dict_defaults(data if isinstance(data, dict) else {}, airing_rules_config_defaults())
+    merged["airing_rules_version"] = AIRING_RULES_VERSION
+    merged["channel_rules"] = _normalize_airing_rule_list(merged.get("channel_rules"), "channel")
+    merged["show_rules"] = _normalize_airing_rule_list(merged.get("show_rules"), "show")
+    merged["genre_rules"] = _normalize_airing_rule_list(merged.get("genre_rules"), "genre")
+    takeovers = merged.get("channel_takeovers")
+    merged["channel_takeovers"] = [
+        normalize_channel_takeover(item)
+        for item in (takeovers if isinstance(takeovers, list) else [])
+        if isinstance(item, dict)
+    ]
+    return merged
+
+
+def load_airing_rules_config():
+    return normalize_airing_rules_config(load_json_file(AIRING_RULES_FILE, airing_rules_config_defaults()))
+
+
+def save_airing_rules_config(config):
+    save_json_file(AIRING_RULES_FILE, config)
+
+
+def validate_airing_rules_config(config, known_channel_ids=None, known_title_keys=None):
+    """Returns a list of human-readable warning strings. Never raises."""
+    warnings = []
+    if not isinstance(config, dict):
+        return ["airing rules config is not a dict; defaults will be used"]
+    known_channel_ids = set(known_channel_ids) if known_channel_ids is not None else None
+    known_title_keys = set(known_title_keys) if known_title_keys is not None else None
+
+    def check_time_range(label, start, end):
+        if start and end and start == end:
+            warnings.append(f"{label}: start_time and end_time are identical ({start})")
+
+    def check_date_range(label, start, end):
+        if start and end and start > end:
+            warnings.append(f"{label}: start_date {start} is after end_date {end}")
+
+    def check_target(label, target):
+        target = target if isinstance(target, dict) else {}
+        channel_id = target.get("channel_id")
+        if channel_id and known_channel_ids is not None and channel_id not in known_channel_ids:
+            warnings.append(f"{label}: references unknown channel_id '{channel_id}'")
+        title_key = target.get("title_key")
+        if title_key and known_title_keys is not None and title_key not in known_title_keys:
+            warnings.append(f"{label}: references missing/stale show title_key '{title_key}'")
+
+    strict_channel_blocks = {}
+    for level_key in ("channel_rules", "show_rules", "genre_rules"):
+        for rule in config.get(level_key, []) or []:
+            if not isinstance(rule, dict):
+                continue
+            label = f"{level_key}[{rule.get('id', '?')}]"
+            rule_type = rule.get("rule_type")
+            check_target(label, rule.get("target"))
+            check_time_range(label, rule.get("start_time"), rule.get("end_time"))
+            check_date_range(label, rule.get("start_date"), rule.get("end_date"))
+            if rule_type == "custom_date_range" and not (rule.get("start_date") and rule.get("end_date")):
+                warnings.append(f"{label}: custom_date_range rule is missing start_date/end_date")
+            if rule_type in ("only_between_times", "blocked_between_times") and not (rule.get("start_time") and rule.get("end_time")):
+                warnings.append(f"{label}: {rule_type} rule is missing start_time/end_time")
+            if rule_type in ("only_between_dates", "blocked_between_dates") and not (rule.get("start_date") and rule.get("end_date")):
+                warnings.append(f"{label}: {rule_type} rule is missing start_date/end_date")
+            if rule_type in ("only_on_dates", "blocked_on_dates") and not (rule.get("only_on_dates") or rule.get("blocked_on_dates")):
+                warnings.append(f"{label}: {rule_type} rule has no dates configured")
+            if not rule.get("rule_type"):
+                warnings.append(f"{label}: unknown/unrecognized rule_type")
+            if rule.get("enabled") and rule.get("rule_strength") == "strict" and rule_type == "block_from_channel":
+                channel_id = (rule.get("target") or {}).get("channel_id")
+                strict_channel_blocks.setdefault(channel_id, []).append(label)
+
+    for channel_id, labels in strict_channel_blocks.items():
+        if len(labels) > 1:
+            warnings.append(f"conflicting strict block_from_channel rules for channel '{channel_id}': {', '.join(labels)}")
+
+    strict_takeovers_by_channel = {}
+    for takeover in config.get("channel_takeovers", []) or []:
+        if not isinstance(takeover, dict):
+            continue
+        label = f"channel_takeover[{takeover.get('takeover_name') or takeover.get('id', '?')}]"
+        source_channel_id = takeover.get("source_channel_id")
+        if not source_channel_id:
+            warnings.append(f"{label}: missing source_channel_id")
+        elif known_channel_ids is not None and source_channel_id not in known_channel_ids:
+            warnings.append(f"{label}: references unknown source_channel_id '{source_channel_id}'")
+        for path_field in ("display_logo_path", "display_channel_bug_path", "optional_bumper_path", "optional_station_id_path"):
+            path_value = takeover.get(path_field)
+            if path_value and not os.path.exists(path_value):
+                warnings.append(f"{label}: {path_field} not found: {path_value}")
+        check_time_range(label, takeover.get("start_time"), takeover.get("end_time"))
+        check_date_range(label, takeover.get("start_date"), takeover.get("end_date"))
+        seasonal_preset = takeover.get("seasonal_preset")
+        if seasonal_preset and seasonal_preset not in AIRING_SEASONAL_PRESETS:
+            warnings.append(f"{label}: unknown seasonal_preset '{seasonal_preset}'")
+        if takeover.get("enabled") and takeover.get("rule_strength") == "strict" and source_channel_id:
+            strict_takeovers_by_channel.setdefault(source_channel_id, []).append(takeover.get("takeover_name") or takeover.get("id"))
+
+    for channel_id, names in strict_takeovers_by_channel.items():
+        if len(names) > 1:
+            warnings.append(f"conflicting strict Channel Takeovers on channel '{channel_id}': {', '.join(str(n) for n in names)}")
+
+    return warnings
+
+
+def airing_rules_diagnostics(config, known_channel_ids=None, known_title_keys=None, log=True):
+    """Developer-facing summary of the Airing Rules config. Never raises."""
+    config = config if isinstance(config, dict) else airing_rules_config_defaults()
+    warnings = validate_airing_rules_config(config, known_channel_ids, known_title_keys)
+    summary = {
+        "airing_rules_version": config.get("airing_rules_version", AIRING_RULES_VERSION),
+        "channel_rule_count": len(config.get("channel_rules", []) or []),
+        "show_rule_count": len(config.get("show_rules", []) or []),
+        "genre_rule_count": len(config.get("genre_rules", []) or []),
+        "channel_takeover_count": len(config.get("channel_takeovers", []) or []),
+        "warnings": warnings,
+    }
+    if log:
+        print(
+            "[AiringRules] v{v} | channel_rules={cr} show_rules={sr} genre_rules={gr} "
+            "channel_takeovers={ct} warnings={wc}".format(
+                v=summary["airing_rules_version"],
+                cr=summary["channel_rule_count"],
+                sr=summary["show_rule_count"],
+                gr=summary["genre_rule_count"],
+                ct=summary["channel_takeover_count"],
+                wc=len(warnings),
+            ),
+            flush=True,
+        )
+        for warning in warnings:
+            print(f"[AiringRules][warn] {warning}", flush=True)
+    return summary
+
+
 CHANNEL_BUG_SUPPORTED_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 CHANNEL_BUG_PREFERRED_NAMES = ("logo.png", "channel.png", "bug.png")
 CHANNEL_BUG_CORNER_OPTIONS = ("top-left", "top-right", "bottom-left", "bottom-right")
@@ -20244,6 +20608,10 @@ class AdvancedConfigDialog(QDialog):
         reset_all = QPushButton("Reset All")
         reset_all.clicked.connect(self.reset_all_catalog_rows)
         top_row.addWidget(reset_all)
+        airing_rules_placeholder = QPushButton("Airing Rules data support enabled")
+        airing_rules_placeholder.setEnabled(False)
+        airing_rules_placeholder.setToolTip("Airing Rules (Channel Takeovers, scheduling preferences) coming soon.")
+        top_row.addWidget(airing_rules_placeholder)
         catalog_layout.addLayout(top_row)
 
         header = QWidget()
@@ -21774,6 +22142,13 @@ class ChannelSurfer(QWidget):
         ):
             save_json_file(APP_SETTINGS_FILE, self.app_settings)
         self.resume_state = load_json_file(RESUME_STATE_FILE, {"entries": {}})
+        self.airing_rules_config = load_airing_rules_config()
+        if os.path.exists(AIRING_RULES_FILE):
+            original_airing_rules = json.dumps(load_json_file(AIRING_RULES_FILE, {}), sort_keys=True)
+            migrated_airing_rules = json.dumps(self.airing_rules_config, sort_keys=True)
+            if original_airing_rules != migrated_airing_rules:
+                save_airing_rules_config(self.airing_rules_config)
+        airing_rules_diagnostics(self.airing_rules_config)
         self.youtube_playlist_cache_state = load_json_file(
             YOUTUBE_PLAYLIST_CACHE_FILE,
             {"playlists": {}, "streams": {}},
