@@ -44,6 +44,7 @@ radiowave_metadata_cache.json
 youtube_playlist_cache.json
 catalog_validation.json
 vault_debug.log
+*.lock
 .mediawave_converter/
 thumbnails/
 metadata_artwork/
@@ -66,3 +67,6 @@ youtube_video_cache/
 # Keep the bundled UI sound asset tracked.
 !assets/channel_switch.wav
 release/
+
+# Local-only scratch/backups moved out of the way during cleanup
+archive/

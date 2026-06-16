@@ -163,6 +163,12 @@ Yes. Free to download, no account required, no subscription.
 
 ---
 
+## Developing MediaWave2000
+
+Working on the source code? See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for how to run the app from source, build each platform, cut a release, and where runtime/cache files live.
+
+---
+
 ## Credits
 
 Inspired by the concept behind [FieldStation42](https://github.com/shane-mason/FieldStation42) — built for everyone who loved the idea but couldn't get it working.

@@ -6,7 +6,7 @@ Usage:
 
 Outputs:
     release/MediaWave/
-    release/MediaWave-macOS-beta.zip  (unless --no-zip)
+    release/MediaWave-v<APP_VERSION>-macOS.zip  (unless --no-zip)
 
 Safe:
     Only ever deletes / replaces release/MediaWave/.
@@ -20,6 +20,7 @@ Docs:
 """
 
 import hashlib
+import re
 import shutil
 import sys
 import zipfile
@@ -31,6 +32,16 @@ DIST = REPO / "dist"
 RELEASE_ROOT = REPO / "release"
 STAGING = RELEASE_ROOT / "MediaWave"
 DOCS_SRC = REPO / "docs"
+
+
+def _read_app_version() -> str:
+    """Read APP_VERSION out of channelsurfer2000.py without importing it
+    (the app has heavy GUI/runtime imports we don't want here)."""
+    src = REPO / "channelsurfer2000.py"
+    match = re.search(r'^APP_VERSION\s*=\s*"([^"]+)"', src.read_text(encoding="utf-8"), re.MULTILINE)
+    if not match:
+        fail(f"Could not find APP_VERSION in {src}")
+    return match.group(1)
 
 # ── Canonical doc sources ────────────────────────────────────────────────────
 # Never rewritten or regenerated — copied verbatim from docs/. Assembly fails
@@ -225,7 +236,8 @@ def verify_staged_docs(copied_docs: list[tuple[Path, Path]]) -> None:
 def make_zip(no_zip: bool) -> Path | None:
     if no_zip:
         return None
-    zip_path = RELEASE_ROOT / "MediaWave-macOS-beta.zip"
+    version = _read_app_version()
+    zip_path = RELEASE_ROOT / f"MediaWave-v{version}-macOS.zip"
     log(f"\nCreating zip: {zip_path.name} ...")
     if zip_path.exists():
         zip_path.unlink()
