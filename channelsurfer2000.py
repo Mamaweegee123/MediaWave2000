@@ -1347,7 +1347,11 @@ def normalize_airing_rule(value):
     level = str(merged.get("level", "channel") or "channel").strip().lower()
     merged["level"] = level if level in AIRING_RULE_LEVELS else "channel"
     merged["enabled"] = bool(merged.get("enabled", True))
-    merged["rule_type"] = normalize_airing_rule_type(merged.get("rule_type")) or "always_allowed"
+    # Preserve unknown rule_type values as-is for forward compatibility with future versions.
+    # Only fall back to "always_allowed" if the field is empty or missing.
+    raw_rule_type = str(merged.get("rule_type", "") or "").strip().lower()
+    known_type = normalize_airing_rule_type(raw_rule_type)
+    merged["rule_type"] = known_type if known_type else (raw_rule_type or "always_allowed")
     merged["rule_strength"] = normalize_airing_rule_strength(merged.get("rule_strength"))
     merged["target"] = normalize_airing_rule_target(merged.get("target"))
     merged["start_time"] = normalize_airing_time(merged.get("start_time"))
@@ -1496,10 +1500,10 @@ def validate_airing_rules_config(config, known_channel_ids=None, known_title_key
                 warnings.append(f"{label}: {rule_type} rule is missing start_time/end_time")
             if rule_type in ("only_between_dates", "blocked_between_dates") and not (rule.get("start_date") and rule.get("end_date")):
                 warnings.append(f"{label}: {rule_type} rule is missing start_date/end_date")
-            if rule_type in ("only_on_dates", "blocked_on_dates") and not (rule.get("only_on_dates") or rule.get("blocked_on_dates")):
-                warnings.append(f"{label}: {rule_type} rule has no dates configured")
-            if not rule.get("rule_type"):
-                warnings.append(f"{label}: unknown/unrecognized rule_type")
+            if rule_type == "only_on_dates" and not rule.get("only_on_dates"):
+                warnings.append(f"{label}: only_on_dates rule has no dates configured")
+            if rule_type == "blocked_on_dates" and not rule.get("blocked_on_dates"):
+                warnings.append(f"{label}: blocked_on_dates rule has no dates configured")
             if rule.get("enabled") and rule.get("rule_strength") == "strict" and rule_type == "block_from_channel":
                 channel_id = (rule.get("target") or {}).get("channel_id")
                 strict_channel_blocks.setdefault(channel_id, []).append(label)
@@ -22142,11 +22146,12 @@ class ChannelSurfer(QWidget):
         ):
             save_json_file(APP_SETTINGS_FILE, self.app_settings)
         self.resume_state = load_json_file(RESUME_STATE_FILE, {"entries": {}})
-        self.airing_rules_config = load_airing_rules_config()
-        if os.path.exists(AIRING_RULES_FILE):
-            original_airing_rules = json.dumps(load_json_file(AIRING_RULES_FILE, {}), sort_keys=True)
-            migrated_airing_rules = json.dumps(self.airing_rules_config, sort_keys=True)
-            if original_airing_rules != migrated_airing_rules:
+        _raw_airing_rules = load_json_file(AIRING_RULES_FILE, None)
+        self.airing_rules_config = normalize_airing_rules_config(
+            _raw_airing_rules if _raw_airing_rules is not None else airing_rules_config_defaults()
+        )
+        if _raw_airing_rules is not None:
+            if json.dumps(_raw_airing_rules, sort_keys=True, default=str) != json.dumps(self.airing_rules_config, sort_keys=True, default=str):
                 save_airing_rules_config(self.airing_rules_config)
         airing_rules_diagnostics(self.airing_rules_config)
         self.youtube_playlist_cache_state = load_json_file(
