@@ -11595,8 +11595,6 @@ class OnDemandOverlay(QWidget):
     def draw_sleek_vault_filter_row(self, painter, rect, sections, theme):
         options = self.state.get("filter_options", []) or [
             {"key": "featured", "label": "Featured"},
-            {"key": "movies", "label": "Movies"},
-            {"key": "series", "label": "Series"},
             {"key": "recently-added", "label": "Recently Added"},
             {"key": "my-vault", "label": "My Vault"},
             {"key": "random", "label": "Surprise me"},
@@ -27997,8 +27995,6 @@ class ChannelSurfer(QWidget):
     def on_demand_filter_options(self):
         return [
             {"key": "featured", "label": "Featured"},
-            {"key": "movies", "label": "Movies"},
-            {"key": "series", "label": "Series"},
             {"key": "recently-added", "label": "Recently Added"},
             {"key": "my-vault", "label": "My Vault"},
             {"key": "random", "label": "Surprise me"},
