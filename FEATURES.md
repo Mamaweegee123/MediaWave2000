@@ -55,17 +55,17 @@ Three complete visual themes, each with multiple color variants:
 ### Set-Top Box
 - 80s/90s cable box aesthetic
 - CRT-era typography and layout
-- Color options: [add your color names here]
+- Color options: Stars of Uranus, Silver Olive, Get Slimed, Blue Berry
 
 ### Promised Future
 - Mid-2000s digital optimism
 - Clean but dated tech aesthetic
-- Color options: [add your color names here]
+- Color options: Stars of Uranus, Silver Olive, Silver, Olive, Tangerine Dream, Purple Passion, Charcoal, Blue Berry
 
 ### Sleek Freak
 - Modern flat UI
 - Minimal, clean presentation
-- Color options: [add your color names here]
+- Color options: Stars of Uranus, Silver Olive, Baby Blue, Grape Jelly, Millenial Grey - With Light and Dark mode variants
 
 ---
 
@@ -139,7 +139,7 @@ A separate standalone app included with MediaWave2000:
 
 - **macOS** — available now
 - **Windows** — available now
-- **Linux** — available now
+- **Linux** — in progress
 - **Raspberry Pi** — planned (lightweight stripped-down build)
 - **Steam / Steam Deck** — long-term aspiration
 
@@ -157,4 +157,4 @@ A separate standalone app included with MediaWave2000:
 
 ---
 
-*Last updated: v1.0.0 — [6-13-26]*
+*Last updated: v0.1.0 — [6-14-26]*

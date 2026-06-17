@@ -12,7 +12,7 @@ Put your videos in folders. Open MediaWave2000. Watch TV.
 
 MediaWave2000 is a desktop app that transforms your local video collection into a fully functional fake cable channel system — complete with a scrollable TV guide, "On-Demand" Vault, scheduled programming, commercial breaks, and themed on-screen displays.
 
-If you've ever tried **FieldStation42** and given up after day two of config files, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No Linux server. No .Json files. Just folders.
+If you've ever tried **FieldStation42** and wanted something simpler to easily turn your media catalog into a working cable system, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No configuring schedules, no .Json files, just folders.
 
 ---
 
@@ -24,8 +24,6 @@ If you've ever tried **FieldStation42** and given up after day two of config fil
 
 <img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 49 45 PM" src="https://github.com/user-attachments/assets/166b03b1-f7d1-435a-a04e-f69c7876d04e" />
 <img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 51 00 PM" src="https://github.com/user-attachments/assets/97149040-1a1e-4152-bc0e-461fc858d5f1" />
-
-
 
 ---
 
@@ -41,7 +39,7 @@ See [FEATURES.md](FEATURES.md) for the full list, but here's the short version:
 - **Channel logos** — custom watermark per channel, with position and size control, timing, opacity and grayscale options
 - **Companion channels** — WeatherStar connectivity, RadioWave TV (music visualizer), NetTV (YouTube playlists)
 - **MediaWave Converter** — companion app to batch-prep files for smooth playback
-- Works on **Mac**, **Windows**, and **Linux**
+- Works on **Mac**, **Windows**, and in the future, Linux.
 
 ---
 
@@ -63,7 +61,7 @@ My Catalog/
     music_video_01.mp4
 ```
 
-That's it. No metadata files. No renaming. As simple as I could make it :)
+That's it! No metadata files. No renaming. As simple as I could make it :)
 
 ### 2. Download and open MediaWave2000
 
@@ -119,7 +117,7 @@ Beyond your own library, MediaWave includes three built-in channels:
 
 ## MediaWave Converter
 
-A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to either .mp4,  with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
+A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to either .mp4, .mkv, or .avi,  with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
 
 Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 
@@ -152,7 +150,7 @@ Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 **Do I need to convert all my files?**
 Nope! Most modern MP4s play fine as-is. Use the Converter when something doesn't look right, or if you want all your files to be the same format, audio level etc.
 
-**Can I use an external drive or NAS?**
+**Can I use an external drive?**
 Yes, your catalog can live anywhere your system can read — USB drive, NAS, network share, wherever.
 
 **Does this connect to the internet?**
@@ -171,8 +169,25 @@ Working on the source code? See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for h
 
 ## Credits
 
-Inspired by the concept behind [FieldStation42](https://github.com/shane-mason/FieldStation42) — built for everyone who loved the idea but couldn't get it working.
+Inspired by the concept behind [FieldStation42](https://github.com/shane-mason/FieldStation42) — built for everyone who loved the idea but couldn't get it working, and everyone who misses watching cable TV.
 
 ---
+
+## Support MediaWave
+
+MediaWave is a passion project built in my spare time to bring back the nostalgia of scrolling through a TV Guide!
+
+If you've enjoyed using MediaWave and would like to support future development, you can buy me a coffee on Ko-fi:
+
+**☕ Support MediaWave:** https://ko-fi.com/Mamaweegee123
+
+Support is completely optional, but every contribution helps fund development, testing hardware, and future features. And keeping my belly full :)
+
+Thank you for checking out MediaWave!
+
+---
+
 **NO copyrighted media is included with MediaWave 2000. Users must supply their own legally obtained media files.** *Pwease >.<*
-*Tune in. Sit back. There is always something on.*
+
+
+*Tune in. Sit back. There's always something on.*
