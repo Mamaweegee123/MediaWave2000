@@ -35,6 +35,69 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink, QSoundE
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 
+
+# ── Sleep Prevention ──────────────────────────────────────────────────────────
+class SleepPreventer:
+    """Prevent the OS from sleeping while playback is active.
+
+    Supported platforms:
+      macOS  — spawns `caffeinate -d -i` subprocess; killed on release.
+      Windows — SetThreadExecutionState via ctypes.
+      Other  — silent no-op.
+
+    TODO: add a configurable idle-timeout so users can choose how long
+          MediaWave will keep the display awake (e.g. 4 h, 8 h, indefinite).
+    TODO: show a "going to sleep in X minutes" overlay when the timeout
+          is approaching, similar to a real cable box.
+    TODO: optional screensaver/ambient-music mode instead of hard sleep.
+    TODO: Vault "Are you still watching?" prompt (Yes / No / I'm bored)
+          after extended on-demand idle time.
+    """
+
+    def __init__(self):
+        self._caffeinate = None   # macOS subprocess handle
+        self._active = False
+
+    def acquire(self):
+        """Enable sleep prevention.  Safe to call multiple times."""
+        if self._active:
+            return
+        self._active = True
+        try:
+            if sys.platform == "darwin":
+                self._caffeinate = subprocess.Popen(
+                    ["caffeinate", "-d", "-i"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            elif sys.platform == "win32":
+                import ctypes
+                # ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000003)
+        except Exception:
+            pass
+
+    def release(self):
+        """Release sleep prevention and let the OS manage power normally."""
+        if not self._active:
+            return
+        self._active = False
+        try:
+            if sys.platform == "darwin":
+                if self._caffeinate is not None:
+                    self._caffeinate.terminate()
+                    self._caffeinate = None
+            elif sys.platform == "win32":
+                import ctypes
+                # ES_CONTINUOUS only — clears the previous request
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        except Exception:
+            pass
+
+    def __del__(self):
+        self.release()
+
+
 APP_NAME = "MediaWave2000"
 APP_VERSION = "0.1.0-beta"
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov")
@@ -22416,6 +22479,7 @@ class ChannelSurfer(QWidget):
         self.on_demand_settings_open = False
         self.on_demand_settings_focus_index = 0
         self.playback_mode = "live"
+        self.sleep_preventer = SleepPreventer()
         self.current_on_demand_path = None
         self.live_info_nav_focused = False
         self.live_info_nav_index = 1
@@ -25962,6 +26026,7 @@ class ChannelSurfer(QWidget):
         if not self.channels:
             self.status.setText("Load a catalog to start surfing channels.")
             return
+        self.sleep_preventer.acquire()
 
         # Do not steal focus during auto-advances when the user has switched away.
         # Only raise/activate the window when this is an explicit user action.
@@ -30183,6 +30248,7 @@ class ChannelSurfer(QWidget):
             self.status.setText("Dummy Vault listings are for navigation testing only.")
             self.refresh_on_demand()
             return
+        self.sleep_preventer.acquire()
         self.hide_info_banner()
         self.hide_guide()
         self.hide_on_demand()
@@ -30350,6 +30416,7 @@ class ChannelSurfer(QWidget):
         )
 
     def stop_player(self):
+        self.sleep_preventer.release()
         self.channel_switch_timer.stop()
         self.live_stall_timer.stop()
         self.seek_hold_timer.stop()
