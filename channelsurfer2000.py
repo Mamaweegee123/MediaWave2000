@@ -21742,6 +21742,7 @@ class VideoSurface(QWidget):
 class ChannelSurfer(QWidget):
     commercialWarmScanFinished = Signal(int, str, str, list)
     youtubeStreamResolved = Signal(int, dict, str, str, float)
+    episodeThumbnailReady = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -22129,6 +22130,7 @@ class ChannelSurfer(QWidget):
         self.guide_rows_cache = {}
         self.program_metadata_memory_cache = {}
         self.media_thumbnail_cache = {}
+        self._thumb_in_flight = set()
         self.perf_last_summary_at = 0.0
         self.on_demand_render_sections = []
         self.on_demand_last_open_request = None
@@ -22287,6 +22289,7 @@ class ChannelSurfer(QWidget):
         self.live_stall_timer.setInterval(2000)
         self.live_stall_timer.timeout.connect(self.check_live_playback_health)
         self.youtubeStreamResolved.connect(self.on_youtube_stream_resolved)
+        self.episodeThumbnailReady.connect(self.on_episode_thumbnail_ready)
         self.profile_combo.currentTextChanged.connect(self.apply_display_settings)
         self.theme_combo.currentTextChanged.connect(self.apply_display_settings)
         self.skin_combo.currentTextChanged.connect(self.on_skin_changed)
@@ -29065,7 +29068,15 @@ class ChannelSurfer(QWidget):
         selected_path = selected_episode.get("path") if selected_episode else (items[0]["path"] if items else "")
         resume_entry = self.resume_state.get("entries", {}).get(selected_path, {})
         resume_ms = int(resume_entry.get("position_ms", 0) or 0)
-        episode_thumbnail = QPixmap() if str(selected_path).startswith("dummy://") else (self.get_media_thumbnail(selected_path) if selected_path else QPixmap())
+        if selected_path and not str(selected_path).startswith("dummy://"):
+            episode_thumbnail = self.load_episode_thumbnail(selected_path)
+            if episode_thumbnail.isNull():
+                # Queue background extraction at the midpoint of the episode.
+                _ep_dur = float(self.duration_cache.get(selected_path, 0) or 0)
+                _ep_offset = (_ep_dur / 2.0) if _ep_dur > 0 else 30.0
+                self.request_episode_thumbnail(selected_path, _ep_offset)
+        else:
+            episode_thumbnail = QPixmap()
         media_type = "tv" if any(item.get("media_type") == "tv" for item in items) else "movie"
         watchlisted = self.is_on_demand_group_watchlisted(self.on_demand_channel_index, self.on_demand_group_index)
         action_label = "Resume" if resume_ms > 0 else "Play"
@@ -30074,6 +30085,85 @@ class ChannelSurfer(QWidget):
             return pixmap
         self.media_thumbnail_cache[path] = QPixmap()
         return QPixmap()
+
+    def episode_thumbnail_path(self, path):
+        """Disk cache path for the midpoint preview frame of an episode."""
+        return os.path.join(THUMBNAIL_DIR, f"{file_cache_signature(path)}_mid.jpg")
+
+    def load_episode_thumbnail(self, path):
+        """Return a cached midpoint thumbnail QPixmap without blocking.
+
+        Checks the in-memory cache first, then the disk cache.  Returns an
+        empty QPixmap if neither exists (caller should fire
+        request_episode_thumbnail to queue background extraction).
+        """
+        if not path or str(path).startswith("dummy://"):
+            return QPixmap()
+        cache_key = f"mid:{path}"
+        cached = self.media_thumbnail_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        thumb_path = self.episode_thumbnail_path(path)
+        if os.path.isfile(thumb_path):
+            pixmap = load_ui_pixmap(thumb_path)
+            if not pixmap.isNull():
+                self.media_thumbnail_cache[cache_key] = pixmap
+                return pixmap
+        return QPixmap()
+
+    def request_episode_thumbnail(self, path, offset_seconds):
+        """Queue a background ffmpeg extraction for the episode at offset_seconds.
+
+        Safe to call from the main thread; does nothing if already in-flight or
+        already on disk.  Emits episodeThumbnailReady(path) when done so the
+        Vault can refresh.
+        """
+        if not path or not FFMPEG_PATH or str(path).startswith("dummy://"):
+            return
+        if not os.path.isfile(path):
+            return
+        cache_key = f"mid:{path}"
+        if self.media_thumbnail_cache.get(cache_key) is not None:
+            return
+        thumb_path = self.episode_thumbnail_path(path)
+        if os.path.isfile(thumb_path):
+            return
+        if path in self._thumb_in_flight:
+            return
+        self._thumb_in_flight.add(path)
+        offset = max(1.0, float(offset_seconds or 5.0))
+
+        def _worker():
+            try:
+                subprocess.run(
+                    [
+                        FFMPEG_PATH, "-y",
+                        "-ss", str(int(offset)),
+                        "-i", path,
+                        "-frames:v", "1",
+                        "-vf", "scale=320:-1",
+                        thumb_path,
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=12,
+                )
+            except (subprocess.SubprocessError, OSError):
+                pass
+            finally:
+                self.episodeThumbnailReady.emit(path)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @Slot(str)
+    def on_episode_thumbnail_ready(self, path):
+        """Called on the main thread when a background thumbnail extraction finishes."""
+        self._thumb_in_flight.discard(path)
+        # Evict the in-memory cache entry so the next state build reloads from disk.
+        cache_key = f"mid:{path}"
+        self.media_thumbnail_cache.pop(cache_key, None)
+        if self.video_window.on_demand_overlay.isVisible() and self.on_demand_view == "detail":
+            self.refresh_on_demand()
 
     def update_next_up_overlay(self):
         if self.playback_mode != "ondemand" or not self.current_on_demand_path:
