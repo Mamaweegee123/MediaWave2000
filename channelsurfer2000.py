@@ -27070,41 +27070,68 @@ class ChannelSurfer(QWidget):
                 })
                 continue
 
+            # Build guide slots, merging commercial/break entries into adjacent
+            # content slots so the guide shows continuous program blocks (real cable
+            # behaviour) rather than tiny commercial fragment cells.
             slot_data = []
+            pending_start = None  # leading commercial before first content in window
             for program in programs:
-                metadata = self.get_program_metadata(program["path"])
-                slot_data.append(
-                    {
+                entry = program.get("entry") or {}
+                is_break = entry.get("is_commercial") or entry.get("kind") in {
+                    "commercial", "promo", "bumper", "station_id"
+                }
+                if is_break:
+                    if slot_data:
+                        # Extend the previous content slot to absorb this break.
+                        slot_data[-1]["end"] = program["end"]
+                    else:
+                        # Commercial precedes first content in window — note its
+                        # start so the first content slot can claim that time.
+                        if pending_start is None:
+                            pending_start = program["start"]
+                else:
+                    metadata = self.get_program_metadata(program["path"])
+                    slot_start = pending_start if pending_start is not None else program["start"]
+                    pending_start = None
+                    slot_data.append({
                         "title": metadata.get("timeline_title", program["title"]),
-                        "time": time.strftime("%I:%M %p", time.localtime(program["start"])).lstrip("0"),
-                        "start": program["start"],
+                        "time": time.strftime("%I:%M %p", time.localtime(slot_start)).lstrip("0"),
+                        "start": slot_start,
                         "end": program["end"],
                         "path": program["path"],
-                    }
-                )
+                    })
 
-            detail_program = programs[0]
+            if not slot_data:
+                slot_data = [{
+                    "title": channel.name,
+                    "time": time.strftime("%I:%M %p", time.localtime(timeline_start)).lstrip("0"),
+                    "start": timeline_start,
+                    "end": timeline_start + (30 * 60),
+                    "path": "",
+                }]
+
+            detail_slot = slot_data[0]
             detail_slot_index = 0
             # Prefer the slot containing the real current time (live accuracy),
             # so a show that started at e.g. 9:20 is correctly highlighted even
             # when timeline_start is floored to 9:00.
             _now = time.time()
             _now_found = False
-            for _slot_i, _slot_prog in enumerate(programs):
-                if _slot_prog["start"] <= _now < _slot_prog["end"]:
-                    detail_program = _slot_prog
+            for _slot_i, _slot in enumerate(slot_data):
+                if _slot["start"] <= _now < _slot["end"]:
+                    detail_slot = _slot
                     detail_slot_index = _slot_i
                     _now_found = True
                     break
             if not _now_found:
                 # Browsing a future/past window: highlight first slot overlapping timeline_start
-                for _slot_i, _slot_prog in enumerate(programs):
-                    if _slot_prog["end"] > timeline_start:
-                        detail_program = _slot_prog
+                for _slot_i, _slot in enumerate(slot_data):
+                    if _slot["end"] > timeline_start:
+                        detail_slot = _slot
                         detail_slot_index = _slot_i
                         break
-            detail_metadata = self.get_program_metadata(detail_program["path"])
-            detail_is_live = detail_program["start"] <= time.time() < detail_program["end"]
+            detail_metadata = self.get_program_metadata(detail_slot["path"])
+            detail_is_live = detail_slot["start"] <= time.time() < detail_slot["end"]
             if detail_is_live:
                 detail_status = "ON NOW  •  Press ENTER to tune in"
             else:
@@ -27120,12 +27147,12 @@ class ChannelSurfer(QWidget):
                 "next_time": time.strftime("%I:%M %p", time.localtime(info["current_end"])).lstrip("0"),
                 "slots": slot_data,
                 "detail_slot_index": detail_slot_index,
-                "detail_title": detail_metadata.get("detail_title", detail_program["title"]),
-                "detail_path": detail_program["path"],
+                "detail_title": detail_metadata.get("detail_title", detail_slot["title"]),
+                "detail_path": detail_slot["path"],
                 "detail_is_live": detail_is_live,
                 "detail_status": detail_status,
-                "detail_time": format_clock_range(detail_program["start"], detail_program["end"]),
-                "detail_summary": detail_metadata.get("detail_summary") or self.build_guide_summary(channel.name, detail_program["title"]),
+                "detail_time": format_clock_range(detail_slot["start"], detail_slot["end"]),
+                "detail_summary": detail_metadata.get("detail_summary") or self.build_guide_summary(channel.name, detail_slot["title"]),
                 "summary": self.build_guide_summary(channel.name, info["current_title"]),
             })
         perf_log("guide.rows.build", (time.perf_counter() - started_at) * 1000.0, rows=len(rows), timeline=int(timeline_start))
