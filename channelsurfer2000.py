@@ -11063,6 +11063,16 @@ class OnDemandOverlay(QWidget):
         if viewport.isEmpty():
             return
 
+        if not grid_cards:
+            empty_label = "No movies in your Vault yet." if grid_type == "movies" else "No shows in your Vault yet."
+            painter.save()
+            painter.setFont(self.sleek_font(theme, 15, QFont.DemiBold, 12, 18))
+            painter.setPen(with_alpha(secondary, 180))
+            painter.drawText(viewport, Qt.AlignCenter | Qt.TextWordWrap, empty_label)
+            painter.restore()
+            self.fill_vault_reserved_space(painter, inner, footer_rect, theme)
+            return
+
         total_card_w = (viewport.width() - gap * (cols - 1))
         card_w = max(self.sleek_metric(120, 90, 180), total_card_w // cols)
         card_h = int(card_w * 1.52)
@@ -22269,6 +22279,7 @@ class ChannelSurfer(QWidget):
         self.on_demand_render_sections = []
         self.on_demand_last_open_request = None
         self.on_demand_view = "home"
+        self.on_demand_prev_view = "home"
         self.on_demand_grid_type = "movies"
         self.on_demand_grid_row = 0
         self.on_demand_grid_col = 0
@@ -28203,6 +28214,7 @@ class ChannelSurfer(QWidget):
             overlay = self.video_window.on_demand_overlay
             overlay.grid_vertical_offset = 0.0
             overlay.grid_vertical_target = 0.0
+            self.on_demand_prev_view = "home"
             self.on_demand_view = "grid"
             self.on_demand_nav_focused = False
             self.refresh_on_demand()
@@ -29417,6 +29429,7 @@ class ChannelSurfer(QWidget):
                     self.on_demand_season_index = idx
                     break
 
+            self.on_demand_prev_view = self.on_demand_view
             self.on_demand_view = "detail"
             self.on_demand_nav_focused = False
             self.on_demand_back_focused = False
@@ -29543,7 +29556,9 @@ class ChannelSurfer(QWidget):
         if self.on_demand_view == "home":
             self.hide_on_demand()
             return
-        self.on_demand_view = "home"
+        prev = getattr(self, "on_demand_prev_view", "home")
+        self.on_demand_view = prev if prev in {"home", "grid"} else "home"
+        self.on_demand_prev_view = "home"
         self.on_demand_back_focused = False
         self.on_demand_nav_focused = False
         self.refresh_on_demand()
