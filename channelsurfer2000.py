@@ -3056,6 +3056,20 @@ def normalize_title(value):
     return re.sub(r"\s+", " ", cleaned)
 
 
+_TITLE_STOPWORDS = frozenset({"the", "a", "an", "of", "in", "at", "to", "and", "or", "is", "it"})
+
+
+def _folder_is_genre_category(folder_norm, file_norm):
+    """Return True if a folder name has no significant word overlap with a file title.
+
+    When there's no overlap, the folder is likely an organizer (Action, Comedy,
+    Documentaries) rather than a title container (The Matrix 1999, Die Hard Collection).
+    """
+    folder_words = set(folder_norm.split()) - _TITLE_STOPWORDS
+    file_words = set(file_norm.split()) - _TITLE_STOPWORDS
+    return not folder_words or not bool(folder_words & file_words)
+
+
 def clean_local_title_piece(value):
     return re.sub(r"\s+", " ", str(value or "").strip().strip("-_–—:| ")).strip()
 
@@ -3314,7 +3328,12 @@ def parse_local_media(path):
                 "match_key": normalize_title(inferred_show),
             }
 
-    show_name = parent_title if parent_title and parent_title.lower() not in fallback_title.lower() else fallback_title
+    if parent_title and parent_title.lower() not in fallback_title.lower():
+        norm_parent = normalize_title(parent_title)
+        norm_fallback = normalize_title(fallback_title)
+        show_name = fallback_title if _folder_is_genre_category(norm_parent, norm_fallback) else parent_title
+    else:
+        show_name = fallback_title
     return {
         "media_type": "movie",
         "show_name": show_name,
@@ -24770,9 +24789,20 @@ class ChannelSurfer(QWidget):
                 metadata = self.get_program_metadata_local(path)
                 hierarchy = infer_on_demand_structure(path, getattr(channel, "root_path", ""))
                 media_type = metadata.get("media_type", "movie")
-                group_name = hierarchy.get("group_label") or metadata.get("show_name") or metadata.get("timeline_title") or format_program_title(path)
+                raw_group_label = hierarchy.get("group_label") or ""
                 section_label = hierarchy.get("section_label") or metadata.get("season_label") or ""
-                if hierarchy.get("group_label"):
+                if raw_group_label and media_type == "movie":
+                    file_title = metadata.get("timeline_title") or format_program_title(path)
+                    if _folder_is_genre_category(normalize_title(raw_group_label), normalize_title(file_title)):
+                        # Genre/category folder — use the title subfolder name if present, else filename
+                        group_name = section_label or metadata.get("show_name") or file_title
+                        section_label = ""
+                        raw_group_label = ""
+                    else:
+                        group_name = raw_group_label
+                else:
+                    group_name = raw_group_label or metadata.get("show_name") or metadata.get("timeline_title") or format_program_title(path)
+                if raw_group_label:
                     group_key = f"group::{normalize_title(group_name)}"
                 elif media_type == "tv":
                     group_key = f"tv::{normalize_title(group_name)}"
