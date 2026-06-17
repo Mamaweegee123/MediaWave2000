@@ -10144,6 +10144,7 @@ class OnDemandOverlay(QWidget):
     footerNavRequested = Signal(int)
     settingsCloseRequested = Signal()
     homeCardRequested = Signal(int, int)
+    gridCardRequested = Signal(int, int)
     heroActionRequested = Signal(str)
     filterActionRequested = Signal(int)
     upRequested = Signal()
@@ -10183,6 +10184,8 @@ class OnDemandOverlay(QWidget):
         self.episode_list_target = 0.0
         self.filter_scroll_offset = 0.0
         self.filter_scroll_target = 0.0
+        self.grid_vertical_offset = 0.0
+        self.grid_vertical_target = 0.0
         self.feature_previous = {}
         self.feature_current = {}
         self.feature_transition = 1.0
@@ -10190,6 +10193,7 @@ class OnDemandOverlay(QWidget):
         self.home_card_hit_rects = []
         self.hero_action_hit_rects = []
         self.filter_hit_rects = []
+        self.grid_card_hit_rects = []
         self.detail_action_hit_rects = []
         self.hover_target = None
         self.skin_prev_rect = QRect()
@@ -10386,6 +10390,8 @@ class OnDemandOverlay(QWidget):
         self.episode_list_offset, moved = self.ease_toward(self.episode_list_offset, self.episode_list_target, factor=scroll_factor, snap=scroll_snap)
         active = active or moved
         self.filter_scroll_offset, moved = self.ease_toward(self.filter_scroll_offset, self.filter_scroll_target, factor=0.26, snap=1.0)
+        active = active or moved
+        self.grid_vertical_offset, moved = self.ease_toward(self.grid_vertical_offset, self.grid_vertical_target, factor=scroll_factor, snap=scroll_snap)
         active = active or moved
         for key in list(set(self.home_row_offsets.keys()) | set(self.home_row_targets.keys())):
             current = self.home_row_offsets.get(key, 0.0)
@@ -10808,6 +10814,8 @@ class OnDemandOverlay(QWidget):
         view = self.state.get("view", "home")
         if view == "home":
             self.draw_sleek_vault_home(painter, inner, header_rect, footer_rect, theme)
+        elif view == "grid":
+            self.draw_sleek_vault_grid(painter, inner, header_rect, footer_rect, theme)
         else:
             self.draw_sleek_vault_detail(painter, inner, header_rect, footer_rect, theme)
 
@@ -11033,6 +11041,121 @@ class OnDemandOverlay(QWidget):
         self.draw_sleek_vault_hero(painter, hero_rect, self.state.get("hero", {}), theme, compact=compact_hero)
         if sections:
             self.draw_sleek_vault_filter_row(painter, chips_rect, sections, theme)
+
+    def draw_sleek_vault_grid(self, painter, inner, header_rect, footer_rect, theme):
+        self.grid_card_hit_rects = []
+        grid_cards = self.state.get("grid_cards", [])
+        grid_type = self.state.get("grid_type", "movies")
+        grid_row = int(self.state.get("grid_row", 0))
+        grid_col = int(self.state.get("grid_col", 0))
+        cols = int(self.state.get("grid_cols", 4))
+        is_focused = not self.state.get("nav_focused", False) and not self.settings_open
+
+        panel_bg = theme.get("vault_panel_bg", theme.get("guide_panel_bg", theme["guide_hero_panel_bg"]))
+        primary = theme.get("vault_primary_text", theme["guide_primary_text"])
+        secondary = theme.get("vault_secondary_text", theme["guide_secondary_text"])
+
+        side = self.sleek_metric(24, 14, 36)
+        gap = self.sleek_metric(14, 9, 20)
+        top_pad = self.sleek_metric(14, 10, 20)
+
+        viewport = self.vault_content_viewport(inner, header_rect.bottom() + top_pad, footer_rect, left=inner.left() + side, width=inner.width() - side * 2)
+        if viewport.isEmpty():
+            return
+
+        total_card_w = (viewport.width() - gap * (cols - 1))
+        card_w = max(self.sleek_metric(120, 90, 180), total_card_w // cols)
+        card_h = int(card_w * 1.52)
+        label_h = self.sleek_metric(22, 17, 28)
+        sub_h = self.sleek_metric(16, 13, 20)
+        cell_h = card_h + self.sleek_metric(6, 4, 8) + label_h + self.sleek_metric(3, 2, 4) + sub_h + gap
+
+        total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+        total_content_h = total_rows * cell_h - gap
+        max_scroll = max(0.0, float(total_content_h - viewport.height()))
+
+        target_row_top = float(grid_row * cell_h)
+        target_scroll = max(0.0, min(max_scroll, target_row_top - viewport.height() * 0.3))
+        if abs(target_scroll - self.grid_vertical_target) > 0.5:
+            self.grid_vertical_target = target_scroll
+            if self.vault_selection_animates():
+                self.start_stream_animation()
+            else:
+                self.grid_vertical_offset = target_scroll
+        draw_offset = self.grid_vertical_offset if self.vault_selection_animates() else target_scroll
+        draw_offset = max(0.0, min(max_scroll, draw_offset))
+
+        painter.save()
+        painter.setClipRect(viewport, Qt.IntersectClip)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        radius = theme.get("vault_card_radius", theme.get("cell_radius", 8))
+        cable = self.skin_style() == "cable"
+
+        first_row = max(0, int(draw_offset / cell_h) - 1)
+        last_row = min(total_rows - 1, int((draw_offset + viewport.height()) / cell_h) + 1)
+
+        for row in range(first_row, last_row + 1):
+            for col in range(cols):
+                flat = row * cols + col
+                if flat >= len(grid_cards):
+                    break
+                card_data = grid_cards[flat]
+                x = viewport.left() + col * (card_w + gap)
+                y = viewport.top() + row * cell_h - int(round(draw_offset))
+                art_rect = QRect(x, y, card_w, card_h)
+
+                cell_focused = is_focused and row == grid_row and col == grid_col
+                hovered = self.hover_target == ("grid_card", row, col)
+                focus_amount = 1.0 if cell_focused else (0.22 if hovered else 0.0)
+
+                if focus_amount > 0.01:
+                    painter.setOpacity(focus_amount)
+                    painter.setPen(QPen(theme.get("vault_focus_glow", theme["guide_glow"]), self.sleek_metric(7, 4, 9)))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawRoundedRect(art_rect.adjusted(2, 2, -2, -2), radius, radius)
+                    painter.setOpacity(1.0)
+
+                border_col = blend_color(
+                    theme.get("vault_card_border", theme["guide_card_border"]),
+                    theme.get("vault_card_selected_border", theme["guide_card_selected_border"]),
+                    focus_amount,
+                )
+                painter.setPen(QPen(border_col, 2 if cell_focused else 1))
+                painter.setBrush(theme.get("vault_card_bg", theme["guide_card_bg"]))
+                if cable:
+                    painter.drawRect(art_rect)
+                else:
+                    painter.drawRoundedRect(art_rect, radius, radius)
+
+                self.draw_streaming_art_placeholder(
+                    painter, art_rect,
+                    card_data.get("title", ""), card_data.get("badge", ""),
+                    theme, card_data.get("artwork_path", ""),
+                    fit_mode="cover", show_badge=False, radius=radius,
+                )
+
+                title_y = y + card_h + self.sleek_metric(6, 4, 8)
+                title_rect = QRect(x, title_y, card_w, label_h)
+                painter.setFont(self.sleek_font(theme, 11, QFont.Bold, 9, 14))
+                painter.setPen(primary)
+                fm = QFontMetrics(painter.font())
+                painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine, fm.elidedText(card_data.get("title", ""), Qt.ElideRight, title_rect.width()))
+
+                sub_y = title_y + label_h + self.sleek_metric(3, 2, 4)
+                sub_rect = QRect(x, sub_y, card_w, sub_h)
+                painter.setFont(self.sleek_font(theme, 9, QFont.DemiBold, 7, 11))
+                painter.setPen(with_alpha(secondary, 180))
+                sub_text = card_data.get("subtitle", "") or card_data.get("meta", "")
+                fm2 = QFontMetrics(painter.font())
+                painter.drawText(sub_rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine, fm2.elidedText(sub_text, Qt.ElideRight, sub_rect.width()))
+
+                screen_rect = self.map_interactive_rect(art_rect)
+                self.grid_card_hit_rects.append((screen_rect, row, col))
+
+        painter.restore()
+        self.draw_vault_bottom_fade(painter, viewport, theme)
+        self.fill_vault_reserved_space(painter, inner, footer_rect, theme)
 
     def draw_sleek_vault_hero(self, painter, rect, detail, theme, compact=False):
         painter.save()
@@ -13976,7 +14099,8 @@ class OnDemandOverlay(QWidget):
             if rect.contains(pos):
                 target = ("nav", index)
                 break
-        if target is None and self.state.get("view") == "home":
+        _view = self.state.get("view", "home")
+        if target is None and _view == "home":
             for rect, action_key in self.hero_action_hit_rects:
                 if rect.contains(pos):
                     target = ("hero", action_key)
@@ -13991,6 +14115,11 @@ class OnDemandOverlay(QWidget):
                     if rect.contains(pos):
                         target = ("card", section_index, item_index)
                         break
+        elif target is None and _view == "grid":
+            for rect, row, col in self.grid_card_hit_rects:
+                if rect.contains(pos):
+                    target = ("grid_card", row, col)
+                    break
         elif target is None:
             for rect, action_index in getattr(self, "detail_action_hit_rects", []):
                 if rect.contains(pos):
@@ -14074,6 +14203,12 @@ class OnDemandOverlay(QWidget):
             for rect, section_index, item_index in self.home_card_hit_rects:
                 if rect.contains(pos):
                     self.homeCardRequested.emit(section_index, item_index)
+                    event.accept()
+                    return
+        elif self.state.get("view") == "grid":
+            for rect, row, col in self.grid_card_hit_rects:
+                if rect.contains(pos):
+                    self.gridCardRequested.emit(row, col)
                     event.accept()
                     return
         super().mousePressEvent(event)
@@ -22098,6 +22233,7 @@ class ChannelSurfer(QWidget):
         self.video_window.on_demand_overlay.footerNavRequested.connect(lambda index: self.activate_universal_nav("vault", index))
         self.video_window.on_demand_overlay.settingsCloseRequested.connect(self.close_on_demand_settings)
         self.video_window.on_demand_overlay.homeCardRequested.connect(self.open_on_demand_home_card)
+        self.video_window.on_demand_overlay.gridCardRequested.connect(self.handle_on_demand_grid_card)
         self.video_window.on_demand_overlay.heroActionRequested.connect(self.handle_on_demand_hero_action)
         self.video_window.on_demand_overlay.filterActionRequested.connect(self.handle_on_demand_filter_action)
         self.video_window.on_demand_overlay.upRequested.connect(self.on_demand_up)
@@ -22133,6 +22269,9 @@ class ChannelSurfer(QWidget):
         self.on_demand_render_sections = []
         self.on_demand_last_open_request = None
         self.on_demand_view = "home"
+        self.on_demand_grid_type = "movies"
+        self.on_demand_grid_row = 0
+        self.on_demand_grid_col = 0
         self.on_demand_menu_index = 0
         self.on_demand_channel_index = 0
         self.on_demand_group_index = 0
@@ -27550,6 +27689,26 @@ class ChannelSurfer(QWidget):
         self.refresh_on_demand()
 
     @Slot(int, int)
+    @Slot(int, int)
+    def handle_on_demand_grid_card(self, row, col):
+        if not self.video_window.on_demand_overlay.isVisible():
+            return
+        self.on_demand_grid_row = row
+        self.on_demand_grid_col = col
+        state = self.build_on_demand_state()
+        grid_cards = state.get("grid_cards", [])
+        cols = int(state.get("grid_cols", 4))
+        flat = row * cols + col
+        if not grid_cards or not (0 <= flat < len(grid_cards)):
+            return
+        card = grid_cards[flat]
+        ch_idx = card.get("channel_index")
+        gr_idx = card.get("group_index")
+        if ch_idx is None or gr_idx is None:
+            return
+        self.open_on_demand_group(int(ch_idx), int(gr_idx), 0, focus="actions")
+        self.refresh_on_demand()
+
     def open_on_demand_home_card(self, section_index, item_index):
         def log_return(reason, **fields):
             self.log_vault_select("open_home_card_return", reason=reason, **fields)
@@ -27709,7 +27868,7 @@ class ChannelSurfer(QWidget):
             current = int(self.on_demand_section_item_indices.get(idx, 0))
             self.on_demand_section_item_indices[idx] = max(0, min(current, max(0, len(items) - 1))) if items else 0
 
-        if self.on_demand_view != "home":
+        if self.on_demand_view not in {"home", "grid"}:
             channel = self.current_on_demand_channel()
             group = self.current_on_demand_group()
             if (not channel or not group) and self.repair_on_demand_open_request():
@@ -28037,6 +28196,17 @@ class ChannelSurfer(QWidget):
             return
         hero = self.video_window.on_demand_overlay.state.get("hero", {})
         card = dict(hero)
+        if action in {"browse_movies", "browse_series"}:
+            self.on_demand_grid_type = "movies" if action == "browse_movies" else "series"
+            self.on_demand_grid_row = 0
+            self.on_demand_grid_col = 0
+            overlay = self.video_window.on_demand_overlay
+            overlay.grid_vertical_offset = 0.0
+            overlay.grid_vertical_target = 0.0
+            self.on_demand_view = "grid"
+            self.on_demand_nav_focused = False
+            self.refresh_on_demand()
+            return
         if action == "random":
             # Hero "Surprise Me" — I'm Feeling Lucky: jump straight into playback.
             cards = self.all_on_demand_group_cards()
@@ -28997,8 +29167,9 @@ class ChannelSurfer(QWidget):
                 "type": hero_card.get("type", "group"),
                 "actions": [
                     {"label": "Resume" if hero_card.get("progress", 0.0) > 0 else "Play", "action": "resume"},
-                    {"label": "Start Over", "action": "start_over"},
                     {"label": "Info", "action": "info"},
+                    {"label": "Movies", "action": "browse_movies"},
+                    {"label": "Shows", "action": "browse_series"},
                     {"label": "Surprise me", "action": "random"},
                 ],
             }
@@ -29018,6 +29189,27 @@ class ChannelSurfer(QWidget):
                 "hero_compact": self.on_demand_home_focus == "rows" and self.on_demand_section_index > 0,
             }
             perf_log("vault.state.build", (time.perf_counter() - started_at) * 1000.0, view="home", sections=len(sections))
+            return state
+
+        if self.on_demand_view == "grid":
+            target_media_type = "movie" if self.on_demand_grid_type == "movies" else "tv"
+            all_cards = self.all_on_demand_group_cards()
+            grid_cards = [c for c in all_cards if c.get("media_type") == target_media_type]
+            cols = 4
+            total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+            self.on_demand_grid_row = max(0, min(int(self.on_demand_grid_row), total_rows - 1))
+            row_max_col = min(cols - 1, max(0, len(grid_cards) - self.on_demand_grid_row * cols - 1))
+            self.on_demand_grid_col = max(0, min(int(self.on_demand_grid_col), row_max_col))
+            state = {
+                **base_state,
+                "view": "grid",
+                "grid_type": self.on_demand_grid_type,
+                "grid_cards": grid_cards,
+                "grid_row": self.on_demand_grid_row,
+                "grid_col": self.on_demand_grid_col,
+                "grid_cols": cols,
+            }
+            perf_log("vault.state.build", (time.perf_counter() - started_at) * 1000.0, view="grid", cards=len(grid_cards))
             return state
 
         self.on_demand_render_sections = []
@@ -29437,6 +29629,14 @@ class ChannelSurfer(QWidget):
                     self.on_demand_detail_focus = "episodes" if seasons or (group and group.get("items")) else "actions"
             self.refresh_on_demand()
             return
+        if self.on_demand_view == "grid":
+            if self.on_demand_grid_row > 0:
+                self.on_demand_grid_row -= 1
+            else:
+                self.on_demand_back()
+                return
+            self.refresh_on_demand()
+            return
         if self.on_demand_view == "home":
             if self.on_demand_home_focus == "rows":
                 if self.on_demand_section_index > 0:
@@ -29523,6 +29723,19 @@ class ChannelSurfer(QWidget):
             overlay.episode_list_target = 0.0
             self.refresh_on_demand()
             return
+        if self.on_demand_view == "grid":
+            state = self.build_on_demand_state()
+            grid_cards = state.get("grid_cards", [])
+            cols = int(state.get("grid_cols", 4))
+            total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+            if self.on_demand_grid_row < total_rows - 1:
+                next_row = self.on_demand_grid_row + 1
+                row_start = next_row * cols
+                row_max_col = min(cols - 1, max(0, len(grid_cards) - row_start - 1))
+                self.on_demand_grid_row = next_row
+                self.on_demand_grid_col = min(self.on_demand_grid_col, row_max_col)
+            self.refresh_on_demand()
+            return
         if self.on_demand_view == "home":
             sections = self.build_on_demand_home_sections()
             if self.on_demand_home_focus == "hero":
@@ -29580,6 +29793,18 @@ class ChannelSurfer(QWidget):
                 self.on_demand_nav_index -= 1
             self.refresh_on_demand()
             return
+        if self.on_demand_view == "grid":
+            if self.on_demand_grid_col > 0:
+                self.on_demand_grid_col -= 1
+            elif self.on_demand_grid_row > 0:
+                self.on_demand_grid_row -= 1
+                state = self.build_on_demand_state()
+                cols = int(state.get("grid_cols", 4))
+                grid_cards = state.get("grid_cards", [])
+                row_start = self.on_demand_grid_row * cols
+                self.on_demand_grid_col = min(cols - 1, max(0, len(grid_cards) - row_start - 1))
+            self.refresh_on_demand()
+            return
         moved = False
         if self.on_demand_view == "home":
             if self.on_demand_home_focus == "hero":
@@ -29633,6 +29858,24 @@ class ChannelSurfer(QWidget):
         if self.on_demand_nav_focused:
             if self.on_demand_nav_index < self.on_demand_nav_button_count() - 1:
                 self.on_demand_nav_index += 1
+            self.refresh_on_demand()
+            return
+        if self.on_demand_view == "grid":
+            state = self.build_on_demand_state()
+            cols = int(state.get("grid_cols", 4))
+            grid_cards = state.get("grid_cards", [])
+            total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+            if self.on_demand_grid_col < cols - 1:
+                next_col = self.on_demand_grid_col + 1
+                flat = self.on_demand_grid_row * cols + next_col
+                if flat < len(grid_cards):
+                    self.on_demand_grid_col = next_col
+            elif self.on_demand_grid_row < total_rows - 1:
+                next_row = self.on_demand_grid_row + 1
+                row_start = next_row * cols
+                if row_start < len(grid_cards):
+                    self.on_demand_grid_row = next_row
+                    self.on_demand_grid_col = 0
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
@@ -29689,6 +29932,9 @@ class ChannelSurfer(QWidget):
             return
         if self.on_demand_nav_focused:
             self.activate_universal_nav("vault", self.on_demand_nav_index)
+            return
+        if self.on_demand_view == "grid":
+            self.handle_on_demand_grid_card(self.on_demand_grid_row, self.on_demand_grid_col)
             return
         if self.on_demand_view == "home":
             if self.on_demand_home_focus == "hero":
