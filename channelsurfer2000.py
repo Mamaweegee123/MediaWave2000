@@ -35,6 +35,77 @@ from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink, QSoundE
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
 
+
+# ── Sleep Prevention ──────────────────────────────────────────────────────────
+class SleepPreventer:
+    """Prevent the OS from sleeping while playback is active.
+
+    Supported platforms:
+      macOS  — spawns `caffeinate -d -i` subprocess; killed on release.
+      Windows — SetThreadExecutionState via ctypes.
+      Other  — silent no-op.
+
+    TODO: add a configurable idle-timeout so users can choose how long
+          MediaWave will keep the display awake (e.g. 4 h, 8 h, indefinite).
+    TODO: show a "going to sleep in X minutes" overlay when the timeout
+          is approaching, similar to a real cable box.
+    TODO: optional screensaver/ambient-music mode instead of hard sleep.
+    TODO: Vault "Are you still watching?" prompt (Yes / No / I'm bored)
+          after extended on-demand idle time.
+    """
+
+    def __init__(self):
+        self._caffeinate = None   # macOS subprocess handle
+        self._active = False
+
+    def acquire(self):
+        """Enable sleep prevention. Safe to call multiple times."""
+        if self._active:
+            return
+        self._active = True
+        try:
+            if sys.platform == "darwin":
+                self._caffeinate = subprocess.Popen(
+                    ["caffeinate", "-d", "-i"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                )
+            elif sys.platform == "win32":
+                import ctypes
+                # ES_CONTINUOUS | ES_SYSTEM_REQUIRED | ES_DISPLAY_REQUIRED
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000003)
+        except Exception:
+            pass
+
+    def release(self):
+        """Release sleep prevention and let the OS manage power normally."""
+        if not self._active:
+            return
+        self._active = False
+        try:
+            platform = sys.platform if sys is not None else None
+        except Exception:
+            platform = None
+        try:
+            if platform == "darwin":
+                proc = self._caffeinate
+                self._caffeinate = None
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+            elif platform == "win32":
+                import ctypes
+                # ES_CONTINUOUS only — clears the previous request
+                ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
+        except Exception:
+            pass
+
+    def __del__(self):
+        try:
+            self.release()
+        except Exception:
+            pass
+
+
 APP_NAME = "MediaWave2000"
 APP_VERSION = "0.1.0-beta"
 VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov")
@@ -3056,6 +3127,20 @@ def normalize_title(value):
     return re.sub(r"\s+", " ", cleaned)
 
 
+_TITLE_STOPWORDS = frozenset({"the", "a", "an", "of", "in", "at", "to", "and", "or", "is", "it"})
+
+
+def _folder_is_genre_category(folder_norm, file_norm):
+    """Return True if a folder name has no significant word overlap with a file title.
+
+    When there's no overlap, the folder is likely an organizer (Action, Comedy,
+    Documentaries) rather than a title container (The Matrix 1999, Die Hard Collection).
+    """
+    folder_words = set(folder_norm.split()) - _TITLE_STOPWORDS
+    file_words = set(file_norm.split()) - _TITLE_STOPWORDS
+    return not folder_words or not bool(folder_words & file_words)
+
+
 def clean_local_title_piece(value):
     return re.sub(r"\s+", " ", str(value or "").strip().strip("-_–—:| ")).strip()
 
@@ -3314,7 +3399,12 @@ def parse_local_media(path):
                 "match_key": normalize_title(inferred_show),
             }
 
-    show_name = parent_title if parent_title and parent_title.lower() not in fallback_title.lower() else fallback_title
+    if parent_title and parent_title.lower() not in fallback_title.lower():
+        norm_parent = normalize_title(parent_title)
+        norm_fallback = normalize_title(fallback_title)
+        show_name = fallback_title if _folder_is_genre_category(norm_parent, norm_fallback) else parent_title
+    else:
+        show_name = fallback_title
     return {
         "media_type": "movie",
         "show_name": show_name,
@@ -3790,8 +3880,9 @@ SKIN_NAME_ALIASES = {
 }
 
 THEME_NAME_ALIASES = {
-    "Purple": "Purple Passion",
-    "Purple Haze": "Purple Passion",
+    "Purple": "Grape Jelly",
+    "Purple Haze": "Grape Jelly",
+    "Purple Passion": "Grape Jelly",
     "Orange": "Tangerine Dream",
     "Clementine": "Tangerine Dream",
     "Slate Modern": "Millennial Grey",
@@ -3800,6 +3891,8 @@ THEME_NAME_ALIASES = {
     "Midnight Star": "Stars of Uranus",
     "Digital Cable Blue": "Blue Berry",
     "Cable Blue": "Blue Berry",
+    "Silver": "Iron Ingot",
+    "Olive": "Green Been",
 }
 
 GUIDE_THEME_DEFINITIONS = {
@@ -3883,7 +3976,7 @@ GUIDE_THEME_DEFINITIONS = {
             "pf_led_bg_bottom": QColor(22, 24, 24, 252),
             "pf_led_text": QColor(255, 92, 92, 255),
         },
-        "Silver": {
+        "Iron Ingot": {
             "bg": QColor(78, 82, 86, 228),
             "panel": QColor(216, 218, 218, 218),
             "header": QColor(142, 154, 166, 240),
@@ -3898,7 +3991,7 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_bottom": QColor(142, 154, 164, 226),
             "glass": QColor(255, 255, 255, 58),
         },
-        "Olive": {
+        "Green Been": {
             "bg": QColor(66, 82, 62, 228),
             "panel": QColor(188, 204, 168, 218),
             "header": QColor(104, 136, 92, 240),
@@ -3913,7 +4006,7 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_bottom": QColor(112, 146, 92, 226),
             "glass": QColor(255, 255, 255, 46),
         },
-        "Purple Passion": {
+        "Grape Jelly": {
             "bg": QColor(70, 58, 88, 228),
             "panel": QColor(210, 198, 224, 216),
             "header": QColor(132, 108, 166, 240),
@@ -4104,6 +4197,66 @@ GUIDE_THEME_DEFINITIONS = {
             "flat_panels": True,
             "starfield": False,
         },
+        "Iron Ingot": {
+            "bg": QColor(30, 32, 34, 244),
+            "panel": QColor(66, 70, 74, 238),
+            "header": QColor(46, 50, 56, 246),
+            "row_a": QColor(80, 84, 90, 234),
+            "row_b": QColor(50, 54, 60, 230),
+            "selected": QColor(226, 206, 96, 242),
+            "text": QColor(238, 240, 244),
+            "dark_text": QColor(16, 18, 20),
+            "muted": QColor(194, 198, 206),
+            "chrome_top": QColor(104, 112, 120, 238),
+            "chrome_mid": QColor(68, 74, 82, 234),
+            "chrome_bottom": QColor(32, 36, 42, 236),
+            "glass": QColor(255, 255, 255, 14),
+            "guide_program_upcoming_bg": QColor(98, 38, 46, 238),
+            "stb_bevel_light": QColor(196, 204, 216, 190),
+            "stb_bevel_dark": QColor(8, 10, 12, 235),
+            "flat_panels": True,
+            "starfield": False,
+        },
+        "Green Been": {
+            "bg": QColor(22, 34, 14, 244),
+            "panel": QColor(46, 68, 30, 238),
+            "header": QColor(36, 58, 22, 246),
+            "row_a": QColor(58, 84, 38, 234),
+            "row_b": QColor(36, 58, 24, 230),
+            "selected": QColor(228, 216, 88, 242),
+            "text": QColor(236, 246, 222),
+            "dark_text": QColor(16, 26, 8),
+            "muted": QColor(192, 218, 164),
+            "chrome_top": QColor(76, 116, 50, 238),
+            "chrome_mid": QColor(48, 82, 30, 234),
+            "chrome_bottom": QColor(24, 48, 14, 236),
+            "glass": QColor(255, 255, 255, 12),
+            "guide_program_upcoming_bg": QColor(108, 40, 48, 238),
+            "stb_bevel_light": QColor(132, 192, 94, 190),
+            "stb_bevel_dark": QColor(6, 16, 2, 230),
+            "flat_panels": True,
+            "starfield": False,
+        },
+        "Grape Jelly": {
+            "bg": QColor(18, 10, 32, 244),
+            "panel": QColor(42, 26, 68, 238),
+            "header": QColor(58, 36, 98, 246),
+            "row_a": QColor(72, 44, 112, 234),
+            "row_b": QColor(44, 28, 76, 230),
+            "selected": QColor(218, 188, 248, 242),
+            "text": QColor(242, 238, 252),
+            "dark_text": QColor(14, 8, 26),
+            "muted": QColor(202, 182, 234),
+            "chrome_top": QColor(90, 58, 136, 238),
+            "chrome_mid": QColor(58, 36, 98, 234),
+            "chrome_bottom": QColor(28, 14, 52, 236),
+            "glass": QColor(255, 255, 255, 14),
+            "guide_program_upcoming_bg": QColor(104, 34, 52, 238),
+            "stb_bevel_light": QColor(158, 120, 218, 190),
+            "stb_bevel_dark": QColor(4, 0, 12, 230),
+            "flat_panels": True,
+            "starfield": False,
+        },
     },
     "Sleek Freak": {
         "Stars of Uranus": {
@@ -4126,19 +4279,19 @@ GUIDE_THEME_DEFINITIONS = {
             "modes": {
                 "dark": {},
                 "light": {
-                    "bg": QColor(172, 194, 228, 255),
-                    "panel": QColor(152, 178, 216, 220),
-                    "header": QColor(88, 126, 180, 214),
-                    "row_a": QColor(148, 172, 210, 178),
-                    "row_b": QColor(216, 228, 244, 232),
-                    "selected": QColor(194, 146, 36, 238),
-                    "text": QColor(22, 34, 62),
-                    "dark_text": QColor(10, 18, 42),
-                    "muted": QColor(56, 80, 118),
-                    "chrome_top": QColor(240, 248, 255, 52),
-                    "chrome_mid": QColor(110, 148, 196, 96),
-                    "chrome_bottom": QColor(192, 210, 234, 236),
-                    "glass": QColor(255, 255, 255, 32),
+                    "bg": QColor(232, 160, 80, 255),
+                    "panel": QColor(248, 206, 142, 220),
+                    "header": QColor(34, 26, 82, 214),
+                    "row_a": QColor(252, 220, 166, 178),
+                    "row_b": QColor(240, 182, 106, 232),
+                    "selected": QColor(252, 220, 64, 238),
+                    "text": QColor(20, 12, 46),
+                    "dark_text": QColor(8, 4, 22),
+                    "muted": QColor(84, 52, 18),
+                    "chrome_top": QColor(255, 244, 210, 52),
+                    "chrome_mid": QColor(184, 116, 48, 96),
+                    "chrome_bottom": QColor(210, 150, 72, 236),
+                    "glass": QColor(255, 244, 210, 28),
                 },
             },
         },
@@ -5235,6 +5388,9 @@ def build_themed_dialog_stylesheet(theme_name=DEFAULT_THEME_NAME, skin_name=DEFA
         QStackedWidget#advContentStack {{
             background: {c(_SW_BG)};
         }}
+        QWidget#advScrollContainer, QWidget#advPageContent, QWidget#dialogScrollContent {{
+            background: {c(_SW_BG)};
+        }}
         QWidget#advFooter {{
             background: {c(_SW_FOOTER_BG)};
             border-top: 1px solid {c(_SW_FOOTER_BORD)};
@@ -5542,8 +5698,8 @@ def build_startup_stylesheet(theme_name=DEFAULT_THEME_NAME, skin_name=DEFAULT_SK
 
 
 SKIN_THEME_MAP = {
-    "Promised Future": ["Stars of Uranus", "Silver Olive", "Silver", "Olive", "Purple Passion", "Charcoal", "Tangerine Dream", "Blue Berry"],
-    "Set Top Box": ["Stars of Uranus", "Silver Olive", "Blue Berry", "Get Slimed"],
+    "Promised Future": ["Stars of Uranus", "Silver Olive", "Iron Ingot", "Green Been", "Grape Jelly", "Charcoal", "Tangerine Dream", "Blue Berry"],
+    "Set Top Box": ["Stars of Uranus", "Silver Olive", "Iron Ingot", "Green Been", "Grape Jelly", "Blue Berry", "Get Slimed"],
     "Sleek Freak": ["Stars of Uranus", "Silver Olive", "Grape Jelly", "Baby Blue", "Millennial Grey"],
 }
 
@@ -7722,7 +7878,42 @@ class ChannelBugOverlay(QWidget):
         painter.end()
 
 
-class GuideOverlay(QWidget):
+class OverlayFadeMixin:
+    """Quick fade-in for Promised Future and Sleek Freak overlays. Set Top Box snaps in/out."""
+
+    _FADE_DURATION_MS = 140
+    _FADE_INTERVAL_MS = 14
+
+    def _fade_init(self):
+        self._fade_opacity = 1.0
+        self._fade_timer = QTimer(self)
+        self._fade_timer.setInterval(self._FADE_INTERVAL_MS)
+        self._fade_timer.timeout.connect(self._fade_tick)
+
+    def _fade_tick(self):
+        step = self._FADE_INTERVAL_MS / self._FADE_DURATION_MS
+        self._fade_opacity = min(1.0, self._fade_opacity + step)
+        self.update()
+        if self._fade_opacity >= 1.0:
+            self._fade_opacity = 1.0
+            self._fade_timer.stop()
+
+    def start_fade_in(self):
+        """Begin fade-in if skin supports it; otherwise snap to opaque."""
+        style = getattr(self, "skin_style", lambda: "aero")()
+        if style == "cable":
+            self._fade_opacity = 1.0
+            self._fade_timer.stop()
+        else:
+            self._fade_opacity = 0.0
+            if not self._fade_timer.isActive():
+                self._fade_timer.start()
+
+    def fade_opacity(self):
+        return getattr(self, "_fade_opacity", 1.0)
+
+
+class GuideOverlay(OverlayFadeMixin, QWidget):
     skinStepRequested = Signal(int)
     themeStepRequested = Signal(int)
     profileStepRequested = Signal(int)
@@ -7785,6 +7976,7 @@ class GuideOverlay(QWidget):
         self.sleek_nav_transition_started = 0.0
         self.sleek_nav_transition_ms = 140
         self._sleek_focus_transition_states = {}
+        self._fade_init()
         self.hide()
 
     def show_guide(self, channels, selected_index):
@@ -7800,6 +7992,7 @@ class GuideOverlay(QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
+        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -7850,6 +8043,7 @@ class GuideOverlay(QWidget):
         profile = GUIDE_PROFILES[self.profile_name]
         theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
+        painter.setOpacity(self.fade_opacity())
         panel = self.guide_canvas_rect()
         cable_skin = self.skin_style() == "cable"
         metrics = self.guide_metrics()
@@ -10114,7 +10308,7 @@ class GuideOverlay(QWidget):
         event.accept()
 
 
-class OnDemandOverlay(QWidget):
+class OnDemandOverlay(OverlayFadeMixin, QWidget):
     skinStepRequested = Signal(int)
     themeStepRequested = Signal(int)
     profileStepRequested = Signal(int)
@@ -10122,6 +10316,7 @@ class OnDemandOverlay(QWidget):
     footerNavRequested = Signal(int)
     settingsCloseRequested = Signal()
     homeCardRequested = Signal(int, int)
+    gridCardRequested = Signal(int, int)
     heroActionRequested = Signal(str)
     filterActionRequested = Signal(int)
     upRequested = Signal()
@@ -10161,6 +10356,8 @@ class OnDemandOverlay(QWidget):
         self.episode_list_target = 0.0
         self.filter_scroll_offset = 0.0
         self.filter_scroll_target = 0.0
+        self.grid_vertical_offset = 0.0
+        self.grid_vertical_target = 0.0
         self.feature_previous = {}
         self.feature_current = {}
         self.feature_transition = 1.0
@@ -10168,6 +10365,7 @@ class OnDemandOverlay(QWidget):
         self.home_card_hit_rects = []
         self.hero_action_hit_rects = []
         self.filter_hit_rects = []
+        self.grid_card_hit_rects = []
         self.detail_action_hit_rects = []
         self.hover_target = None
         self.skin_prev_rect = QRect()
@@ -10193,6 +10391,7 @@ class OnDemandOverlay(QWidget):
         self._vault_perf_update_count = 0
         self._vault_perf_update_window_started = time.perf_counter()
         self._rendering_vault_placeholder_cache = False
+        self._fade_init()
         self.hide()
 
     def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
@@ -10216,6 +10415,7 @@ class OnDemandOverlay(QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
+        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -10365,6 +10565,8 @@ class OnDemandOverlay(QWidget):
         active = active or moved
         self.filter_scroll_offset, moved = self.ease_toward(self.filter_scroll_offset, self.filter_scroll_target, factor=0.26, snap=1.0)
         active = active or moved
+        self.grid_vertical_offset, moved = self.ease_toward(self.grid_vertical_offset, self.grid_vertical_target, factor=scroll_factor, snap=scroll_snap)
+        active = active or moved
         for key in list(set(self.home_row_offsets.keys()) | set(self.home_row_targets.keys())):
             current = self.home_row_offsets.get(key, 0.0)
             target = self.home_row_targets.get(key, 0.0)
@@ -10513,6 +10715,7 @@ class OnDemandOverlay(QWidget):
         theme = app_theme(self.theme_name, self.skin_name, mode=self.sleek_mode)
         profile = GUIDE_PROFILES[self.profile_name]
         painter = QPainter(self)
+        painter.setOpacity(self.fade_opacity())
         full_background = theme.get("vault_page_bg", theme.get("vault_panel_bg", theme["bg"]))
         painter.fillRect(
             self.rect(),
@@ -10786,6 +10989,8 @@ class OnDemandOverlay(QWidget):
         view = self.state.get("view", "home")
         if view == "home":
             self.draw_sleek_vault_home(painter, inner, header_rect, footer_rect, theme)
+        elif view == "grid":
+            self.draw_sleek_vault_grid(painter, inner, header_rect, footer_rect, theme)
         else:
             self.draw_sleek_vault_detail(painter, inner, header_rect, footer_rect, theme)
 
@@ -11011,6 +11216,131 @@ class OnDemandOverlay(QWidget):
         self.draw_sleek_vault_hero(painter, hero_rect, self.state.get("hero", {}), theme, compact=compact_hero)
         if sections:
             self.draw_sleek_vault_filter_row(painter, chips_rect, sections, theme)
+
+    def draw_sleek_vault_grid(self, painter, inner, header_rect, footer_rect, theme):
+        self.grid_card_hit_rects = []
+        grid_cards = self.state.get("grid_cards", [])
+        grid_type = self.state.get("grid_type", "movies")
+        grid_row = int(self.state.get("grid_row", 0))
+        grid_col = int(self.state.get("grid_col", 0))
+        cols = int(self.state.get("grid_cols", 4))
+        is_focused = not self.state.get("nav_focused", False) and not self.settings_open
+
+        panel_bg = theme.get("vault_panel_bg", theme.get("guide_panel_bg", theme["guide_hero_panel_bg"]))
+        primary = theme.get("vault_primary_text", theme["guide_primary_text"])
+        secondary = theme.get("vault_secondary_text", theme["guide_secondary_text"])
+
+        side = self.sleek_metric(24, 14, 36)
+        gap = self.sleek_metric(14, 9, 20)
+        top_pad = self.sleek_metric(14, 10, 20)
+
+        viewport = self.vault_content_viewport(inner, header_rect.bottom() + top_pad, footer_rect, left=inner.left() + side, width=inner.width() - side * 2)
+        if viewport.isEmpty():
+            return
+
+        if not grid_cards:
+            empty_label = "No movies in your Vault yet." if grid_type == "movies" else "No shows in your Vault yet."
+            painter.save()
+            painter.setFont(self.sleek_font(theme, 15, QFont.DemiBold, 12, 18))
+            painter.setPen(with_alpha(secondary, 180))
+            painter.drawText(viewport, Qt.AlignCenter | Qt.TextWordWrap, empty_label)
+            painter.restore()
+            self.fill_vault_reserved_space(painter, inner, footer_rect, theme)
+            return
+
+        total_card_w = (viewport.width() - gap * (cols - 1))
+        card_w = max(self.sleek_metric(120, 90, 180), total_card_w // cols)
+        card_h = int(card_w * 1.52)
+        label_h = self.sleek_metric(22, 17, 28)
+        sub_h = self.sleek_metric(16, 13, 20)
+        cell_h = card_h + self.sleek_metric(6, 4, 8) + label_h + self.sleek_metric(3, 2, 4) + sub_h + gap
+
+        total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+        total_content_h = total_rows * cell_h - gap
+        max_scroll = max(0.0, float(total_content_h - viewport.height()))
+
+        target_row_top = float(grid_row * cell_h)
+        target_scroll = max(0.0, min(max_scroll, target_row_top - viewport.height() * 0.3))
+        if abs(target_scroll - self.grid_vertical_target) > 0.5:
+            self.grid_vertical_target = target_scroll
+            if self.vault_selection_animates():
+                self.start_stream_animation()
+            else:
+                self.grid_vertical_offset = target_scroll
+        draw_offset = self.grid_vertical_offset if self.vault_selection_animates() else target_scroll
+        draw_offset = max(0.0, min(max_scroll, draw_offset))
+
+        painter.save()
+        painter.setClipRect(viewport, Qt.IntersectClip)
+        painter.setRenderHint(QPainter.Antialiasing)
+
+        radius = theme.get("vault_card_radius", theme.get("cell_radius", 8))
+        cable = self.skin_style() == "cable"
+
+        first_row = max(0, int(draw_offset / cell_h) - 1)
+        last_row = min(total_rows - 1, int((draw_offset + viewport.height()) / cell_h) + 1)
+
+        for row in range(first_row, last_row + 1):
+            for col in range(cols):
+                flat = row * cols + col
+                if flat >= len(grid_cards):
+                    break
+                card_data = grid_cards[flat]
+                x = viewport.left() + col * (card_w + gap)
+                y = viewport.top() + row * cell_h - int(round(draw_offset))
+                art_rect = QRect(x, y, card_w, card_h)
+
+                cell_focused = is_focused and row == grid_row and col == grid_col
+                hovered = self.hover_target == ("grid_card", row, col)
+                focus_amount = 1.0 if cell_focused else (0.22 if hovered else 0.0)
+
+                if focus_amount > 0.01:
+                    painter.setOpacity(focus_amount)
+                    painter.setPen(QPen(theme.get("vault_focus_glow", theme["guide_glow"]), self.sleek_metric(7, 4, 9)))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawRoundedRect(art_rect.adjusted(2, 2, -2, -2), radius, radius)
+                    painter.setOpacity(1.0)
+
+                border_col = blend_color(
+                    theme.get("vault_card_border", theme["guide_card_border"]),
+                    theme.get("vault_card_selected_border", theme["guide_card_selected_border"]),
+                    focus_amount,
+                )
+                painter.setPen(QPen(border_col, 2 if cell_focused else 1))
+                painter.setBrush(theme.get("vault_card_bg", theme["guide_card_bg"]))
+                if cable:
+                    painter.drawRect(art_rect)
+                else:
+                    painter.drawRoundedRect(art_rect, radius, radius)
+
+                self.draw_streaming_art_placeholder(
+                    painter, art_rect,
+                    card_data.get("title", ""), card_data.get("badge", ""),
+                    theme, card_data.get("artwork_path", ""),
+                    fit_mode="cover", show_badge=False, radius=radius,
+                )
+
+                title_y = y + card_h + self.sleek_metric(6, 4, 8)
+                title_rect = QRect(x, title_y, card_w, label_h)
+                painter.setFont(self.sleek_font(theme, 11, QFont.Bold, 9, 14))
+                painter.setPen(primary)
+                fm = QFontMetrics(painter.font())
+                painter.drawText(title_rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine, fm.elidedText(card_data.get("title", ""), Qt.ElideRight, title_rect.width()))
+
+                sub_y = title_y + label_h + self.sleek_metric(3, 2, 4)
+                sub_rect = QRect(x, sub_y, card_w, sub_h)
+                painter.setFont(self.sleek_font(theme, 9, QFont.DemiBold, 7, 11))
+                painter.setPen(with_alpha(secondary, 180))
+                sub_text = card_data.get("subtitle", "") or card_data.get("meta", "")
+                fm2 = QFontMetrics(painter.font())
+                painter.drawText(sub_rect, Qt.AlignLeft | Qt.AlignVCenter | Qt.TextSingleLine, fm2.elidedText(sub_text, Qt.ElideRight, sub_rect.width()))
+
+                screen_rect = self.map_interactive_rect(art_rect)
+                self.grid_card_hit_rects.append((screen_rect, row, col))
+
+        painter.restore()
+        self.draw_vault_bottom_fade(painter, viewport, theme)
+        self.fill_vault_reserved_space(painter, inner, footer_rect, theme)
 
     def draw_sleek_vault_hero(self, painter, rect, detail, theme, compact=False):
         painter.save()
@@ -11573,8 +11903,6 @@ class OnDemandOverlay(QWidget):
     def draw_sleek_vault_filter_row(self, painter, rect, sections, theme):
         options = self.state.get("filter_options", []) or [
             {"key": "featured", "label": "Featured"},
-            {"key": "movies", "label": "Movies"},
-            {"key": "series", "label": "Series"},
             {"key": "recently-added", "label": "Recently Added"},
             {"key": "my-vault", "label": "My Vault"},
             {"key": "random", "label": "Surprise me"},
@@ -12035,11 +12363,11 @@ class OnDemandOverlay(QWidget):
         if compact:
             painter.restore()
             return
-        # Clip summary so it never runs into the action button area (pinned to copy_rect.bottom()).
+        # Fill all available space between subtitle and action-button reserve so
+        # longer show descriptions wrap rather than being cut short.
         _action_reserve = self.sleek_metric(62, 48, 78)
         _sum_top = meta_rect.bottom() + self.sleek_metric(12, 8, 16)
-        _sum_max_h = max(0, copy_rect.bottom() - _sum_top - _action_reserve)
-        _sum_h = min(self.sleek_metric(58, 42, 76), _sum_max_h)
+        _sum_h = max(0, copy_rect.bottom() - _sum_top - _action_reserve)
         if _sum_h >= self.sleek_metric(14, 12, 18):
             summary_rect = QRect(copy_rect.left(), _sum_top, copy_rect.width(), _sum_h)
             painter.save()
@@ -13956,7 +14284,8 @@ class OnDemandOverlay(QWidget):
             if rect.contains(pos):
                 target = ("nav", index)
                 break
-        if target is None and self.state.get("view") == "home":
+        _view = self.state.get("view", "home")
+        if target is None and _view == "home":
             for rect, action_key in self.hero_action_hit_rects:
                 if rect.contains(pos):
                     target = ("hero", action_key)
@@ -13971,6 +14300,11 @@ class OnDemandOverlay(QWidget):
                     if rect.contains(pos):
                         target = ("card", section_index, item_index)
                         break
+        elif target is None and _view == "grid":
+            for rect, row, col in self.grid_card_hit_rects:
+                if rect.contains(pos):
+                    target = ("grid_card", row, col)
+                    break
         elif target is None:
             for rect, action_index in getattr(self, "detail_action_hit_rects", []):
                 if rect.contains(pos):
@@ -14054,6 +14388,12 @@ class OnDemandOverlay(QWidget):
             for rect, section_index, item_index in self.home_card_hit_rects:
                 if rect.contains(pos):
                     self.homeCardRequested.emit(section_index, item_index)
+                    event.accept()
+                    return
+        elif self.state.get("view") == "grid":
+            for rect, row, col in self.grid_card_hit_rects:
+                if rect.contains(pos):
+                    self.gridCardRequested.emit(row, col)
                     event.accept()
                     return
         super().mousePressEvent(event)
@@ -14548,7 +14888,7 @@ class OnDemandOverlay(QWidget):
         painter.restore()
 
 
-class InfoOverlay(QWidget):
+class InfoOverlay(OverlayFadeMixin, QWidget):
     uiScaleStepRequested = Signal(int)
 
     def __init__(self, parent=None):
@@ -14562,6 +14902,7 @@ class InfoOverlay(QWidget):
         self.state = {}
         self.settings_open = False
         self.settings_values = {}
+        self._fade_init()
         self.hide()
 
     def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
@@ -14582,6 +14923,7 @@ class InfoOverlay(QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
+        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -14597,6 +14939,7 @@ class InfoOverlay(QWidget):
 
         theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
+        painter.setOpacity(self.fade_opacity())
         if self.skin_style() == "cable":
             self.draw_set_top_box_info_overlay(painter, theme)
             return
@@ -18845,7 +19188,7 @@ class NextUpOverlay(QWidget):
         painter.drawText(badge, Qt.AlignCenter, f"Playing in {countdown}")
 
 
-class TransportOverlay(QWidget):
+class TransportOverlay(OverlayFadeMixin, QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -18857,6 +19200,7 @@ class TransportOverlay(QWidget):
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.hide)
+        self._fade_init()
         self.hide()
 
     def configure(self, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT):
@@ -18872,6 +19216,7 @@ class TransportOverlay(QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
+        self.start_fade_in()
         self.raise_()
         self.update()
         self.timer.start(1500)
@@ -18880,6 +19225,7 @@ class TransportOverlay(QWidget):
         if not self.state:
             return
         painter = QPainter(self)
+        painter.setOpacity(self.fade_opacity())
         theme = app_theme(self.theme_name, self.skin_name)
         target_rect = overlay_target_rect(self)
 
@@ -19037,6 +19383,8 @@ class ChannelLogoOverridesDialog(QDialog):
         body.addWidget(right_scroll, 1)
 
         right = QWidget()
+        right.setObjectName("dialogScrollContent")
+        right.setAttribute(Qt.WA_StyledBackground, True)
         right_scroll.setWidget(right)
         self._right_layout = QVBoxLayout(right)
         self._right_layout.setContentsMargins(0, 0, 0, 12)
@@ -19385,6 +19733,8 @@ class CommercialOverridesDialog(QDialog):
         body.addWidget(self.channel_list, 0)
 
         right = QWidget()
+        right.setObjectName("dialogScrollContent")
+        right.setAttribute(Qt.WA_StyledBackground, True)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
@@ -19635,6 +19985,8 @@ class AdvancedCommercialSettingsDialog(QDialog):
         outer.addWidget(title)
 
         content = QWidget()
+        content.setObjectName("dialogScrollContent")
+        content.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(14)
@@ -20080,6 +20432,10 @@ class AdvancedConfigDialog(QDialog):
 
     def build_scroll_tab(self, content):
         container = QWidget()
+        container.setObjectName("advScrollContainer")
+        container.setAttribute(Qt.WA_StyledBackground, True)
+        content.setObjectName("advPageContent")
+        content.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -20223,6 +20579,8 @@ class AdvancedConfigDialog(QDialog):
 
     def build_my_catalog_tab(self):
         content = QWidget()
+        content.setObjectName("advPageContent")
+        content.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(14)
@@ -20260,6 +20618,8 @@ class AdvancedConfigDialog(QDialog):
         catalog_layout.addWidget(header)
 
         self.catalog_rows_widget = QWidget()
+        self.catalog_rows_widget.setObjectName("advPageContent")
+        self.catalog_rows_widget.setAttribute(Qt.WA_StyledBackground, True)
         self.catalog_rows_layout = QVBoxLayout(self.catalog_rows_widget)
         self.catalog_rows_layout.setContentsMargins(0, 0, 0, 0)
         self.catalog_rows_layout.setSpacing(8)
@@ -21706,6 +22066,7 @@ class VideoSurface(QWidget):
 class ChannelSurfer(QWidget):
     commercialWarmScanFinished = Signal(int, str, str, list)
     youtubeStreamResolved = Signal(int, dict, str, str, float)
+    episodeThumbnailReady = Signal(str)
 
     def __init__(self):
         super().__init__()
@@ -22063,6 +22424,7 @@ class ChannelSurfer(QWidget):
         self.video_window.on_demand_overlay.footerNavRequested.connect(lambda index: self.activate_universal_nav("vault", index))
         self.video_window.on_demand_overlay.settingsCloseRequested.connect(self.close_on_demand_settings)
         self.video_window.on_demand_overlay.homeCardRequested.connect(self.open_on_demand_home_card)
+        self.video_window.on_demand_overlay.gridCardRequested.connect(self.handle_on_demand_grid_card)
         self.video_window.on_demand_overlay.heroActionRequested.connect(self.handle_on_demand_hero_action)
         self.video_window.on_demand_overlay.filterActionRequested.connect(self.handle_on_demand_filter_action)
         self.video_window.on_demand_overlay.upRequested.connect(self.on_demand_up)
@@ -22093,10 +22455,15 @@ class ChannelSurfer(QWidget):
         self.guide_rows_cache = {}
         self.program_metadata_memory_cache = {}
         self.media_thumbnail_cache = {}
+        self._thumb_in_flight = set()
         self.perf_last_summary_at = 0.0
         self.on_demand_render_sections = []
         self.on_demand_last_open_request = None
         self.on_demand_view = "home"
+        self.on_demand_prev_view = "home"
+        self.on_demand_grid_type = "movies"
+        self.on_demand_grid_row = 0
+        self.on_demand_grid_col = 0
         self.on_demand_menu_index = 0
         self.on_demand_channel_index = 0
         self.on_demand_group_index = 0
@@ -22120,6 +22487,7 @@ class ChannelSurfer(QWidget):
         self.on_demand_settings_open = False
         self.on_demand_settings_focus_index = 0
         self.playback_mode = "live"
+        self.sleep_preventer = SleepPreventer()
         self.current_on_demand_path = None
         self.live_info_nav_focused = False
         self.live_info_nav_index = 1
@@ -22251,6 +22619,7 @@ class ChannelSurfer(QWidget):
         self.live_stall_timer.setInterval(2000)
         self.live_stall_timer.timeout.connect(self.check_live_playback_health)
         self.youtubeStreamResolved.connect(self.on_youtube_stream_resolved)
+        self.episodeThumbnailReady.connect(self.on_episode_thumbnail_ready)
         self.profile_combo.currentTextChanged.connect(self.apply_display_settings)
         self.theme_combo.currentTextChanged.connect(self.apply_display_settings)
         self.skin_combo.currentTextChanged.connect(self.on_skin_changed)
@@ -22284,8 +22653,7 @@ class ChannelSurfer(QWidget):
             f"Put channel folders inside the Channels subfolder, then press Choose Catalog…"
         )
         self.status.setText(
-            f"First run — press Open MediaWave Folder to see your media folder, "
-            f"or press Choose Catalog… to use an existing library."
+            "First run — press Choose Catalog… to point MediaWave at your library."
         )
 
     @Slot()
@@ -22990,7 +23358,14 @@ class ChannelSurfer(QWidget):
         self.catalog_progress_last_pump = 0.0
         self.catalog_progress_started_at = time.time()
         self.loading_stage.setText("Preparing catalog scan")
-        self.loading_detail.setText(compact_status_detail(folder, 112))
+        is_first_parse = not bool(getattr(self, "duration_cache", None))
+        if is_first_parse:
+            self.loading_detail.setText(
+                "First-time catalog parsing can take a little while depending on the size of your library. "
+                "Grab some carrots and apple juice while MediaWave gets everything ready."
+            )
+        else:
+            self.loading_detail.setText(compact_status_detail(folder, 112))
         self.loading_progress.setMaximum(max(1, total_channels))
         self.loading_progress.setValue(0)
         self.loading_progress.setFormat("%v / %m channels")
@@ -24747,9 +25122,20 @@ class ChannelSurfer(QWidget):
                 metadata = self.get_program_metadata_local(path)
                 hierarchy = infer_on_demand_structure(path, getattr(channel, "root_path", ""))
                 media_type = metadata.get("media_type", "movie")
-                group_name = hierarchy.get("group_label") or metadata.get("show_name") or metadata.get("timeline_title") or format_program_title(path)
+                raw_group_label = hierarchy.get("group_label") or ""
                 section_label = hierarchy.get("section_label") or metadata.get("season_label") or ""
-                if hierarchy.get("group_label"):
+                if raw_group_label and media_type == "movie":
+                    file_title = metadata.get("timeline_title") or format_program_title(path)
+                    if _folder_is_genre_category(normalize_title(raw_group_label), normalize_title(file_title)):
+                        # Genre/category folder — use the title subfolder name if present, else filename
+                        group_name = section_label or metadata.get("show_name") or file_title
+                        section_label = ""
+                        raw_group_label = ""
+                    else:
+                        group_name = raw_group_label
+                else:
+                    group_name = raw_group_label or metadata.get("show_name") or metadata.get("timeline_title") or format_program_title(path)
+                if raw_group_label:
                     group_key = f"group::{normalize_title(group_name)}"
                 elif media_type == "tv":
                     group_key = f"tv::{normalize_title(group_name)}"
@@ -25648,6 +26034,7 @@ class ChannelSurfer(QWidget):
         if not self.channels:
             self.status.setText("Load a catalog to start surfing channels.")
             return
+        self.sleep_preventer.acquire()
 
         # Do not steal focus during auto-advances when the user has switched away.
         # Only raise/activate the window when this is an explicit user action.
@@ -27017,41 +27404,68 @@ class ChannelSurfer(QWidget):
                 })
                 continue
 
+            # Build guide slots, merging commercial/break entries into adjacent
+            # content slots so the guide shows continuous program blocks (real cable
+            # behaviour) rather than tiny commercial fragment cells.
             slot_data = []
+            pending_start = None  # leading commercial before first content in window
             for program in programs:
-                metadata = self.get_program_metadata(program["path"])
-                slot_data.append(
-                    {
+                entry = program.get("entry") or {}
+                is_break = entry.get("is_commercial") or entry.get("kind") in {
+                    "commercial", "promo", "bumper", "station_id"
+                }
+                if is_break:
+                    if slot_data:
+                        # Extend the previous content slot to absorb this break.
+                        slot_data[-1]["end"] = program["end"]
+                    else:
+                        # Commercial precedes first content in window — note its
+                        # start so the first content slot can claim that time.
+                        if pending_start is None:
+                            pending_start = program["start"]
+                else:
+                    metadata = self.get_program_metadata(program["path"])
+                    slot_start = pending_start if pending_start is not None else program["start"]
+                    pending_start = None
+                    slot_data.append({
                         "title": metadata.get("timeline_title", program["title"]),
-                        "time": time.strftime("%I:%M %p", time.localtime(program["start"])).lstrip("0"),
-                        "start": program["start"],
+                        "time": time.strftime("%I:%M %p", time.localtime(slot_start)).lstrip("0"),
+                        "start": slot_start,
                         "end": program["end"],
                         "path": program["path"],
-                    }
-                )
+                    })
 
-            detail_program = programs[0]
+            if not slot_data:
+                slot_data = [{
+                    "title": channel.name,
+                    "time": time.strftime("%I:%M %p", time.localtime(timeline_start)).lstrip("0"),
+                    "start": timeline_start,
+                    "end": timeline_start + (30 * 60),
+                    "path": "",
+                }]
+
+            detail_slot = slot_data[0]
             detail_slot_index = 0
             # Prefer the slot containing the real current time (live accuracy),
             # so a show that started at e.g. 9:20 is correctly highlighted even
             # when timeline_start is floored to 9:00.
             _now = time.time()
             _now_found = False
-            for _slot_i, _slot_prog in enumerate(programs):
-                if _slot_prog["start"] <= _now < _slot_prog["end"]:
-                    detail_program = _slot_prog
+            for _slot_i, _slot in enumerate(slot_data):
+                if _slot["start"] <= _now < _slot["end"]:
+                    detail_slot = _slot
                     detail_slot_index = _slot_i
                     _now_found = True
                     break
             if not _now_found:
                 # Browsing a future/past window: highlight first slot overlapping timeline_start
-                for _slot_i, _slot_prog in enumerate(programs):
-                    if _slot_prog["end"] > timeline_start:
-                        detail_program = _slot_prog
+                for _slot_i, _slot in enumerate(slot_data):
+                    if _slot["end"] > timeline_start:
+                        detail_slot = _slot
                         detail_slot_index = _slot_i
                         break
-            detail_metadata = self.get_program_metadata(detail_program["path"])
-            detail_is_live = detail_program["start"] <= time.time() < detail_program["end"]
+            detail_metadata = self.get_program_metadata(detail_slot["path"])
+            detail_is_live = detail_slot["start"] <= time.time() < detail_slot["end"]
             if detail_is_live:
                 detail_status = "ON NOW  •  Press ENTER to tune in"
             else:
@@ -27067,12 +27481,12 @@ class ChannelSurfer(QWidget):
                 "next_time": time.strftime("%I:%M %p", time.localtime(info["current_end"])).lstrip("0"),
                 "slots": slot_data,
                 "detail_slot_index": detail_slot_index,
-                "detail_title": detail_metadata.get("detail_title", detail_program["title"]),
-                "detail_path": detail_program["path"],
+                "detail_title": detail_metadata.get("detail_title", detail_slot["title"]),
+                "detail_path": detail_slot["path"],
                 "detail_is_live": detail_is_live,
                 "detail_status": detail_status,
-                "detail_time": format_clock_range(detail_program["start"], detail_program["end"]),
-                "detail_summary": detail_metadata.get("detail_summary") or self.build_guide_summary(channel.name, detail_program["title"]),
+                "detail_time": format_clock_range(detail_slot["start"], detail_slot["end"]),
+                "detail_summary": detail_metadata.get("detail_summary") or self.build_guide_summary(channel.name, detail_slot["title"]),
                 "summary": self.build_guide_summary(channel.name, info["current_title"]),
             })
         perf_log("guide.rows.build", (time.perf_counter() - started_at) * 1000.0, rows=len(rows), timeline=int(timeline_start))
@@ -27469,6 +27883,26 @@ class ChannelSurfer(QWidget):
         self.refresh_on_demand()
 
     @Slot(int, int)
+    @Slot(int, int)
+    def handle_on_demand_grid_card(self, row, col):
+        if not self.video_window.on_demand_overlay.isVisible():
+            return
+        self.on_demand_grid_row = row
+        self.on_demand_grid_col = col
+        state = self.build_on_demand_state()
+        grid_cards = state.get("grid_cards", [])
+        cols = int(state.get("grid_cols", 4))
+        flat = row * cols + col
+        if not grid_cards or not (0 <= flat < len(grid_cards)):
+            return
+        card = grid_cards[flat]
+        ch_idx = card.get("channel_index")
+        gr_idx = card.get("group_index")
+        if ch_idx is None or gr_idx is None:
+            return
+        self.open_on_demand_group(int(ch_idx), int(gr_idx), 0, focus="actions")
+        self.refresh_on_demand()
+
     def open_on_demand_home_card(self, section_index, item_index):
         def log_return(reason, **fields):
             self.log_vault_select("open_home_card_return", reason=reason, **fields)
@@ -27628,7 +28062,7 @@ class ChannelSurfer(QWidget):
             current = int(self.on_demand_section_item_indices.get(idx, 0))
             self.on_demand_section_item_indices[idx] = max(0, min(current, max(0, len(items) - 1))) if items else 0
 
-        if self.on_demand_view != "home":
+        if self.on_demand_view not in {"home", "grid"}:
             channel = self.current_on_demand_channel()
             group = self.current_on_demand_group()
             if (not channel or not group) and self.repair_on_demand_open_request():
@@ -27914,8 +28348,6 @@ class ChannelSurfer(QWidget):
     def on_demand_filter_options(self):
         return [
             {"key": "featured", "label": "Featured"},
-            {"key": "movies", "label": "Movies"},
-            {"key": "series", "label": "Series"},
             {"key": "recently-added", "label": "Recently Added"},
             {"key": "my-vault", "label": "My Vault"},
             {"key": "random", "label": "Surprise me"},
@@ -27958,12 +28390,46 @@ class ChannelSurfer(QWidget):
             return
         hero = self.video_window.on_demand_overlay.state.get("hero", {})
         card = dict(hero)
+        if action in {"browse_movies", "browse_series"}:
+            self.on_demand_grid_type = "movies" if action == "browse_movies" else "series"
+            self.on_demand_grid_row = 0
+            self.on_demand_grid_col = 0
+            overlay = self.video_window.on_demand_overlay
+            overlay.grid_vertical_offset = 0.0
+            overlay.grid_vertical_target = 0.0
+            self.on_demand_prev_view = "home"
+            self.on_demand_view = "grid"
+            self.on_demand_nav_focused = False
+            self.refresh_on_demand()
+            return
         if action == "random":
+            # Hero "Surprise Me" — I'm Feeling Lucky: jump straight into playback.
             cards = self.all_on_demand_group_cards()
             if cards:
-                card = random.choice(cards)
-                self.open_on_demand_group(card["channel_index"], card["group_index"], 0, focus="actions")
-                self.refresh_on_demand()
+                # Shuffle once so retries don't repeat the same broken item.
+                pool = list(cards)
+                random.shuffle(pool)
+                for candidate in pool:
+                    ch_idx = candidate.get("channel_index")
+                    gr_idx = candidate.get("group_index")
+                    if ch_idx is None or gr_idx is None:
+                        continue
+                    try:
+                        group = self.on_demand_catalog[ch_idx]["groups"][gr_idx]
+                    except (IndexError, KeyError, TypeError):
+                        continue
+                    items = group.get("items", [])
+                    playable = [
+                        it for it in items
+                        if it.get("path")
+                        and not str(it["path"]).startswith("dummy://")
+                        and os.path.isfile(it["path"])
+                    ]
+                    if not playable:
+                        continue
+                    chosen = random.choice(playable)
+                    self.play_on_demand(chosen["path"], 0)
+                    return
             return
         if action == "info":
             if card.get("type") == "resume" and card.get("path"):
@@ -28303,22 +28769,22 @@ class ChannelSurfer(QWidget):
                 self.on_demand_item_index = next_index
                 return True
             return False
-        flat_indices = []
-        for season in seasons:
-            flat_indices.extend(season.get("item_indices", []))
-        if not flat_indices:
+        # Constrain movement to the currently selected season. Season changes
+        # are explicit via the season selector, not implicit via scrolling past
+        # the first/last episode (which felt jarring).
+        season_index = max(0, min(int(self.on_demand_season_index), len(seasons) - 1))
+        season_indices = seasons[season_index].get("item_indices", [])
+        if not season_indices:
             return False
-        if self.on_demand_item_index not in flat_indices:
-            self.on_demand_item_index = flat_indices[0]
-            self.sync_on_demand_season_to_item(seasons)
+        if self.on_demand_item_index not in season_indices:
+            self.on_demand_item_index = season_indices[0]
             return True
-        current = flat_indices.index(self.on_demand_item_index)
-        next_flat = current + int(direction)
-        if not (0 <= next_flat < len(flat_indices)):
+        current_pos = season_indices.index(self.on_demand_item_index)
+        next_pos = current_pos + int(direction)
+        if not (0 <= next_pos < len(season_indices)):
             return False
         self.remember_on_demand_season_focus(seasons)
-        self.on_demand_item_index = flat_indices[next_flat]
-        self.sync_on_demand_season_to_item(seasons)
+        self.on_demand_item_index = season_indices[next_pos]
         return True
 
     def current_live_program(self):
@@ -28896,8 +29362,9 @@ class ChannelSurfer(QWidget):
                 "type": hero_card.get("type", "group"),
                 "actions": [
                     {"label": "Resume" if hero_card.get("progress", 0.0) > 0 else "Play", "action": "resume"},
-                    {"label": "Start Over", "action": "start_over"},
                     {"label": "Info", "action": "info"},
+                    {"label": "Movies", "action": "browse_movies"},
+                    {"label": "Shows", "action": "browse_series"},
                     {"label": "Surprise me", "action": "random"},
                 ],
             }
@@ -28917,6 +29384,27 @@ class ChannelSurfer(QWidget):
                 "hero_compact": self.on_demand_home_focus == "rows" and self.on_demand_section_index > 0,
             }
             perf_log("vault.state.build", (time.perf_counter() - started_at) * 1000.0, view="home", sections=len(sections))
+            return state
+
+        if self.on_demand_view == "grid":
+            target_media_type = "movie" if self.on_demand_grid_type == "movies" else "tv"
+            all_cards = self.all_on_demand_group_cards()
+            grid_cards = [c for c in all_cards if c.get("media_type") == target_media_type]
+            cols = 4
+            total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+            self.on_demand_grid_row = max(0, min(int(self.on_demand_grid_row), total_rows - 1))
+            row_max_col = min(cols - 1, max(0, len(grid_cards) - self.on_demand_grid_row * cols - 1))
+            self.on_demand_grid_col = max(0, min(int(self.on_demand_grid_col), row_max_col))
+            state = {
+                **base_state,
+                "view": "grid",
+                "grid_type": self.on_demand_grid_type,
+                "grid_cards": grid_cards,
+                "grid_row": self.on_demand_grid_row,
+                "grid_col": self.on_demand_grid_col,
+                "grid_cols": cols,
+            }
+            perf_log("vault.state.build", (time.perf_counter() - started_at) * 1000.0, view="grid", cards=len(grid_cards))
             return state
 
         self.on_demand_render_sections = []
@@ -28963,7 +29451,15 @@ class ChannelSurfer(QWidget):
         selected_path = selected_episode.get("path") if selected_episode else (items[0]["path"] if items else "")
         resume_entry = self.resume_state.get("entries", {}).get(selected_path, {})
         resume_ms = int(resume_entry.get("position_ms", 0) or 0)
-        episode_thumbnail = QPixmap() if str(selected_path).startswith("dummy://") else (self.get_media_thumbnail(selected_path) if selected_path else QPixmap())
+        if selected_path and not str(selected_path).startswith("dummy://"):
+            episode_thumbnail = self.load_episode_thumbnail(selected_path)
+            if episode_thumbnail.isNull():
+                # Queue background extraction at the midpoint of the episode.
+                _ep_dur = float(self.duration_cache.get(selected_path, 0) or 0)
+                _ep_offset = (_ep_dur / 2.0) if _ep_dur > 0 else 30.0
+                self.request_episode_thumbnail(selected_path, _ep_offset)
+        else:
+            episode_thumbnail = QPixmap()
         media_type = "tv" if any(item.get("media_type") == "tv" for item in items) else "movie"
         watchlisted = self.is_on_demand_group_watchlisted(self.on_demand_channel_index, self.on_demand_group_index)
         action_label = "Resume" if resume_ms > 0 else "Play"
@@ -29116,6 +29612,7 @@ class ChannelSurfer(QWidget):
                     self.on_demand_season_index = idx
                     break
 
+            self.on_demand_prev_view = self.on_demand_view
             self.on_demand_view = "detail"
             self.on_demand_nav_focused = False
             self.on_demand_back_focused = False
@@ -29242,7 +29739,9 @@ class ChannelSurfer(QWidget):
         if self.on_demand_view == "home":
             self.hide_on_demand()
             return
-        self.on_demand_view = "home"
+        prev = getattr(self, "on_demand_prev_view", "home")
+        self.on_demand_view = prev if prev in {"home", "grid"} else "home"
+        self.on_demand_prev_view = "home"
         self.on_demand_back_focused = False
         self.on_demand_nav_focused = False
         self.refresh_on_demand()
@@ -29326,6 +29825,14 @@ class ChannelSurfer(QWidget):
                         self.on_demand_detail_focus = "actions"
                 else:
                     self.on_demand_detail_focus = "episodes" if seasons or (group and group.get("items")) else "actions"
+            self.refresh_on_demand()
+            return
+        if self.on_demand_view == "grid":
+            if self.on_demand_grid_row > 0:
+                self.on_demand_grid_row -= 1
+            else:
+                self.on_demand_back()
+                return
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
@@ -29414,6 +29921,19 @@ class ChannelSurfer(QWidget):
             overlay.episode_list_target = 0.0
             self.refresh_on_demand()
             return
+        if self.on_demand_view == "grid":
+            state = self.build_on_demand_state()
+            grid_cards = state.get("grid_cards", [])
+            cols = int(state.get("grid_cols", 4))
+            total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+            if self.on_demand_grid_row < total_rows - 1:
+                next_row = self.on_demand_grid_row + 1
+                row_start = next_row * cols
+                row_max_col = min(cols - 1, max(0, len(grid_cards) - row_start - 1))
+                self.on_demand_grid_row = next_row
+                self.on_demand_grid_col = min(self.on_demand_grid_col, row_max_col)
+            self.refresh_on_demand()
+            return
         if self.on_demand_view == "home":
             sections = self.build_on_demand_home_sections()
             if self.on_demand_home_focus == "hero":
@@ -29471,6 +29991,18 @@ class ChannelSurfer(QWidget):
                 self.on_demand_nav_index -= 1
             self.refresh_on_demand()
             return
+        if self.on_demand_view == "grid":
+            if self.on_demand_grid_col > 0:
+                self.on_demand_grid_col -= 1
+            elif self.on_demand_grid_row > 0:
+                self.on_demand_grid_row -= 1
+                state = self.build_on_demand_state()
+                cols = int(state.get("grid_cols", 4))
+                grid_cards = state.get("grid_cards", [])
+                row_start = self.on_demand_grid_row * cols
+                self.on_demand_grid_col = min(cols - 1, max(0, len(grid_cards) - row_start - 1))
+            self.refresh_on_demand()
+            return
         moved = False
         if self.on_demand_view == "home":
             if self.on_demand_home_focus == "hero":
@@ -29524,6 +30056,24 @@ class ChannelSurfer(QWidget):
         if self.on_demand_nav_focused:
             if self.on_demand_nav_index < self.on_demand_nav_button_count() - 1:
                 self.on_demand_nav_index += 1
+            self.refresh_on_demand()
+            return
+        if self.on_demand_view == "grid":
+            state = self.build_on_demand_state()
+            cols = int(state.get("grid_cols", 4))
+            grid_cards = state.get("grid_cards", [])
+            total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+            if self.on_demand_grid_col < cols - 1:
+                next_col = self.on_demand_grid_col + 1
+                flat = self.on_demand_grid_row * cols + next_col
+                if flat < len(grid_cards):
+                    self.on_demand_grid_col = next_col
+            elif self.on_demand_grid_row < total_rows - 1:
+                next_row = self.on_demand_grid_row + 1
+                row_start = next_row * cols
+                if row_start < len(grid_cards):
+                    self.on_demand_grid_row = next_row
+                    self.on_demand_grid_col = 0
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
@@ -29580,6 +30130,9 @@ class ChannelSurfer(QWidget):
             return
         if self.on_demand_nav_focused:
             self.activate_universal_nav("vault", self.on_demand_nav_index)
+            return
+        if self.on_demand_view == "grid":
+            self.handle_on_demand_grid_card(self.on_demand_grid_row, self.on_demand_grid_col)
             return
         if self.on_demand_view == "home":
             if self.on_demand_home_focus == "hero":
@@ -29703,6 +30256,7 @@ class ChannelSurfer(QWidget):
             self.status.setText("Dummy Vault listings are for navigation testing only.")
             self.refresh_on_demand()
             return
+        self.sleep_preventer.acquire()
         self.hide_info_banner()
         self.hide_guide()
         self.hide_on_demand()
@@ -29973,6 +30527,85 @@ class ChannelSurfer(QWidget):
         self.media_thumbnail_cache[path] = QPixmap()
         return QPixmap()
 
+    def episode_thumbnail_path(self, path):
+        """Disk cache path for the midpoint preview frame of an episode."""
+        return os.path.join(THUMBNAIL_DIR, f"{file_cache_signature(path)}_mid.jpg")
+
+    def load_episode_thumbnail(self, path):
+        """Return a cached midpoint thumbnail QPixmap without blocking.
+
+        Checks the in-memory cache first, then the disk cache.  Returns an
+        empty QPixmap if neither exists (caller should fire
+        request_episode_thumbnail to queue background extraction).
+        """
+        if not path or str(path).startswith("dummy://"):
+            return QPixmap()
+        cache_key = f"mid:{path}"
+        cached = self.media_thumbnail_cache.get(cache_key)
+        if cached is not None:
+            return cached
+        thumb_path = self.episode_thumbnail_path(path)
+        if os.path.isfile(thumb_path):
+            pixmap = load_ui_pixmap(thumb_path)
+            if not pixmap.isNull():
+                self.media_thumbnail_cache[cache_key] = pixmap
+                return pixmap
+        return QPixmap()
+
+    def request_episode_thumbnail(self, path, offset_seconds):
+        """Queue a background ffmpeg extraction for the episode at offset_seconds.
+
+        Safe to call from the main thread; does nothing if already in-flight or
+        already on disk.  Emits episodeThumbnailReady(path) when done so the
+        Vault can refresh.
+        """
+        if not path or not FFMPEG_PATH or str(path).startswith("dummy://"):
+            return
+        if not os.path.isfile(path):
+            return
+        cache_key = f"mid:{path}"
+        if self.media_thumbnail_cache.get(cache_key) is not None:
+            return
+        thumb_path = self.episode_thumbnail_path(path)
+        if os.path.isfile(thumb_path):
+            return
+        if path in self._thumb_in_flight:
+            return
+        self._thumb_in_flight.add(path)
+        offset = max(1.0, float(offset_seconds or 5.0))
+
+        def _worker():
+            try:
+                subprocess.run(
+                    [
+                        FFMPEG_PATH, "-y",
+                        "-ss", str(int(offset)),
+                        "-i", path,
+                        "-frames:v", "1",
+                        "-vf", "scale=320:-1",
+                        thumb_path,
+                    ],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    timeout=12,
+                )
+            except (subprocess.SubprocessError, OSError):
+                pass
+            finally:
+                self.episodeThumbnailReady.emit(path)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    @Slot(str)
+    def on_episode_thumbnail_ready(self, path):
+        """Called on the main thread when a background thumbnail extraction finishes."""
+        self._thumb_in_flight.discard(path)
+        # Evict the in-memory cache entry so the next state build reloads from disk.
+        cache_key = f"mid:{path}"
+        self.media_thumbnail_cache.pop(cache_key, None)
+        if self.video_window.on_demand_overlay.isVisible() and self.on_demand_view == "detail":
+            self.refresh_on_demand()
+
     def update_next_up_overlay(self):
         if self.playback_mode != "ondemand" or not self.current_on_demand_path:
             self.next_up_state = None
@@ -30087,6 +30720,7 @@ class ChannelSurfer(QWidget):
 
     def closeEvent(self, event):
         self.stop_player()
+        self.sleep_preventer.release()
         self.stop_radiowave_background()
         self.video_window.static.hide()
         save_json_file(RESUME_STATE_FILE, self.resume_state)
