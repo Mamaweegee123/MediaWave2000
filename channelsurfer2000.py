@@ -5235,6 +5235,9 @@ def build_themed_dialog_stylesheet(theme_name=DEFAULT_THEME_NAME, skin_name=DEFA
         QStackedWidget#advContentStack {{
             background: {c(_SW_BG)};
         }}
+        QWidget#advScrollContainer, QWidget#advPageContent, QWidget#dialogScrollContent {{
+            background: {c(_SW_BG)};
+        }}
         QWidget#advFooter {{
             background: {c(_SW_FOOTER_BG)};
             border-top: 1px solid {c(_SW_FOOTER_BORD)};
@@ -19037,6 +19040,8 @@ class ChannelLogoOverridesDialog(QDialog):
         body.addWidget(right_scroll, 1)
 
         right = QWidget()
+        right.setObjectName("dialogScrollContent")
+        right.setAttribute(Qt.WA_StyledBackground, True)
         right_scroll.setWidget(right)
         self._right_layout = QVBoxLayout(right)
         self._right_layout.setContentsMargins(0, 0, 0, 12)
@@ -19385,6 +19390,8 @@ class CommercialOverridesDialog(QDialog):
         body.addWidget(self.channel_list, 0)
 
         right = QWidget()
+        right.setObjectName("dialogScrollContent")
+        right.setAttribute(Qt.WA_StyledBackground, True)
         right_layout = QVBoxLayout(right)
         right_layout.setContentsMargins(0, 0, 0, 0)
         right_layout.setSpacing(10)
@@ -19635,6 +19642,8 @@ class AdvancedCommercialSettingsDialog(QDialog):
         outer.addWidget(title)
 
         content = QWidget()
+        content.setObjectName("dialogScrollContent")
+        content.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(14)
@@ -20080,6 +20089,10 @@ class AdvancedConfigDialog(QDialog):
 
     def build_scroll_tab(self, content):
         container = QWidget()
+        container.setObjectName("advScrollContainer")
+        container.setAttribute(Qt.WA_StyledBackground, True)
+        content.setObjectName("advPageContent")
+        content.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(container)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
@@ -20223,6 +20236,8 @@ class AdvancedConfigDialog(QDialog):
 
     def build_my_catalog_tab(self):
         content = QWidget()
+        content.setObjectName("advPageContent")
+        content.setAttribute(Qt.WA_StyledBackground, True)
         layout = QVBoxLayout(content)
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(14)
@@ -20260,6 +20275,8 @@ class AdvancedConfigDialog(QDialog):
         catalog_layout.addWidget(header)
 
         self.catalog_rows_widget = QWidget()
+        self.catalog_rows_widget.setObjectName("advPageContent")
+        self.catalog_rows_widget.setAttribute(Qt.WA_StyledBackground, True)
         self.catalog_rows_layout = QVBoxLayout(self.catalog_rows_widget)
         self.catalog_rows_layout.setContentsMargins(0, 0, 0, 0)
         self.catalog_rows_layout.setSpacing(8)
@@ -22284,8 +22301,7 @@ class ChannelSurfer(QWidget):
             f"Put channel folders inside the Channels subfolder, then press Choose Catalog…"
         )
         self.status.setText(
-            f"First run — press Open MediaWave Folder to see your media folder, "
-            f"or press Choose Catalog… to use an existing library."
+            "First run — press Choose Catalog… to point MediaWave at your library."
         )
 
     @Slot()
@@ -22990,7 +23006,14 @@ class ChannelSurfer(QWidget):
         self.catalog_progress_last_pump = 0.0
         self.catalog_progress_started_at = time.time()
         self.loading_stage.setText("Preparing catalog scan")
-        self.loading_detail.setText(compact_status_detail(folder, 112))
+        is_first_parse = not bool(getattr(self, "duration_cache", None))
+        if is_first_parse:
+            self.loading_detail.setText(
+                "First-time catalog parsing can take a little while depending on the size of your library. "
+                "Grab some carrots and apple juice while MediaWave gets everything ready."
+            )
+        else:
+            self.loading_detail.setText(compact_status_detail(folder, 112))
         self.loading_progress.setMaximum(max(1, total_channels))
         self.loading_progress.setValue(0)
         self.loading_progress.setFormat("%v / %m channels")
