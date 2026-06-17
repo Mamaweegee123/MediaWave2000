@@ -3809,8 +3809,9 @@ SKIN_NAME_ALIASES = {
 }
 
 THEME_NAME_ALIASES = {
-    "Purple": "Purple Passion",
-    "Purple Haze": "Purple Passion",
+    "Purple": "Grape Jelly",
+    "Purple Haze": "Grape Jelly",
+    "Purple Passion": "Grape Jelly",
     "Orange": "Tangerine Dream",
     "Clementine": "Tangerine Dream",
     "Slate Modern": "Millennial Grey",
@@ -3819,6 +3820,8 @@ THEME_NAME_ALIASES = {
     "Midnight Star": "Stars of Uranus",
     "Digital Cable Blue": "Blue Berry",
     "Cable Blue": "Blue Berry",
+    "Silver": "Iron Ingot",
+    "Olive": "Green Been",
 }
 
 GUIDE_THEME_DEFINITIONS = {
@@ -3902,7 +3905,7 @@ GUIDE_THEME_DEFINITIONS = {
             "pf_led_bg_bottom": QColor(22, 24, 24, 252),
             "pf_led_text": QColor(255, 92, 92, 255),
         },
-        "Silver": {
+        "Iron Ingot": {
             "bg": QColor(78, 82, 86, 228),
             "panel": QColor(216, 218, 218, 218),
             "header": QColor(142, 154, 166, 240),
@@ -3917,7 +3920,7 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_bottom": QColor(142, 154, 164, 226),
             "glass": QColor(255, 255, 255, 58),
         },
-        "Olive": {
+        "Green Been": {
             "bg": QColor(66, 82, 62, 228),
             "panel": QColor(188, 204, 168, 218),
             "header": QColor(104, 136, 92, 240),
@@ -3932,7 +3935,7 @@ GUIDE_THEME_DEFINITIONS = {
             "chrome_bottom": QColor(112, 146, 92, 226),
             "glass": QColor(255, 255, 255, 46),
         },
-        "Purple Passion": {
+        "Grape Jelly": {
             "bg": QColor(70, 58, 88, 228),
             "panel": QColor(210, 198, 224, 216),
             "header": QColor(132, 108, 166, 240),
@@ -4123,6 +4126,66 @@ GUIDE_THEME_DEFINITIONS = {
             "flat_panels": True,
             "starfield": False,
         },
+        "Iron Ingot": {
+            "bg": QColor(30, 32, 34, 244),
+            "panel": QColor(66, 70, 74, 238),
+            "header": QColor(46, 50, 56, 246),
+            "row_a": QColor(80, 84, 90, 234),
+            "row_b": QColor(50, 54, 60, 230),
+            "selected": QColor(226, 206, 96, 242),
+            "text": QColor(238, 240, 244),
+            "dark_text": QColor(16, 18, 20),
+            "muted": QColor(194, 198, 206),
+            "chrome_top": QColor(104, 112, 120, 238),
+            "chrome_mid": QColor(68, 74, 82, 234),
+            "chrome_bottom": QColor(32, 36, 42, 236),
+            "glass": QColor(255, 255, 255, 14),
+            "guide_program_upcoming_bg": QColor(98, 38, 46, 238),
+            "stb_bevel_light": QColor(196, 204, 216, 190),
+            "stb_bevel_dark": QColor(8, 10, 12, 235),
+            "flat_panels": True,
+            "starfield": False,
+        },
+        "Green Been": {
+            "bg": QColor(22, 34, 14, 244),
+            "panel": QColor(46, 68, 30, 238),
+            "header": QColor(36, 58, 22, 246),
+            "row_a": QColor(58, 84, 38, 234),
+            "row_b": QColor(36, 58, 24, 230),
+            "selected": QColor(228, 216, 88, 242),
+            "text": QColor(236, 246, 222),
+            "dark_text": QColor(16, 26, 8),
+            "muted": QColor(192, 218, 164),
+            "chrome_top": QColor(76, 116, 50, 238),
+            "chrome_mid": QColor(48, 82, 30, 234),
+            "chrome_bottom": QColor(24, 48, 14, 236),
+            "glass": QColor(255, 255, 255, 12),
+            "guide_program_upcoming_bg": QColor(108, 40, 48, 238),
+            "stb_bevel_light": QColor(132, 192, 94, 190),
+            "stb_bevel_dark": QColor(6, 16, 2, 230),
+            "flat_panels": True,
+            "starfield": False,
+        },
+        "Grape Jelly": {
+            "bg": QColor(18, 10, 32, 244),
+            "panel": QColor(42, 26, 68, 238),
+            "header": QColor(58, 36, 98, 246),
+            "row_a": QColor(72, 44, 112, 234),
+            "row_b": QColor(44, 28, 76, 230),
+            "selected": QColor(218, 188, 248, 242),
+            "text": QColor(242, 238, 252),
+            "dark_text": QColor(14, 8, 26),
+            "muted": QColor(202, 182, 234),
+            "chrome_top": QColor(90, 58, 136, 238),
+            "chrome_mid": QColor(58, 36, 98, 234),
+            "chrome_bottom": QColor(28, 14, 52, 236),
+            "glass": QColor(255, 255, 255, 14),
+            "guide_program_upcoming_bg": QColor(104, 34, 52, 238),
+            "stb_bevel_light": QColor(158, 120, 218, 190),
+            "stb_bevel_dark": QColor(4, 0, 12, 230),
+            "flat_panels": True,
+            "starfield": False,
+        },
     },
     "Sleek Freak": {
         "Stars of Uranus": {
@@ -4145,19 +4208,19 @@ GUIDE_THEME_DEFINITIONS = {
             "modes": {
                 "dark": {},
                 "light": {
-                    "bg": QColor(172, 194, 228, 255),
-                    "panel": QColor(152, 178, 216, 220),
-                    "header": QColor(88, 126, 180, 214),
-                    "row_a": QColor(148, 172, 210, 178),
-                    "row_b": QColor(216, 228, 244, 232),
-                    "selected": QColor(194, 146, 36, 238),
-                    "text": QColor(22, 34, 62),
-                    "dark_text": QColor(10, 18, 42),
-                    "muted": QColor(56, 80, 118),
-                    "chrome_top": QColor(240, 248, 255, 52),
-                    "chrome_mid": QColor(110, 148, 196, 96),
-                    "chrome_bottom": QColor(192, 210, 234, 236),
-                    "glass": QColor(255, 255, 255, 32),
+                    "bg": QColor(232, 160, 80, 255),
+                    "panel": QColor(248, 206, 142, 220),
+                    "header": QColor(34, 26, 82, 214),
+                    "row_a": QColor(252, 220, 166, 178),
+                    "row_b": QColor(240, 182, 106, 232),
+                    "selected": QColor(252, 220, 64, 238),
+                    "text": QColor(20, 12, 46),
+                    "dark_text": QColor(8, 4, 22),
+                    "muted": QColor(84, 52, 18),
+                    "chrome_top": QColor(255, 244, 210, 52),
+                    "chrome_mid": QColor(184, 116, 48, 96),
+                    "chrome_bottom": QColor(210, 150, 72, 236),
+                    "glass": QColor(255, 244, 210, 28),
                 },
             },
         },
@@ -5564,8 +5627,8 @@ def build_startup_stylesheet(theme_name=DEFAULT_THEME_NAME, skin_name=DEFAULT_SK
 
 
 SKIN_THEME_MAP = {
-    "Promised Future": ["Stars of Uranus", "Silver Olive", "Silver", "Olive", "Purple Passion", "Charcoal", "Tangerine Dream", "Blue Berry"],
-    "Set Top Box": ["Stars of Uranus", "Silver Olive", "Blue Berry", "Get Slimed"],
+    "Promised Future": ["Stars of Uranus", "Silver Olive", "Iron Ingot", "Green Been", "Grape Jelly", "Charcoal", "Tangerine Dream", "Blue Berry"],
+    "Set Top Box": ["Stars of Uranus", "Silver Olive", "Iron Ingot", "Green Been", "Grape Jelly", "Blue Berry", "Get Slimed"],
     "Sleek Freak": ["Stars of Uranus", "Silver Olive", "Grape Jelly", "Baby Blue", "Millennial Grey"],
 }
 
