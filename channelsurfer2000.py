@@ -7807,7 +7807,42 @@ class ChannelBugOverlay(QWidget):
         painter.end()
 
 
-class GuideOverlay(QWidget):
+class OverlayFadeMixin:
+    """Quick fade-in for Promised Future and Sleek Freak overlays. Set Top Box snaps in/out."""
+
+    _FADE_DURATION_MS = 140
+    _FADE_INTERVAL_MS = 14
+
+    def _fade_init(self):
+        self._fade_opacity = 1.0
+        self._fade_timer = QTimer(self)
+        self._fade_timer.setInterval(self._FADE_INTERVAL_MS)
+        self._fade_timer.timeout.connect(self._fade_tick)
+
+    def _fade_tick(self):
+        step = self._FADE_INTERVAL_MS / self._FADE_DURATION_MS
+        self._fade_opacity = min(1.0, self._fade_opacity + step)
+        self.update()
+        if self._fade_opacity >= 1.0:
+            self._fade_opacity = 1.0
+            self._fade_timer.stop()
+
+    def start_fade_in(self):
+        """Begin fade-in if skin supports it; otherwise snap to opaque."""
+        style = getattr(self, "skin_style", lambda: "aero")()
+        if style == "cable":
+            self._fade_opacity = 1.0
+            self._fade_timer.stop()
+        else:
+            self._fade_opacity = 0.0
+            if not self._fade_timer.isActive():
+                self._fade_timer.start()
+
+    def fade_opacity(self):
+        return getattr(self, "_fade_opacity", 1.0)
+
+
+class GuideOverlay(OverlayFadeMixin, QWidget):
     skinStepRequested = Signal(int)
     themeStepRequested = Signal(int)
     profileStepRequested = Signal(int)
@@ -7870,6 +7905,7 @@ class GuideOverlay(QWidget):
         self.sleek_nav_transition_started = 0.0
         self.sleek_nav_transition_ms = 140
         self._sleek_focus_transition_states = {}
+        self._fade_init()
         self.hide()
 
     def show_guide(self, channels, selected_index):
@@ -7885,6 +7921,7 @@ class GuideOverlay(QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
+        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -7935,6 +7972,7 @@ class GuideOverlay(QWidget):
         profile = GUIDE_PROFILES[self.profile_name]
         theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
+        painter.setOpacity(self.fade_opacity())
         panel = self.guide_canvas_rect()
         cable_skin = self.skin_style() == "cable"
         metrics = self.guide_metrics()
@@ -10199,7 +10237,7 @@ class GuideOverlay(QWidget):
         event.accept()
 
 
-class OnDemandOverlay(QWidget):
+class OnDemandOverlay(OverlayFadeMixin, QWidget):
     skinStepRequested = Signal(int)
     themeStepRequested = Signal(int)
     profileStepRequested = Signal(int)
@@ -10282,6 +10320,7 @@ class OnDemandOverlay(QWidget):
         self._vault_perf_update_count = 0
         self._vault_perf_update_window_started = time.perf_counter()
         self._rendering_vault_placeholder_cache = False
+        self._fade_init()
         self.hide()
 
     def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
@@ -10305,6 +10344,7 @@ class OnDemandOverlay(QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
+        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -10604,6 +10644,7 @@ class OnDemandOverlay(QWidget):
         theme = app_theme(self.theme_name, self.skin_name, mode=self.sleek_mode)
         profile = GUIDE_PROFILES[self.profile_name]
         painter = QPainter(self)
+        painter.setOpacity(self.fade_opacity())
         full_background = theme.get("vault_page_bg", theme.get("vault_panel_bg", theme["bg"]))
         painter.fillRect(
             self.rect(),
@@ -14776,7 +14817,7 @@ class OnDemandOverlay(QWidget):
         painter.restore()
 
 
-class InfoOverlay(QWidget):
+class InfoOverlay(OverlayFadeMixin, QWidget):
     uiScaleStepRequested = Signal(int)
 
     def __init__(self, parent=None):
@@ -14790,6 +14831,7 @@ class InfoOverlay(QWidget):
         self.state = {}
         self.settings_open = False
         self.settings_values = {}
+        self._fade_init()
         self.hide()
 
     def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
@@ -14810,6 +14852,7 @@ class InfoOverlay(QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
+        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -14825,6 +14868,7 @@ class InfoOverlay(QWidget):
 
         theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
+        painter.setOpacity(self.fade_opacity())
         if self.skin_style() == "cable":
             self.draw_set_top_box_info_overlay(painter, theme)
             return
@@ -19073,7 +19117,7 @@ class NextUpOverlay(QWidget):
         painter.drawText(badge, Qt.AlignCenter, f"Playing in {countdown}")
 
 
-class TransportOverlay(QWidget):
+class TransportOverlay(OverlayFadeMixin, QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -19085,6 +19129,7 @@ class TransportOverlay(QWidget):
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.hide)
+        self._fade_init()
         self.hide()
 
     def configure(self, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT):
@@ -19100,6 +19145,7 @@ class TransportOverlay(QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
+        self.start_fade_in()
         self.raise_()
         self.update()
         self.timer.start(1500)
@@ -19108,6 +19154,7 @@ class TransportOverlay(QWidget):
         if not self.state:
             return
         painter = QPainter(self)
+        painter.setOpacity(self.fade_opacity())
         theme = app_theme(self.theme_name, self.skin_name)
         target_rect = overlay_target_rect(self)
 
