@@ -59,7 +59,7 @@ class SleepPreventer:
         self._active = False
 
     def acquire(self):
-        """Enable sleep prevention.  Safe to call multiple times."""
+        """Enable sleep prevention. Safe to call multiple times."""
         if self._active:
             return
         self._active = True
@@ -83,11 +83,16 @@ class SleepPreventer:
             return
         self._active = False
         try:
-            if sys.platform == "darwin":
-                if self._caffeinate is not None:
-                    self._caffeinate.terminate()
-                    self._caffeinate = None
-            elif sys.platform == "win32":
+            platform = sys.platform if sys is not None else None
+        except Exception:
+            platform = None
+        try:
+            if platform == "darwin":
+                proc = self._caffeinate
+                self._caffeinate = None
+                if proc is not None and proc.poll() is None:
+                    proc.terminate()
+            elif platform == "win32":
                 import ctypes
                 # ES_CONTINUOUS only — clears the previous request
                 ctypes.windll.kernel32.SetThreadExecutionState(0x80000000)
@@ -95,7 +100,10 @@ class SleepPreventer:
             pass
 
     def __del__(self):
-        self.release()
+        try:
+            self.release()
+        except Exception:
+            pass
 
 
 APP_NAME = "MediaWave2000"
@@ -30416,7 +30424,6 @@ class ChannelSurfer(QWidget):
         )
 
     def stop_player(self):
-        self.sleep_preventer.release()
         self.channel_switch_timer.stop()
         self.live_stall_timer.stop()
         self.seek_hold_timer.stop()
@@ -30713,6 +30720,7 @@ class ChannelSurfer(QWidget):
 
     def closeEvent(self, event):
         self.stop_player()
+        self.sleep_preventer.release()
         self.stop_radiowave_background()
         self.video_window.static.hide()
         save_json_file(RESUME_STATE_FILE, self.resume_state)
