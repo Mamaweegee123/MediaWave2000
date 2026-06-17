@@ -12057,11 +12057,11 @@ class OnDemandOverlay(QWidget):
         if compact:
             painter.restore()
             return
-        # Clip summary so it never runs into the action button area (pinned to copy_rect.bottom()).
+        # Fill all available space between subtitle and action-button reserve so
+        # longer show descriptions wrap rather than being cut short.
         _action_reserve = self.sleek_metric(62, 48, 78)
         _sum_top = meta_rect.bottom() + self.sleek_metric(12, 8, 16)
-        _sum_max_h = max(0, copy_rect.bottom() - _sum_top - _action_reserve)
-        _sum_h = min(self.sleek_metric(58, 42, 76), _sum_max_h)
+        _sum_h = max(0, copy_rect.bottom() - _sum_top - _action_reserve)
         if _sum_h >= self.sleek_metric(14, 12, 18):
             summary_rect = QRect(copy_rect.left(), _sum_top, copy_rect.width(), _sum_h)
             painter.save()
@@ -28405,22 +28405,22 @@ class ChannelSurfer(QWidget):
                 self.on_demand_item_index = next_index
                 return True
             return False
-        flat_indices = []
-        for season in seasons:
-            flat_indices.extend(season.get("item_indices", []))
-        if not flat_indices:
+        # Constrain movement to the currently selected season. Season changes
+        # are explicit via the season selector, not implicit via scrolling past
+        # the first/last episode (which felt jarring).
+        season_index = max(0, min(int(self.on_demand_season_index), len(seasons) - 1))
+        season_indices = seasons[season_index].get("item_indices", [])
+        if not season_indices:
             return False
-        if self.on_demand_item_index not in flat_indices:
-            self.on_demand_item_index = flat_indices[0]
-            self.sync_on_demand_season_to_item(seasons)
+        if self.on_demand_item_index not in season_indices:
+            self.on_demand_item_index = season_indices[0]
             return True
-        current = flat_indices.index(self.on_demand_item_index)
-        next_flat = current + int(direction)
-        if not (0 <= next_flat < len(flat_indices)):
+        current_pos = season_indices.index(self.on_demand_item_index)
+        next_pos = current_pos + int(direction)
+        if not (0 <= next_pos < len(season_indices)):
             return False
         self.remember_on_demand_season_focus(seasons)
-        self.on_demand_item_index = flat_indices[next_flat]
-        self.sync_on_demand_season_to_item(seasons)
+        self.on_demand_item_index = season_indices[next_pos]
         return True
 
     def current_live_program(self):
