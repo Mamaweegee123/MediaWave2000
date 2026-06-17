@@ -28039,11 +28039,33 @@ class ChannelSurfer(QWidget):
         hero = self.video_window.on_demand_overlay.state.get("hero", {})
         card = dict(hero)
         if action == "random":
+            # Hero "Surprise Me" — I'm Feeling Lucky: jump straight into playback.
             cards = self.all_on_demand_group_cards()
             if cards:
-                card = random.choice(cards)
-                self.open_on_demand_group(card["channel_index"], card["group_index"], 0, focus="actions")
-                self.refresh_on_demand()
+                # Shuffle once so retries don't repeat the same broken item.
+                pool = list(cards)
+                random.shuffle(pool)
+                for candidate in pool:
+                    ch_idx = candidate.get("channel_index")
+                    gr_idx = candidate.get("group_index")
+                    if ch_idx is None or gr_idx is None:
+                        continue
+                    try:
+                        group = self.on_demand_catalog[ch_idx]["groups"][gr_idx]
+                    except (IndexError, KeyError, TypeError):
+                        continue
+                    items = group.get("items", [])
+                    playable = [
+                        it for it in items
+                        if it.get("path")
+                        and not str(it["path"]).startswith("dummy://")
+                        and os.path.isfile(it["path"])
+                    ]
+                    if not playable:
+                        continue
+                    chosen = random.choice(playable)
+                    self.play_on_demand(chosen["path"], 0)
+                    return
             return
         if action == "info":
             if card.get("type") == "resume" and card.get("path"):
