@@ -22514,7 +22514,9 @@ class ChannelSurfer(QWidget):
         self.current_youtube_user_path = ""
         self.youtube_stream_generation = 0
         self.youtube_playlist_generation = 0
+        self.youtube_playlist_loads_in_flight = {}
         self.youtube_cache_lock = threading.Lock()
+        self._closing = False
         self.nettv_waiting_for_visible_frame = False
         self.nettv_visible_frame_seen = False
         self.nettv_waiting_started_at = 0.0
@@ -26342,8 +26344,13 @@ class ChannelSurfer(QWidget):
         if not playlist_url:
             self.show_youtube_tuning_slate(getattr(channel, "name", "NetTV"), "No NetTV playlist is configured.")
             return
+        active_generation = self.youtube_playlist_loads_in_flight.get(playlist_url)
+        if active_generation is not None:
+            self.youtube_playlist_generation = active_generation
+            return
         self.youtube_playlist_generation += 1
         generation = self.youtube_playlist_generation
+        self.youtube_playlist_loads_in_flight[playlist_url] = generation
 
         def worker():
             entries = self.load_youtube_playlist_entries(playlist_url, force=force)
@@ -26354,7 +26361,9 @@ class ChannelSurfer(QWidget):
 
     @Slot(int, str, list, str)
     def on_youtube_playlist_loaded_for_tune(self, generation, playlist_url, entries, error):
-        if generation != self.youtube_playlist_generation:
+        if self.youtube_playlist_loads_in_flight.get(playlist_url) == generation:
+            self.youtube_playlist_loads_in_flight.pop(playlist_url, None)
+        if self._closing or generation != self.youtube_playlist_generation:
             return
         channel = self.current_youtube_channel()
         if channel is None or getattr(channel, "playlist_url", "") != playlist_url:
@@ -30825,6 +30834,10 @@ class ChannelSurfer(QWidget):
         pass  # alert already marked shown before display; nothing extra needed
 
     def closeEvent(self, event):
+        self._closing = True
+        self.youtube_playlist_generation += 1
+        self.youtube_stream_generation += 1
+        self.youtube_playlist_loads_in_flight.clear()
         self.stop_player()
         self.sleep_preventer.release()
         self.stop_radiowave_background()
