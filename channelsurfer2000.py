@@ -318,6 +318,23 @@ def ensure_user_content_structure(base_dir):
             pass
 
 
+def default_user_content_subdir(name):
+    """Return an app-owned first-run picker location without probing user folders."""
+    base_dir = default_mediawave_user_dir()
+    return os.path.join(base_dir, name) if name else base_dir
+
+
+def existing_picker_start(*candidates):
+    for candidate in candidates:
+        if not candidate:
+            continue
+        path = os.path.abspath(os.path.expanduser(str(candidate)))
+        if path and os.path.isdir(path):
+            return path
+    fallback = os.path.abspath(os.path.expanduser(default_mediawave_user_dir()))
+    return fallback
+
+
 RESOURCE_DIR = resource_base_dir()
 
 
@@ -21298,19 +21315,29 @@ class AdvancedConfigDialog(QDialog):
         }
 
     def choose_radiowave_folder(self):
-        start_dir = self.radiowave_input.text().strip() or os.path.expanduser("~")
+        start_dir = existing_picker_start(
+            self.radiowave_input.text().strip(),
+            default_user_content_subdir("Music"),
+        )
         folder = QFileDialog.getExistingDirectory(self, "Choose RadioWaveTV Music Folder", start_dir)
         if folder:
             self.radiowave_input.setText(os.path.abspath(os.path.expanduser(folder)))
 
     def choose_commercials_folder(self):
-        start_dir = self.commercials_root_input.text().strip() or os.path.expanduser("~")
+        start_dir = existing_picker_start(
+            self.commercials_root_input.text().strip(),
+            default_user_content_subdir("Commercials"),
+        )
         folder = QFileDialog.getExistingDirectory(self, "Choose Commercials Folder", start_dir)
         if folder:
             self.commercials_root_input.setText(os.path.abspath(os.path.expanduser(folder)))
 
     def _choose_nettv_cookie_file(self):
-        start = os.path.dirname(self.nettv_cookies_file_input.text().strip() or os.path.expanduser("~"))
+        configured = self.nettv_cookies_file_input.text().strip()
+        start = existing_picker_start(
+            os.path.dirname(configured) if configured else "",
+            default_mediawave_user_dir(),
+        )
         path, _ = QFileDialog.getOpenFileName(self, "Choose cookies.txt File", start, "Cookie files (*.txt);;All files (*)")
         if path:
             self.nettv_cookies_file_input.setText(os.path.abspath(os.path.expanduser(path)))
@@ -22696,7 +22723,10 @@ class ChannelSurfer(QWidget):
             if folder:
                 return folder
         options = QFileDialog.ShowDirsOnly | QFileDialog.DontResolveSymlinks
-        start_dir = self.app_settings.get("catalog_path") or os.path.expanduser("~")
+        start_dir = existing_picker_start(
+            self.app_settings.get("catalog_path"),
+            default_user_content_subdir("Channels"),
+        )
         folder = QFileDialog.getExistingDirectory(
             self,
             "Select Catalog Folder",
@@ -22708,7 +22738,10 @@ class ChannelSurfer(QWidget):
         return os.path.abspath(os.path.expanduser(folder))
 
     def choose_catalog_folder_macos(self):
-        start_dir = self.app_settings.get("catalog_path") or os.path.expanduser("~")
+        start_dir = existing_picker_start(
+            self.app_settings.get("catalog_path"),
+            default_user_content_subdir("Channels"),
+        )
         panel = AppKit.NSOpenPanel.openPanel()
         panel.setCanChooseFiles_(False)
         panel.setCanChooseDirectories_(True)

@@ -2,6 +2,11 @@
 
 - Windows and macOS packages are currently unsigned. Windows SmartScreen and
   macOS Gatekeeper may display warnings.
+- macOS may ask for folder access when you choose media from protected or
+  cloud-backed locations such as iCloud Drive, Desktop, Documents, Downloads,
+  external/network volumes, or the Apple Music-managed library. MediaWave does
+  not request Music or Photos library access directly; these prompts come from
+  macOS based on the folder you select.
 - NetTV depends on third-party websites and may stop working when those sites
   change behavior.
 - NetTV cookies and authentication are local tester configuration and are never
