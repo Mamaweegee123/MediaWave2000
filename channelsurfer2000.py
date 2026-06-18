@@ -7878,42 +7878,9 @@ class ChannelBugOverlay(QWidget):
         painter.end()
 
 
-class OverlayFadeMixin:
-    """Quick fade-in for Promised Future and Sleek Freak overlays. Set Top Box snaps in/out."""
-
-    _FADE_DURATION_MS = 140
-    _FADE_INTERVAL_MS = 14
-
-    def _fade_init(self):
-        self._fade_opacity = 1.0
-        self._fade_timer = QTimer(self)
-        self._fade_timer.setInterval(self._FADE_INTERVAL_MS)
-        self._fade_timer.timeout.connect(self._fade_tick)
-
-    def _fade_tick(self):
-        step = self._FADE_INTERVAL_MS / self._FADE_DURATION_MS
-        self._fade_opacity = min(1.0, self._fade_opacity + step)
-        self.update()
-        if self._fade_opacity >= 1.0:
-            self._fade_opacity = 1.0
-            self._fade_timer.stop()
-
-    def start_fade_in(self):
-        """Begin fade-in if skin supports it; otherwise snap to opaque."""
-        style = getattr(self, "skin_style", lambda: "aero")()
-        if style == "cable":
-            self._fade_opacity = 1.0
-            self._fade_timer.stop()
-        else:
-            self._fade_opacity = 0.0
-            if not self._fade_timer.isActive():
-                self._fade_timer.start()
-
-    def fade_opacity(self):
-        return getattr(self, "_fade_opacity", 1.0)
-
-
-class GuideOverlay(OverlayFadeMixin, QWidget):
+# Guide and Vault interactions prioritize responsiveness over decorative animation.
+# Avoid overlay-wide fades or full-scene animation unless performance is proven smooth.
+class GuideOverlay(QWidget):
     skinStepRequested = Signal(int)
     themeStepRequested = Signal(int)
     profileStepRequested = Signal(int)
@@ -7934,6 +7901,8 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         self.selected_index = 0
         self.preview_frame = QPixmap()
         self.preview_mode = "video"
+        self._preview_scaled_cache_key = None
+        self._preview_scaled_pixmap = QPixmap()
         self.profile_name = "Auto"
         self.theme_name = DEFAULT_THEME_NAME
         self.skin_name = DEFAULT_SKIN_NAME
@@ -7976,7 +7945,6 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         self.sleek_nav_transition_started = 0.0
         self.sleek_nav_transition_ms = 140
         self._sleek_focus_transition_states = {}
-        self._fade_init()
         self.hide()
 
     def show_guide(self, channels, selected_index):
@@ -7992,7 +7960,6 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
-        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -8018,10 +7985,32 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
     def set_preview_frame(self, pixmap, mode="video"):
         self.preview_frame = pixmap
         self.preview_mode = mode or "video"
+        self._preview_scaled_cache_key = None
+        self._preview_scaled_pixmap = QPixmap()
         now = time.time()
         if self.isVisible() and (now - self.last_preview_update) >= 0.18:
             self.last_preview_update = now
             self.update()
+
+    def scaled_preview_frame(self, size, aspect_mode):
+        if self.preview_frame.isNull() or size.width() <= 0 or size.height() <= 0:
+            return QPixmap()
+        cache_key = (
+            int(self.preview_frame.cacheKey()),
+            self.preview_mode,
+            size.width(),
+            size.height(),
+            str(aspect_mode),
+        )
+        if cache_key == self._preview_scaled_cache_key and not self._preview_scaled_pixmap.isNull():
+            return self._preview_scaled_pixmap
+        source = self.preview_frame
+        if "weatherstar" in str(self.preview_mode):
+            skip = max(0, int(source.height() * 0.10))
+            source = source.copy(0, skip, source.width(), source.height() - skip)
+        self._preview_scaled_pixmap = source.scaled(size, aspect_mode, Qt.SmoothTransformation)
+        self._preview_scaled_cache_key = cache_key
+        return self._preview_scaled_pixmap
 
     def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
         self.profile_name = profile_name if profile_name in GUIDE_PROFILES else "Auto"
@@ -8043,9 +8032,6 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         profile = GUIDE_PROFILES[self.profile_name]
         theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
-        _fade = self.fade_opacity()
-        if _fade < 1.0:
-            painter.setOpacity(_fade)
         panel = self.guide_canvas_rect()
         cable_skin = self.skin_style() == "cable"
         metrics = self.guide_metrics()
@@ -8427,11 +8413,7 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         painter.fillRect(preview_inner, QColor(0, 0, 0, 230))
         if not self.preview_frame.isNull():
             keep_mode = Qt.KeepAspectRatio if self.preview_mode == "radiowave" else Qt.KeepAspectRatioByExpanding
-            _ws_frame = self.preview_frame
-            if self.preview_mode == "weatherstar":
-                _ws_skip = max(0, int(_ws_frame.height() * 0.10))
-                _ws_frame = _ws_frame.copy(0, _ws_skip, _ws_frame.width(), _ws_frame.height() - _ws_skip)
-            scaled = _ws_frame.scaled(preview_inner.size(), keep_mode, Qt.SmoothTransformation)
+            scaled = self.scaled_preview_frame(preview_inner.size(), keep_mode)
             draw_rect = QRect(
                 preview_inner.left() + (preview_inner.width() - scaled.width()) // 2,
                 preview_inner.top() + (preview_inner.height() - scaled.height()) // 2,
@@ -8516,7 +8498,7 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         timeline_start = self.timeline_start
         timeline_end = timeline_start + slot_count * 30 * 60
         active_focus_index = self.selected_index if not self.nav_focus and not self.settings_open else -1
-        previous_focus_index, transition_progress = sleek_focus_transition(self, "guide_grid_focus", active_focus_index)
+        previous_focus_index, transition_progress = -1, 1.0
 
         def row_focus_amount(index):
             if index == active_focus_index:
@@ -8846,11 +8828,7 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         painter.fillRect(inner, QColor(0, 0, 0, 235))
         if not self.preview_frame.isNull():
             keep_mode = Qt.KeepAspectRatio if self.preview_mode == "radiowave" else Qt.KeepAspectRatioByExpanding
-            _ws_frame = self.preview_frame
-            if self.preview_mode == "weatherstar":
-                _ws_skip = max(0, int(_ws_frame.height() * 0.10))
-                _ws_frame = _ws_frame.copy(0, _ws_skip, _ws_frame.width(), _ws_frame.height() - _ws_skip)
-            scaled = _ws_frame.scaled(inner.size(), keep_mode, Qt.SmoothTransformation)
+            scaled = self.scaled_preview_frame(inner.size(), keep_mode)
             draw_rect = QRect(
                 inner.left() + (inner.width() - scaled.width()) // 2,
                 inner.top() + (inner.height() - scaled.height()) // 2,
@@ -9876,10 +9854,7 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
             )
         if isinstance(item.get("detail_path"), str) and item["detail_path"].startswith("weatherstar://"):
             if not self.preview_frame.isNull():
-                # Crop top ~10% of the captured frame to remove the dark browser header band
-                _ws_skip = max(0, int(self.preview_frame.height() * 0.10))
-                _ws_src = self.preview_frame.copy(0, _ws_skip, self.preview_frame.width(), self.preview_frame.height() - _ws_skip)
-                scaled = _ws_src.scaled(inner.size(), Qt.KeepAspectRatioByExpanding, Qt.SmoothTransformation)
+                scaled = self.scaled_preview_frame(inner.size(), Qt.KeepAspectRatioByExpanding)
                 draw_rect = QRect(
                     inner.left() + (inner.width() - scaled.width()) // 2,
                     inner.top() + (inner.height() - scaled.height()) // 2,
@@ -9908,11 +9883,7 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
             return
         if not self.preview_frame.isNull():
             keep_mode = Qt.KeepAspectRatio if self.preview_mode == "radiowave" else Qt.KeepAspectRatioByExpanding
-            _ws_frame = self.preview_frame
-            if self.preview_mode == "weatherstar":
-                _ws_skip = max(0, int(_ws_frame.height() * 0.10))
-                _ws_frame = _ws_frame.copy(0, _ws_skip, _ws_frame.width(), _ws_frame.height() - _ws_skip)
-            scaled = _ws_frame.scaled(inner.size(), keep_mode, Qt.SmoothTransformation)
+            scaled = self.scaled_preview_frame(inner.size(), keep_mode)
             draw_rect = QRect(
                 inner.left() + (inner.width() - scaled.width()) // 2,
                 inner.top() + (inner.height() - scaled.height()) // 2,
@@ -10310,7 +10281,7 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         event.accept()
 
 
-class OnDemandOverlay(OverlayFadeMixin, QWidget):
+class OnDemandOverlay(QWidget):
     skinStepRequested = Signal(int)
     themeStepRequested = Signal(int)
     profileStepRequested = Signal(int)
@@ -10383,7 +10354,6 @@ class OnDemandOverlay(OverlayFadeMixin, QWidget):
         self.stream_anim_timer = QTimer(self)
         self.stream_anim_timer.setInterval(25)
         self.stream_anim_timer.timeout.connect(self.advance_stream_animation)
-        self._vault_hero_fade = 1.0
         self._vault_hero_compact_prev = None
         self._vault_layout_cache = {}
         self._vault_layout_signature = None
@@ -10393,7 +10363,6 @@ class OnDemandOverlay(OverlayFadeMixin, QWidget):
         self._vault_perf_update_count = 0
         self._vault_perf_update_window_started = time.perf_counter()
         self._rendering_vault_placeholder_cache = False
-        self._fade_init()
         self.hide()
 
     def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
@@ -10412,17 +10381,11 @@ class OnDemandOverlay(OverlayFadeMixin, QWidget):
     def skin_style(self):
         return GUIDE_SKINS.get(normalize_skin_name(self.skin_name), GUIDE_SKINS[DEFAULT_SKIN_NAME]).get("style", "aero")
 
-    def start_fade_in(self):
-        """Vault overlay always snaps in — no fade. Full-scene opacity compositing is too expensive."""
-        self._fade_opacity = 1.0
-        self._fade_timer.stop()
-
     def show_browser(self, state):
         self.apply_stream_state(state or {})
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
-        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -10722,9 +10685,6 @@ class OnDemandOverlay(OverlayFadeMixin, QWidget):
         theme = app_theme(self.theme_name, self.skin_name, mode=self.sleek_mode)
         profile = GUIDE_PROFILES[self.profile_name]
         painter = QPainter(self)
-        _fade = self.fade_opacity()
-        if _fade < 1.0:
-            painter.setOpacity(_fade)
         full_background = theme.get("vault_page_bg", theme.get("vault_panel_bg", theme["bg"]))
         painter.fillRect(
             self.rect(),
@@ -14897,7 +14857,7 @@ class OnDemandOverlay(OverlayFadeMixin, QWidget):
         painter.restore()
 
 
-class InfoOverlay(OverlayFadeMixin, QWidget):
+class InfoOverlay(QWidget):
     uiScaleStepRequested = Signal(int)
 
     def __init__(self, parent=None):
@@ -14911,7 +14871,6 @@ class InfoOverlay(OverlayFadeMixin, QWidget):
         self.state = {}
         self.settings_open = False
         self.settings_values = {}
-        self._fade_init()
         self.hide()
 
     def configure(self, profile_name, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT, sleek_mode="dark"):
@@ -14932,7 +14891,6 @@ class InfoOverlay(OverlayFadeMixin, QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
-        self.start_fade_in()
         self.raise_()
         self.update()
 
@@ -14948,9 +14906,6 @@ class InfoOverlay(OverlayFadeMixin, QWidget):
 
         theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
-        _fade = self.fade_opacity()
-        if _fade < 1.0:
-            painter.setOpacity(_fade)
         if self.skin_style() == "cable":
             self.draw_set_top_box_info_overlay(painter, theme)
             return
@@ -19199,7 +19154,7 @@ class NextUpOverlay(QWidget):
         painter.drawText(badge, Qt.AlignCenter, f"Playing in {countdown}")
 
 
-class TransportOverlay(OverlayFadeMixin, QWidget):
+class TransportOverlay(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
@@ -19211,7 +19166,6 @@ class TransportOverlay(OverlayFadeMixin, QWidget):
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
         self.timer.timeout.connect(self.hide)
-        self._fade_init()
         self.hide()
 
     def configure(self, theme_name, skin_name, ui_scale=GUIDE_UI_SCALE_DEFAULT):
@@ -19227,7 +19181,6 @@ class TransportOverlay(OverlayFadeMixin, QWidget):
         if self.parentWidget() is not None:
             self.setGeometry(self.parentWidget().rect())
         self.show()
-        self.start_fade_in()
         self.raise_()
         self.update()
         self.timer.start(1500)
@@ -19236,9 +19189,6 @@ class TransportOverlay(OverlayFadeMixin, QWidget):
         if not self.state:
             return
         painter = QPainter(self)
-        _fade = self.fade_opacity()
-        if _fade < 1.0:
-            painter.setOpacity(_fade)
         theme = app_theme(self.theme_name, self.skin_name)
         target_rect = overlay_target_rect(self)
 
