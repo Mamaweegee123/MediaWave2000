@@ -28350,6 +28350,8 @@ class ChannelSurfer(QWidget):
             {"key": "featured", "label": "Featured"},
             {"key": "recently-added", "label": "Recently Added"},
             {"key": "my-vault", "label": "My Vault"},
+            {"key": "movies", "label": "Movies"},
+            {"key": "series", "label": "Shows"},
             {"key": "random", "label": "Surprise me"},
         ]
 
@@ -28373,6 +28375,18 @@ class ChannelSurfer(QWidget):
         options = self.on_demand_filter_options()
         self.on_demand_filter_index = max(0, min(int(self.on_demand_filter_index), len(options) - 1))
         option = options[self.on_demand_filter_index]
+        if option["key"] in {"movies", "series"}:
+            self.on_demand_grid_type = "movies" if option["key"] == "movies" else "series"
+            self.on_demand_grid_row = 0
+            self.on_demand_grid_col = 0
+            overlay = self.video_window.on_demand_overlay
+            overlay.grid_vertical_offset = 0.0
+            overlay.grid_vertical_target = 0.0
+            self.on_demand_prev_view = "home"
+            self.on_demand_view = "grid"
+            self.on_demand_nav_focused = False
+            self.refresh_on_demand()
+            return
         if option["key"] == "random":
             cards = self.all_on_demand_group_cards()
             if cards:
@@ -28653,12 +28667,6 @@ class ChannelSurfer(QWidget):
                 }
             )
             sections.extend(self.build_on_demand_category_sections(all_cards))
-            movie_cards = [card for card in all_cards if card.get("media_type") == "movie"]
-            series_cards = [card for card in all_cards if card.get("media_type") == "tv"]
-            if movie_cards:
-                sections.append({"key": "movies", "title": "Movies", "subtitle": "Feature-length titles.", "items": movie_cards[:14]})
-            if series_cards:
-                sections.append({"key": "series", "title": "Series", "subtitle": "Shows and episodic collections.", "items": series_cards[:14]})
 
         if filtered:
             sections = self.apply_on_demand_home_filter(sections)
@@ -29363,8 +29371,6 @@ class ChannelSurfer(QWidget):
                 "actions": [
                     {"label": "Resume" if hero_card.get("progress", 0.0) > 0 else "Play", "action": "resume"},
                     {"label": "Info", "action": "info"},
-                    {"label": "Movies", "action": "browse_movies"},
-                    {"label": "Shows", "action": "browse_series"},
                     {"label": "Surprise me", "action": "random"},
                 ],
             }
