@@ -22074,6 +22074,7 @@ class VideoSurface(QWidget):
 class ChannelSurfer(QWidget):
     commercialWarmScanFinished = Signal(int, str, str, list)
     youtubeStreamResolved = Signal(int, dict, str, str, float)
+    youtubePlaylistLoaded = Signal(int, str, list, str)
     episodeThumbnailReady = Signal(str)
 
     def __init__(self):
@@ -22512,6 +22513,7 @@ class ChannelSurfer(QWidget):
         self.pending_video_is_url = False
         self.current_youtube_user_path = ""
         self.youtube_stream_generation = 0
+        self.youtube_playlist_generation = 0
         self.youtube_cache_lock = threading.Lock()
         self.nettv_waiting_for_visible_frame = False
         self.nettv_visible_frame_seen = False
@@ -22627,6 +22629,7 @@ class ChannelSurfer(QWidget):
         self.live_stall_timer.setInterval(2000)
         self.live_stall_timer.timeout.connect(self.check_live_playback_health)
         self.youtubeStreamResolved.connect(self.on_youtube_stream_resolved)
+        self.youtubePlaylistLoaded.connect(self.on_youtube_playlist_loaded_for_tune)
         self.episodeThumbnailReady.connect(self.on_episode_thumbnail_ready)
         self.profile_combo.currentTextChanged.connect(self.apply_display_settings)
         self.theme_combo.currentTextChanged.connect(self.apply_display_settings)
@@ -26152,9 +26155,8 @@ class ChannelSurfer(QWidget):
             if not entries_now or has_placeholder_entries:
                 self.status.setText(f"{ch.name}\nLoading playlist index...")
                 self.show_youtube_tuning_slate("", "Loading playlist index...")
-                QApplication.processEvents()
-                entries = self.load_youtube_playlist_entries(ch.playlist_url, force=has_placeholder_entries)
-                ch.update_entries(entries)
+                self.begin_youtube_playlist_load_for_tune(ch, force=has_placeholder_entries)
+                return
             youtube_entry, offset = ch.get_current_youtube_entry_and_offset()
             if not youtube_entry:
                 self.show_youtube_tuning_slate(
@@ -26334,6 +26336,39 @@ class ChannelSurfer(QWidget):
         self.media_player.stop()
         self.suspend_nettv_visuals()
         self.media_player.setSource(QUrl(video) if is_url else QUrl.fromLocalFile(video))
+
+    def begin_youtube_playlist_load_for_tune(self, channel, force=False):
+        playlist_url = getattr(channel, "playlist_url", "")
+        if not playlist_url:
+            self.show_youtube_tuning_slate(getattr(channel, "name", "NetTV"), "No NetTV playlist is configured.")
+            return
+        self.youtube_playlist_generation += 1
+        generation = self.youtube_playlist_generation
+
+        def worker():
+            entries = self.load_youtube_playlist_entries(playlist_url, force=force)
+            error = getattr(self, "last_nettv_error", "")
+            self.youtubePlaylistLoaded.emit(generation, playlist_url, entries, error)
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @Slot(int, str, list, str)
+    def on_youtube_playlist_loaded_for_tune(self, generation, playlist_url, entries, error):
+        if generation != self.youtube_playlist_generation:
+            return
+        channel = self.current_youtube_channel()
+        if channel is None or getattr(channel, "playlist_url", "") != playlist_url:
+            return
+        channel.update_entries(entries or [])
+        if not entries:
+            self.show_youtube_tuning_slate(
+                channel.name,
+                "MediaWave could not load playlist videos. Check the playlist link or update yt-dlp.",
+            )
+            detail = error or "Check the playlist link and make sure yt-dlp can access the source."
+            self.status.setText(f"{channel.name} could not load playlist videos.\n{detail}")
+            return
+        self.play_channel(with_transition=False, show_channel_overlay=False)
 
     @Slot(int, dict, str, str, float)
     def on_youtube_stream_resolved(self, generation, entry, stream_url, error, offset):
@@ -30499,6 +30534,7 @@ class ChannelSurfer(QWidget):
         self.seek_hold_timer.stop()
         self.seek_repeat_timer.stop()
         self.youtube_stream_generation += 1
+        self.youtube_playlist_generation += 1
         self.nettv_prefetch_generation += 1
         self.nettv_prefetch_active = False
         self.seek_hold_direction = 0
