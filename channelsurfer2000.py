@@ -22406,7 +22406,7 @@ class ChannelSurfer(QWidget):
         self.video_window.on_demand_overlay.backRequested.connect(self.on_demand_back)
         self.video_window.on_demand_overlay.settingsToggleRequested.connect(self.toggle_on_demand_settings)
         self.video_window.on_demand_overlay.guideShortcutRequested.connect(self.show_guide)
-        self.video_window.on_demand_overlay.vaultShortcutRequested.connect(self.show_on_demand)
+        self.video_window.on_demand_overlay.vaultShortcutRequested.connect(self.toggle_on_demand)
         self.video_window.info_overlay.uiScaleStepRequested.connect(self.step_guide_scale)
         self.video_window.alert_fullscreen.dismissed.connect(self._on_fullscreen_alert_dismissed)
         self._alert_poll_timer = QTimer(self)
@@ -29364,14 +29364,8 @@ class ChannelSurfer(QWidget):
             return state
 
         if self.on_demand_view == "grid":
-            target_media_type = "movie" if self.on_demand_grid_type == "movies" else "tv"
-            all_cards = self.all_on_demand_group_cards()
-            grid_cards = [c for c in all_cards if c.get("media_type") == target_media_type]
-            cols = 4
-            total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
-            self.on_demand_grid_row = max(0, min(int(self.on_demand_grid_row), total_rows - 1))
-            row_max_col = min(cols - 1, max(0, len(grid_cards) - self.on_demand_grid_row * cols - 1))
-            self.on_demand_grid_col = max(0, min(int(self.on_demand_grid_col), row_max_col))
+            grid_cards, cols, total_rows = self.on_demand_grid_metrics()
+            self.clamp_on_demand_grid_focus(grid_cards, cols, total_rows)
             state = {
                 **base_state,
                 "view": "grid",
@@ -29628,12 +29622,28 @@ class ChannelSurfer(QWidget):
 
     @Slot()
     def toggle_on_demand(self):
+        if self.video_window.guide_overlay.isVisible():
+            self.hide_guide()
+            self.show_on_demand()
+            return
         if self.video_window.on_demand_overlay.isVisible():
-            if self.on_demand_settings_open:
-                self.on_demand_settings_open = False
-            self.refresh_on_demand()
+            self.hide_on_demand()
         else:
             self.show_on_demand()
+
+    def on_demand_grid_metrics(self):
+        target_media_type = "movie" if self.on_demand_grid_type == "movies" else "tv"
+        grid_cards = [card for card in self.all_on_demand_group_cards() if card.get("media_type") == target_media_type]
+        cols = 4
+        total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+        return grid_cards, cols, total_rows
+
+    def clamp_on_demand_grid_focus(self, grid_cards=None, cols=4, total_rows=None):
+        if grid_cards is None or total_rows is None:
+            grid_cards, cols, total_rows = self.on_demand_grid_metrics()
+        self.on_demand_grid_row = max(0, min(int(self.on_demand_grid_row), total_rows - 1))
+        row_max_col = min(cols - 1, max(0, len(grid_cards) - self.on_demand_grid_row * cols - 1))
+        self.on_demand_grid_col = max(0, min(int(self.on_demand_grid_col), row_max_col))
 
     def show_on_demand(self):
         self.video_window.on_demand_overlay.configure(
@@ -29779,7 +29789,11 @@ class ChannelSurfer(QWidget):
             return
         if self.on_demand_nav_focused:
             self.on_demand_nav_focused = False
-            if self.on_demand_view == "home":
+            if self.on_demand_view == "grid":
+                grid_cards, cols, total_rows = self.on_demand_grid_metrics()
+                self.on_demand_grid_row = total_rows - 1
+                self.clamp_on_demand_grid_focus(grid_cards, cols, total_rows)
+            elif self.on_demand_view == "home":
                 sections = self.build_on_demand_home_sections()
                 self.on_demand_home_focus = "rows"
                 if sections:
@@ -29808,8 +29822,8 @@ class ChannelSurfer(QWidget):
             if self.on_demand_grid_row > 0:
                 self.on_demand_grid_row -= 1
             else:
-                self.on_demand_back()
-                return
+                self.on_demand_nav_focused = True
+                self.on_demand_nav_index = 0
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
@@ -29874,6 +29888,16 @@ class ChannelSurfer(QWidget):
             self.refresh_on_demand()
             return
         if self.on_demand_nav_focused:
+            if self.on_demand_view == "grid":
+                grid_cards, cols, total_rows = self.on_demand_grid_metrics()
+                self.on_demand_nav_focused = False
+                self.on_demand_grid_row = 0
+                self.clamp_on_demand_grid_focus(grid_cards, cols, total_rows)
+                overlay = self.video_window.on_demand_overlay
+                overlay.grid_vertical_offset = 0.0
+                overlay.grid_vertical_target = 0.0
+                self.refresh_on_demand()
+                return
             if self.on_demand_view == "home":
                 # Wrap from bottom nav back to the hero/top of the home screen.
                 # Reset all scroll state so the full hero and first row are visible
@@ -29899,16 +29923,16 @@ class ChannelSurfer(QWidget):
             self.refresh_on_demand()
             return
         if self.on_demand_view == "grid":
-            state = self.build_on_demand_state()
-            grid_cards = state.get("grid_cards", [])
-            cols = int(state.get("grid_cols", 4))
-            total_rows = max(1, (len(grid_cards) + cols - 1) // cols)
+            grid_cards, cols, total_rows = self.on_demand_grid_metrics()
             if self.on_demand_grid_row < total_rows - 1:
                 next_row = self.on_demand_grid_row + 1
                 row_start = next_row * cols
                 row_max_col = min(cols - 1, max(0, len(grid_cards) - row_start - 1))
                 self.on_demand_grid_row = next_row
                 self.on_demand_grid_col = min(self.on_demand_grid_col, row_max_col)
+            else:
+                self.on_demand_nav_focused = True
+                self.on_demand_nav_index = 0
             self.refresh_on_demand()
             return
         if self.on_demand_view == "home":
