@@ -7983,10 +7983,18 @@ class GuideOverlay(QWidget):
         return self.sleek_nav_previous_index, progress
 
     def set_preview_frame(self, pixmap, mode="video"):
+        mode = mode or "video"
+        same_frame = (
+            self.preview_mode == mode
+            and not self.preview_frame.isNull()
+            and not pixmap.isNull()
+            and self.preview_frame.cacheKey() == pixmap.cacheKey()
+        )
         self.preview_frame = pixmap
-        self.preview_mode = mode or "video"
-        self._preview_scaled_cache_key = None
-        self._preview_scaled_pixmap = QPixmap()
+        self.preview_mode = mode
+        if not same_frame:
+            self._preview_scaled_cache_key = None
+            self._preview_scaled_pixmap = QPixmap()
         now = time.time()
         if self.isVisible() and (now - self.last_preview_update) >= 0.18:
             self.last_preview_update = now
