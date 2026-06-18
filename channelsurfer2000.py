@@ -550,6 +550,7 @@ _LOCAL_ASSET_SIGNATURE_CACHE = {}
 _PERF_STATS = {}
 _CHANNEL_BUG_CACHE = {}  # keyed by (root_path, channel_name) -> QPixmap or None
 _VAULT_PLACEHOLDER_PIXMAP_CACHE = {}
+_STARFIELD_PIXMAP_CACHE = {}
 _VAULT_PERF_ACTIVE_COUNTERS = None
 _SPECIAL_CHANNEL_PREVIEW_CACHE = {}
 
@@ -5756,16 +5757,16 @@ def draw_classic_cable_starfield(painter, rect, theme_name, seed_offset=0):
     painter.restore()
 
 
-def draw_stars_of_uranus_overlay(painter, rect, seed_offset=0, light_mode=False):
-    """Faint gold/yellow stars — the shared Stars of Uranus starfield overlay."""
-    seed = rect.width() * 10007 + rect.height() * 1009 + 97 + int(seed_offset)
+def _render_stars_of_uranus_pixmap(width, height, seed_offset, light_mode):
+    seed = width * 10007 + height * 1009 + 97 + int(seed_offset)
     rng = random.Random(seed)
-    star_count = max(140, (rect.width() * rect.height()) // 2800)
-    painter.save()
-    painter.setClipRect(rect)
+    star_count = max(140, (width * height) // 2800)
+    pixmap = QPixmap(max(1, width), max(1, height))
+    pixmap.fill(Qt.transparent)
+    painter = QPainter(pixmap)
     for _ in range(star_count):
-        x = rng.randint(rect.left(), max(rect.left(), rect.right() - 2))
-        y = rng.randint(rect.top(), max(rect.top(), rect.bottom() - 2))
+        x = rng.randint(0, max(0, width - 2))
+        y = rng.randint(0, max(0, height - 2))
         roll = rng.random()
         if roll < 0.60:
             size = 1
@@ -5779,6 +5780,31 @@ def draw_stars_of_uranus_overlay(painter, rect, seed_offset=0, light_mode=False)
         else:
             alpha = 130 + rng.randint(0, 110)
             painter.fillRect(x, y, size, size, QColor(255, 242, 168, alpha))
+    painter.end()
+    return pixmap
+
+
+def draw_stars_of_uranus_overlay(painter, rect, seed_offset=0, light_mode=False):
+    """Faint gold/yellow stars — the shared Stars of Uranus starfield overlay.
+
+    The star field is deterministic for a given (size, seed_offset, light_mode),
+    so it is rendered once into a cached QPixmap and blitted on every repaint
+    instead of re-running the RNG/fillRect loop per frame (this loop was a
+    major contributor to Vault/Guide paint latency during scroll animation).
+    """
+    width, height = rect.width(), rect.height()
+    if width <= 0 or height <= 0:
+        return
+    key = (width, height, int(seed_offset), bool(light_mode))
+    pixmap = _STARFIELD_PIXMAP_CACHE.get(key)
+    if pixmap is None:
+        pixmap = _render_stars_of_uranus_pixmap(width, height, seed_offset, light_mode)
+        if len(_STARFIELD_PIXMAP_CACHE) >= 64:
+            _STARFIELD_PIXMAP_CACHE.pop(next(iter(_STARFIELD_PIXMAP_CACHE)))
+        _STARFIELD_PIXMAP_CACHE[key] = pixmap
+    painter.save()
+    painter.setClipRect(rect)
+    painter.drawPixmap(rect.topLeft(), pixmap)
     painter.restore()
 
 
@@ -18170,10 +18196,13 @@ class VideoWindow(QWidget):
     def is_vault_active(self):
         return self.on_demand_overlay.isVisible()
 
-    def should_suspend_background_visuals(self):
-        return self.background_visuals_suspended or self.is_vault_active()
+    def is_navigation_overlay_active(self):
+        return self.guide_overlay.isVisible() or self.on_demand_overlay.isVisible()
 
-    def suspend_background_visuals_for_vault(self):
+    def should_suspend_background_visuals(self):
+        return self.background_visuals_suspended or self.is_navigation_overlay_active()
+
+    def suspend_background_visuals_for_navigation_overlay(self):
         if self.background_visuals_suspended:
             return
         self.background_visuals_suspended = True
@@ -18194,8 +18223,10 @@ class VideoWindow(QWidget):
         self.youtube_view.hide()
         self.hide_nettv_status()
 
-    def resume_background_visuals_after_vault(self):
+    def resume_background_visuals_after_navigation_overlay(self):
         if not self.background_visuals_suspended:
+            return
+        if self.is_navigation_overlay_active():
             return
         state = dict(self._suspended_special_view_state)
         self._suspended_special_view_state = {}
@@ -18216,6 +18247,12 @@ class VideoWindow(QWidget):
         if state.get("youtube_view") and self.youtube_url:
             self.youtube_view.show()
             self.youtube_view.lower()
+
+    def suspend_background_visuals_for_vault(self):
+        self.suspend_background_visuals_for_navigation_overlay()
+
+    def resume_background_visuals_after_vault(self):
+        self.resume_background_visuals_after_navigation_overlay()
 
     def show_radiowave_channel(self, state):
         if self.should_suspend_background_visuals():
@@ -27502,6 +27539,8 @@ class ChannelSurfer(QWidget):
         self.hide_on_demand()
         if self.current_radiowave_channel() is not None:
             self.video_window.hide_radiowave_channel()
+        self.video_window.suspend_background_visuals_for_navigation_overlay()
+        self.suspend_video_decode_for_navigation_overlay()
         self.guide_selection = self.current_channel
         self.video_window.guide_overlay.settings_open = False
         self.video_window.guide_overlay.settings_focus_index = 0
@@ -27516,6 +27555,8 @@ class ChannelSurfer(QWidget):
         self.video_window.guide_overlay.nav_focus = False
         self.video_window.guide_overlay.hide()
         self.video_window.channel_bug.on_guide_visible(False)
+        self.resume_video_decode_after_navigation_overlay()
+        self.video_window.resume_background_visuals_after_navigation_overlay()
         if restore_special and self.playback_mode == "live" and self.current_radiowave_channel() is not None and not self.video_window.info_overlay.isVisible():
             self.video_window.show_radiowave_channel(self.radiowave_state)
 
@@ -29695,7 +29736,8 @@ class ChannelSurfer(QWidget):
             "catalog_dirty": self.on_demand_catalog_dirty,
         })
         self.ensure_on_demand_focus_state()
-        self.video_window.suspend_background_visuals_for_vault()
+        self.video_window.suspend_background_visuals_for_navigation_overlay()
+        self.suspend_video_decode_for_navigation_overlay()
         self.video_window.channel_bug.on_guide_visible(True)
         self.refresh_on_demand(show=True)
 
@@ -29704,9 +29746,34 @@ class ChannelSurfer(QWidget):
         self.on_demand_settings_open = False
         self.video_window.on_demand_overlay.hide()
         self.video_window.channel_bug.on_guide_visible(False)
-        self.video_window.resume_background_visuals_after_vault()
+        self.resume_video_decode_after_navigation_overlay()
+        self.video_window.resume_background_visuals_after_navigation_overlay()
         if self.current_radiowave_channel() is not None:
             self.schedule_radiowave_state_refresh(0)
+
+    def suspend_video_decode_for_navigation_overlay(self):
+        """Detach active video sinks while Guide/Vault fully cover playback.
+
+        The navigation overlays paint over the video surface and use cached
+        preview frames, so per-frame videoFrameChanged work is wasted while the
+        user is scrolling. Detaching the sink lets playback audio continue while
+        NetTV/local video decode and frame conversion stop competing with the UI
+        thread.
+        """
+        if getattr(self, "_video_decode_suspended_for_navigation_overlay", False):
+            return
+        self._video_decode_suspended_for_navigation_overlay = True
+        self.media_player.setVideoSink(None)
+        self.nettv_player.setVideoSink(None)
+
+    def resume_video_decode_after_navigation_overlay(self):
+        if not getattr(self, "_video_decode_suspended_for_navigation_overlay", False):
+            return
+        if self.video_window.guide_overlay.isVisible() or self.video_window.on_demand_overlay.isVisible():
+            return
+        self._video_decode_suspended_for_navigation_overlay = False
+        self.media_player.setVideoSink(self.video_sink)
+        self.nettv_player.setVideoSink(self.nettv_video_sink)
 
     def log_vault_select(self, message, **fields):
         write_vault_debug_log("VaultSelect", message, fields)
