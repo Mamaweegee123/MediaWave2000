@@ -27524,7 +27524,7 @@ class ChannelSurfer(QWidget):
     @Slot()
     def toggle_guide(self):
         if self.video_window.on_demand_overlay.isVisible():
-            self.hide_on_demand()
+            self.hide_on_demand(resume_navigation_work=False)
             self.show_guide()
             return
         if self.video_window.guide_overlay.isVisible():
@@ -27536,7 +27536,7 @@ class ChannelSurfer(QWidget):
         if not self.channels:
             return
         self.hide_info_banner()
-        self.hide_on_demand()
+        self.hide_on_demand(resume_navigation_work=False)
         if self.current_radiowave_channel() is not None:
             self.video_window.hide_radiowave_channel()
         self.video_window.suspend_background_visuals_for_navigation_overlay()
@@ -27550,14 +27550,15 @@ class ChannelSurfer(QWidget):
         self.refresh_guide(show=True)
 
     @Slot()
-    def hide_guide(self, restore_special=True):
+    def hide_guide(self, restore_special=True, resume_navigation_work=True):
         self.video_window.guide_overlay.settings_open = False
         self.video_window.guide_overlay.nav_focus = False
         self.video_window.guide_overlay.hide()
         self.video_window.channel_bug.on_guide_visible(False)
-        self.resume_video_decode_after_navigation_overlay()
-        self.video_window.resume_background_visuals_after_navigation_overlay()
-        if restore_special and self.playback_mode == "live" and self.current_radiowave_channel() is not None and not self.video_window.info_overlay.isVisible():
+        if resume_navigation_work:
+            self.resume_video_decode_after_navigation_overlay()
+            self.video_window.resume_background_visuals_after_navigation_overlay()
+        if restore_special and resume_navigation_work and self.playback_mode == "live" and self.current_radiowave_channel() is not None and not self.video_window.info_overlay.isVisible():
             self.video_window.show_radiowave_channel(self.radiowave_state)
 
     def guide_preview_refresh_due(self, minimum_interval=GUIDE_PREVIEW_REFRESH_INTERVAL_SECONDS):
@@ -29091,7 +29092,7 @@ class ChannelSurfer(QWidget):
                 self.refresh_guide()
                 return
             if index == 2:
-                self.hide_guide()
+                self.hide_guide(restore_special=False, resume_navigation_work=False)
                 self.hide_info_banner()
                 self.show_on_demand()
                 return
@@ -29151,7 +29152,7 @@ class ChannelSurfer(QWidget):
             self.video_window.guide_overlay.timeline_start = self.video_window.guide_overlay.floor_to_half_hour(time.time())
             self.refresh_guide()
             return
-        self.hide_guide()
+        self.hide_guide(restore_special=False, resume_navigation_work=False)
         self.hide_info_banner()
         self.show_on_demand()
 
@@ -29664,7 +29665,7 @@ class ChannelSurfer(QWidget):
     @Slot()
     def toggle_on_demand(self):
         if self.video_window.guide_overlay.isVisible():
-            self.hide_guide()
+            self.hide_guide(restore_special=False, resume_navigation_work=False)
             self.show_on_demand()
             return
         if self.video_window.on_demand_overlay.isVisible():
@@ -29700,7 +29701,7 @@ class ChannelSurfer(QWidget):
             self.status.setText("Load a catalog to browse On Demand.")
             return
         self.hide_info_banner()
-        self.hide_guide()
+        self.hide_guide(restore_special=False, resume_navigation_work=False)
         if not self.video_window.isVisible():
             if self.on_demand_catalog and self.app_settings.get("allow_dummy_vault_catalog", False) and not self.channels:
                 screen = self.screen() or QApplication.primaryScreen()
@@ -29742,13 +29743,14 @@ class ChannelSurfer(QWidget):
         self.refresh_on_demand(show=True)
 
     @Slot()
-    def hide_on_demand(self):
+    def hide_on_demand(self, resume_navigation_work=True):
         self.on_demand_settings_open = False
         self.video_window.on_demand_overlay.hide()
         self.video_window.channel_bug.on_guide_visible(False)
-        self.resume_video_decode_after_navigation_overlay()
-        self.video_window.resume_background_visuals_after_navigation_overlay()
-        if self.current_radiowave_channel() is not None:
+        if resume_navigation_work:
+            self.resume_video_decode_after_navigation_overlay()
+            self.video_window.resume_background_visuals_after_navigation_overlay()
+        if resume_navigation_work and self.current_radiowave_channel() is not None:
             self.schedule_radiowave_state_refresh(0)
 
     def suspend_video_decode_for_navigation_overlay(self):
