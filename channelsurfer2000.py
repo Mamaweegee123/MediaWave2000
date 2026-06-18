@@ -8043,7 +8043,9 @@ class GuideOverlay(OverlayFadeMixin, QWidget):
         profile = GUIDE_PROFILES[self.profile_name]
         theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
-        painter.setOpacity(self.fade_opacity())
+        _fade = self.fade_opacity()
+        if _fade < 1.0:
+            painter.setOpacity(_fade)
         panel = self.guide_canvas_rect()
         cable_skin = self.skin_style() == "cable"
         metrics = self.guide_metrics()
@@ -10410,6 +10412,11 @@ class OnDemandOverlay(OverlayFadeMixin, QWidget):
     def skin_style(self):
         return GUIDE_SKINS.get(normalize_skin_name(self.skin_name), GUIDE_SKINS[DEFAULT_SKIN_NAME]).get("style", "aero")
 
+    def start_fade_in(self):
+        """Vault overlay always snaps in — no fade. Full-scene opacity compositing is too expensive."""
+        self._fade_opacity = 1.0
+        self._fade_timer.stop()
+
     def show_browser(self, state):
         self.apply_stream_state(state or {})
         if self.parentWidget() is not None:
@@ -10715,7 +10722,9 @@ class OnDemandOverlay(OverlayFadeMixin, QWidget):
         theme = app_theme(self.theme_name, self.skin_name, mode=self.sleek_mode)
         profile = GUIDE_PROFILES[self.profile_name]
         painter = QPainter(self)
-        painter.setOpacity(self.fade_opacity())
+        _fade = self.fade_opacity()
+        if _fade < 1.0:
+            painter.setOpacity(_fade)
         full_background = theme.get("vault_page_bg", theme.get("vault_panel_bg", theme["bg"]))
         painter.fillRect(
             self.rect(),
@@ -14939,7 +14948,9 @@ class InfoOverlay(OverlayFadeMixin, QWidget):
 
         theme = app_theme(self.theme_name, self.skin_name, self.sleek_mode if self.skin_style() == "flat" else None)
         painter = QPainter(self)
-        painter.setOpacity(self.fade_opacity())
+        _fade = self.fade_opacity()
+        if _fade < 1.0:
+            painter.setOpacity(_fade)
         if self.skin_style() == "cable":
             self.draw_set_top_box_info_overlay(painter, theme)
             return
@@ -19225,7 +19236,9 @@ class TransportOverlay(OverlayFadeMixin, QWidget):
         if not self.state:
             return
         painter = QPainter(self)
-        painter.setOpacity(self.fade_opacity())
+        _fade = self.fade_opacity()
+        if _fade < 1.0:
+            painter.setOpacity(_fade)
         theme = app_theme(self.theme_name, self.skin_name)
         target_rect = overlay_target_rect(self)
 
