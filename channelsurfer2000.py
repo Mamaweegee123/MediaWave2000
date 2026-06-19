@@ -2483,6 +2483,22 @@ def youtube_download_template(entry):
     return os.path.join(YOUTUBE_VIDEO_CACHE_DIR, f"{cache_key}.%(ext)s")
 
 
+def clear_youtube_video_cache():
+    # Refuse to follow the cache dir itself if it's a symlink — only ever clear
+    # the real on-disk cache, never whatever a symlink might point at.
+    if os.path.islink(YOUTUBE_VIDEO_CACHE_DIR) or not os.path.isdir(YOUTUBE_VIDEO_CACHE_DIR):
+        return
+    for name in os.listdir(YOUTUBE_VIDEO_CACHE_DIR):
+        path = os.path.join(YOUTUBE_VIDEO_CACHE_DIR, name)
+        try:
+            if os.path.isfile(path) or os.path.islink(path):
+                os.remove(path)
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+        except OSError:
+            pass
+
+
 def pixmap_has_visible_content(pixmap, threshold=10):
     """Return True when a frame looks like real picture, not a dead black frame.
 
@@ -21198,6 +21214,16 @@ class AdvancedConfigDialog(QDialog):
         test_layout.addWidget(self.dev_menu_enabled)
         layout.addWidget(test_card)
 
+        self.nettv_clear_cache_on_exit = QCheckBox("Delete NetTV cache on app close")
+        self.nettv_clear_cache_on_exit.setChecked(bool(_settings.get("nettv_clear_cache_on_exit", False)))
+        storage_card, storage_layout = self.build_section_card(
+            "NetTV Storage",
+            "NetTV caches downloaded YouTube video files on disk so channels can replay without "
+            "re-downloading. Enable this to wipe that cache every time the app closes.",
+        )
+        storage_layout.addWidget(self.nettv_clear_cache_on_exit)
+        layout.addWidget(storage_card)
+
         layout.addStretch(1)
         return self.build_scroll_tab(content)
 
@@ -21309,6 +21335,7 @@ class AdvancedConfigDialog(QDialog):
             "allow_empty_catalog_tv": self.allow_empty_catalog_tv.isChecked(),
             "allow_dummy_vault_catalog": self.allow_dummy_vault_catalog.isChecked(),
             "dev_menu_enabled": self.dev_menu_enabled.isChecked(),
+            "nettv_clear_cache_on_exit": self.nettv_clear_cache_on_exit.isChecked(),
             "commercials": commercials,
             "catalog_channel_settings": self.collect_catalog_channel_settings(),
             "channel_bug": self._collect_channel_bug_settings(),
@@ -23322,6 +23349,7 @@ class ChannelSurfer(QWidget):
         self.app_settings["allow_empty_catalog_tv"] = values["allow_empty_catalog_tv"]
         self.app_settings["allow_dummy_vault_catalog"] = values["allow_dummy_vault_catalog"]
         self.app_settings["dev_menu_enabled"] = values["dev_menu_enabled"]
+        self.app_settings["nettv_clear_cache_on_exit"] = values.get("nettv_clear_cache_on_exit", False)
         self.app_settings["commercials"] = normalize_commercials_config(values.get("commercials", {}))
         self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(values.get("catalog_channel_settings", {}))
         self.app_settings["channel_bug"] = normalize_channel_bug_settings(values.get("channel_bug", {}))
@@ -30894,6 +30922,8 @@ class ChannelSurfer(QWidget):
         self.stop_radiowave_background()
         self.video_window.static.hide()
         save_json_file(RESUME_STATE_FILE, self.resume_state)
+        if self.app_settings.get("nettv_clear_cache_on_exit", False):
+            clear_youtube_video_cache()
         self.video_window.close()
         super().closeEvent(event)
 
