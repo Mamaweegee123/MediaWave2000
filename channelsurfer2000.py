@@ -22110,6 +22110,15 @@ class AdvancedConfigDialog(QDialog):
         hints_note.setWordWrap(True)
         catalog_layout.addWidget(hints_note)
 
+        customization_note = QLabel(
+            "Tip: MediaWave can use local posters, backdrops, logos, and description.txt files next to "
+            "your shows and movies. You can also add commercials, bumpers, promos, and station IDs from "
+            "the Commercials section. See docs/Metadata & Artwork Guide.txt for details."
+        )
+        customization_note.setObjectName("fieldHelp")
+        customization_note.setWordWrap(True)
+        catalog_layout.addWidget(customization_note)
+
         header = QWidget()
         header_layout = QGridLayout(header)
         header_layout.setContentsMargins(8, 0, 8, 0)

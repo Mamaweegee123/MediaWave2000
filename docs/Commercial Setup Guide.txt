@@ -21,7 +21,9 @@ Recommended: run them through MediaWave Converter first for smooth playback.
 
 SETTING UP YOUR COMMERCIALS FOLDER
 ------------------------------------
-1. Put your commercial clips in a folder. Organize however you like.
+1. Put your commercial clips in a folder. Organize however you like —
+   MediaWave scans the whole folder recursively, including subfolders
+   nested inside subfolders.
 
    Example:
      Commercials/
@@ -49,19 +51,59 @@ Or choose any other folder on any drive. Whatever works.
 
 COMMERCIAL TIMING MODES
 ------------------------
-  Between Episodes     - break plays between each episode
-  Timed Mid-Roll       - break plays every few minutes
+  Between Episodes Only      - a break plays between each episode/show
+  Timed Mid-Episode Breaks   - a break plays every few minutes during
+                               longer shows, like a real mid-show ad break
 
 DENSITY SETTINGS
 ----------------
   Light     - 1 to 2 ads per break
-  Normal    - 2 to 4 ads per break
-  Heavy     - 4 to 6 ads per break
+  Medium    - 2 to 3 ads per break
+  Heavy     - 3 to 5 ads per break
 
 PER-CHANNEL OVERRIDES
 ---------------------
 In Advanced Config > My Catalog, you can override commercial settings
 for individual channels. Handy if one channel needs different timing.
+
+HOW MEDIAWAVE SORTS YOUR CLIPS
+--------------------------------
+MediaWave reads your folder names to guess what kind of clip something is.
+You don't have to name folders perfectly — this is just for organizing and
+filtering your library, not a strict requirement.
+
+  Folder name contains...           MediaWave treats clips inside as...
+  ---------------------------       -------------------------------------
+  "bumper" / "bumpers"               Bumpers
+  "station id" / "ident(s)"          Station IDs
+  "promo" / "promos" / "network      Promos
+  promos"
+  (anything else)                    Regular commercials
+
+  Folder names like "80s", "90s", "2000s", "2010s", or "70s" are picked up
+  as the clip's era, so you can mix and match by decade later.
+
+  Folder names that mention things like "kids", "toys", "food", "tech",
+  "games", "music", "sports", or "movies" are picked up as a rough category
+  for the same reason.
+
+BUMPERS, PROMOS & STATION IDs TODAY
+--------------------------------------
+Right now, bumpers/promos/station IDs are flavor mixed into your regular
+commercial breaks — MediaWave occasionally slips one in alongside your ads,
+based on the toggles in Advanced Config (Allow Bumpers / Allow Promos /
+Allow Station IDs).
+
+They are NOT yet a way to assign a specific bumper to a specific show
+(like always playing a particular Toonami-style bumper before one show).
+That per-show bumper feature is planned but not built yet.
+
+ONE MORE THING
+----------------
+Commercials, bumpers, promos, and station IDs never show up as their own
+entry in the Guide. The Guide always shows your actual program — ad breaks
+just play in between, the same way a real TV guide doesn't list the
+commercials either.
 
 DISABLING COMMERCIALS
 ---------------------

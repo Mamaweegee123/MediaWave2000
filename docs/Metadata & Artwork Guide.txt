@@ -1,0 +1,92 @@
+===============================================================================
+METADATA & ARTWORK GUIDE
+Want your Vault to feel less generic? Read on.
+===============================================================================
+
+Want your Vault to feel less generic? Drop a poster or description next to
+your show/movie files and MediaWave will use it when it can.
+
+This is entirely optional. MediaWave runs fine without any of this — it just
+looks a little more "stock" without it.
+
+WHAT MEDIAWAVE LOOKS FOR
+--------------------------
+MediaWave checks for these exact file names (case does not matter) sitting
+next to your media. If more than one matching name exists, MediaWave uses
+the first one it finds.
+
+  POSTER (cover art)
+    poster.jpg / poster.jpeg / poster.png
+    folder.jpg / folder.jpeg / folder.png
+    cover.jpg  / cover.jpeg  / cover.png
+
+  FANART / BACKDROP (background art)
+    fanart.jpg     / fanart.jpeg     / fanart.png
+    background.jpg / background.jpeg / background.png
+    backdrop.jpg   / backdrop.jpeg   / backdrop.png
+
+  CLEAR LOGO
+    clearlogo.png / clearlogo.jpg / clearlogo.jpeg
+    logo.png      / logo.jpg      / logo.jpeg
+    clearlogo-white.png
+
+  DESCRIPTION (plain text, shown as the summary)
+    show.txt / description.txt / plot.txt / summary.txt / desc.txt / about.txt
+
+WHERE TO PUT THESE FILES
+--------------------------
+MOVIES:
+  Put the files in the same folder as the movie file itself.
+
+    Movies/
+      The Matrix (1999)/
+        The Matrix.mp4
+        poster.jpg
+        description.txt
+
+TV SHOWS (flat, no season folders):
+  Put the files in the show's folder, next to the episode files.
+
+    Shows/
+      SpongeBob SquarePants/
+        poster.jpg
+        description.txt
+        S01E01.mp4
+        S01E02.mp4
+
+TV SHOWS (with Season folders):
+  MediaWave checks BOTH the season folder and the show folder one level up,
+  so you can put artwork at whichever level makes sense for you. A file
+  found at the show level is shared by every season unless a season-level
+  file overrides it.
+
+    Shows/
+      Dragon Ball Z/
+        poster.jpg              <-- used for every season unless overridden
+        description.txt
+        Season 1/
+          poster.jpg             <-- overrides just for Season 1
+          S01E01.mp4
+        Season 2/
+          S02E01.mp4
+
+CHANNELS:
+  Sidecar files (poster.jpg, description.txt, etc.) are not used at the
+  channel level. For channel-level customization, use the "Channel Blurb"
+  and "Genre Tags" fields in Advanced Config > My Catalog instead — these
+  are typed directly into MediaWave, not dropped as files.
+
+  Channel logos are a separate, channel-only convention — see
+  docs/Channel Setup Guide.txt for the Logos/ subfolder.
+
+A FEW NOTES
+------------
+- Descriptions are plain text files — no formatting, just write what you want
+  shown. MediaWave trims very long descriptions for display.
+- If no poster is found, MediaWave shows a placeholder instead. Nothing
+  breaks.
+- These files are only ever read, never modified or deleted by MediaWave.
+- If the code is ever updated to support more sidecar names, this guide will
+  be updated to match it.
+
+===============================================================================
