@@ -1326,6 +1326,7 @@ AIRING_SEASONAL_PRESETS = (
     "custom_date_range",
 )
 AIRING_RULE_STRICT_TYPES = (
+    "prefer_between_times",
     "only_between_times",
     "blocked_between_times",
     "only_on_dates",
@@ -1588,7 +1589,7 @@ def validate_airing_rules_config(config, known_channel_ids=None, known_title_key
             check_date_range(label, rule.get("start_date"), rule.get("end_date"))
             if rule_type == "custom_date_range" and not (rule.get("start_date") and rule.get("end_date")):
                 warnings.append(f"{label}: custom_date_range rule is missing start_date/end_date")
-            if rule_type in ("only_between_times", "blocked_between_times") and not (rule.get("start_time") and rule.get("end_time")):
+            if rule_type in ("prefer_between_times", "only_between_times", "blocked_between_times") and not (rule.get("start_time") and rule.get("end_time")):
                 warnings.append(f"{label}: {rule_type} rule is missing start_time/end_time")
             if rule_type in ("only_between_dates", "blocked_between_dates") and not (rule.get("start_date") and rule.get("end_date")):
                 warnings.append(f"{label}: {rule_type} rule is missing start_date/end_date")
@@ -1670,6 +1671,8 @@ CHANNEL_RULE_PRESETS = [
     ("Weekend Block",      "prefer_weekends"),
     ("Christmas Season",   "christmas_season"),
     ("Spooky Season",      "spooky_season"),
+    ("Summer Season",      "summer"),
+    ("Winter Season",      "winter"),
     ("Movie Night",        "prefer_movie_block"),
     ("Block From Channel", "block_from_channel"),
 ]
@@ -1732,6 +1735,7 @@ def airing_rule_summary(rule, channel_name=""):
         "summer":              "Summer only",
         "winter":              "Winter only",
         "custom_date_range":   f"Date range {d_start} – {d_end}" if d_start or d_end else "Custom date range",
+        "prefer_between_times": f"Prefer airing between {t_start} – {t_end}" if t_start or t_end else "Prefer a time window",
         "only_between_times":  f"Only between {t_start} – {t_end}" if t_start or t_end else "Only between set times",
         "blocked_between_times": f"Blocked between {t_start} – {t_end}" if t_start or t_end else "Blocked between set times",
         "only_on_dates":       "Only on specific dates",
@@ -20703,7 +20707,7 @@ class AiringRulesDialog(QDialog):
         self._genre_tags = list(genre_tags or [])
         self._show_titles = list(show_titles or [])
 
-        self.setWindowTitle(f"Airing Rules — {self._channel_name}")
+        self.setWindowTitle(f"Channel Hints — {self._channel_name}")
         self.setModal(True)
         self.resize(860, 680)
         self.setMinimumSize(700, 520)
@@ -20724,8 +20728,9 @@ class AiringRulesDialog(QDialog):
         title_lbl.setObjectName("sectionHeader")
         hdr_layout.addWidget(title_lbl)
         desc_lbl = QLabel(
-            "Airing Rules let you guide when this channel, shows, movies, and genres should play. "
-            "MediaWave will still schedule normally unless you add rules."
+            "Channel Hints help MediaWave decide when this channel feels right — like a late-night movie "
+            "block or a Christmas-only channel. Leave this off to let MediaWave schedule it normally. "
+            "Hints are saved now; deeper scheduling behavior is coming in a future update."
         )
         desc_lbl.setObjectName("fieldHelp")
         desc_lbl.setWordWrap(True)
@@ -20741,7 +20746,7 @@ class AiringRulesDialog(QDialog):
         self._tab_genres  = self._build_genres_tab()
         self._tab_takeovers = self._build_takeovers_tab()
 
-        self._tabs.addTab(self._tab_channel,   "Channel Rules")
+        self._tabs.addTab(self._tab_channel,   "When This Airs")
         self._tabs.addTab(self._tab_shows,     "Shows & Movies")
         self._tabs.addTab(self._tab_genres,    "Genres")
         self._tabs.addTab(self._tab_takeovers, "Channel Takeovers")
@@ -20892,6 +20897,9 @@ class AiringRulesDialog(QDialog):
         presets_layout.addLayout(grid)
         layout.addWidget(presets_card)
 
+        layout.addWidget(self._build_time_window_card())
+        layout.addWidget(self._build_dates_card())
+
         # Saved rules list
         rules_card = QWidget()
         rules_card.setObjectName("sectionCard")
@@ -20952,10 +20960,189 @@ class AiringRulesDialog(QDialog):
             btn.blockSignals(True)
             btn.setChecked(self._has_channel_rule(rule_type))
             btn.blockSignals(False)
+        if hasattr(self, "_window_mode_combo"):
+            self._sync_time_window_widgets()
+        if hasattr(self, "_dates_mode_combo"):
+            self._sync_dates_widgets()
 
     def _remove_channel_rule_directly(self, rule):
         rule_id = rule.get("id", "")
         self._cfg["channel_rules"] = [r for r in self._cfg.get("channel_rules", []) if r.get("id") != rule_id]
+        self._rebuild_channel_rules_list()
+
+    # ── Time Window card ─────────────────────────────────────────────────────
+
+    _WINDOW_MODES = [
+        ("No time restriction", ""),
+        ("Prefer this time window", "prefer_between_times"),
+        ("Only show during this window", "only_between_times"),
+        ("Block during this window", "blocked_between_times"),
+    ]
+
+    def _window_rule(self):
+        window_types = {rt for _, rt in self._WINDOW_MODES if rt}
+        for rule in self._channel_rules():
+            if rule.get("rule_type") in window_types and rule.get("enabled", True):
+                return rule
+        return None
+
+    def _build_time_window_card(self):
+        card = QWidget()
+        card.setObjectName("sectionCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(14, 12, 14, 14)
+        v.setSpacing(8)
+        hdr = QLabel("Time Window")
+        hdr.setObjectName("sectionHeader")
+        v.addWidget(hdr)
+        hint = QLabel("Works overnight too — e.g. 10:00 PM to 6:00 AM for a late-night movie block.")
+        hint.setObjectName("fieldHelp")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self._window_mode_combo = QComboBox()
+        self._window_mode_combo.addItems([label for label, _ in self._WINDOW_MODES])
+        row.addWidget(self._window_mode_combo, 1)
+        self._window_start_input = QLineEdit()
+        self._window_start_input.setPlaceholderText("Start (e.g. 22:00)")
+        row.addWidget(self._window_start_input)
+        self._window_end_input = QLineEdit()
+        self._window_end_input.setPlaceholderText("End (e.g. 06:00)")
+        row.addWidget(self._window_end_input)
+        v.addLayout(row)
+
+        self._sync_time_window_widgets()
+
+        self._window_mode_combo.currentIndexChanged.connect(self._on_window_changed)
+        self._window_start_input.editingFinished.connect(self._on_window_changed)
+        self._window_end_input.editingFinished.connect(self._on_window_changed)
+        return card
+
+    def _sync_time_window_widgets(self):
+        rule = self._window_rule()
+        mode_labels = [label for label, _ in self._WINDOW_MODES]
+        if rule is None:
+            self._window_mode_combo.blockSignals(True)
+            self._window_mode_combo.setCurrentText(mode_labels[0])
+            self._window_mode_combo.blockSignals(False)
+            self._window_start_input.setText("")
+            self._window_end_input.setText("")
+        else:
+            label = next((lbl for lbl, rt in self._WINDOW_MODES if rt == rule.get("rule_type")), mode_labels[0])
+            self._window_mode_combo.blockSignals(True)
+            self._window_mode_combo.setCurrentText(label)
+            self._window_mode_combo.blockSignals(False)
+            self._window_start_input.setText(rule.get("start_time", ""))
+            self._window_end_input.setText(rule.get("end_time", ""))
+
+    def _on_window_changed(self, *_args):
+        mode_text = self._window_mode_combo.currentText()
+        rule_type = next((rt for lbl, rt in self._WINDOW_MODES if lbl == mode_text), "")
+        window_types = {rt for _, rt in self._WINDOW_MODES if rt}
+        self._cfg["channel_rules"] = [
+            r for r in self._cfg.get("channel_rules", [])
+            if not (r.get("target", {}).get("channel_id") == self._channel_id and r.get("rule_type") in window_types)
+        ]
+        if rule_type:
+            start = normalize_airing_time(self._window_start_input.text())
+            end = normalize_airing_time(self._window_end_input.text())
+            rule = normalize_airing_rule({
+                "level": "channel",
+                "rule_type": rule_type,
+                "rule_strength": "hint",
+                "enabled": True,
+                "start_time": start,
+                "end_time": end,
+                "target": {"channel_id": self._channel_id, "title": "", "title_key": "", "genre": "", "catalog_item_id": ""},
+            })
+            self._cfg.setdefault("channel_rules", []).append(rule)
+        self._rebuild_channel_rules_list()
+
+    # ── Specific Dates card ──────────────────────────────────────────────────
+
+    _DATES_MODES = [
+        ("No date restriction", ""),
+        ("Only on these dates", "only_on_dates"),
+        ("Block on these dates", "blocked_on_dates"),
+    ]
+
+    def _dates_rule(self):
+        dates_types = {rt for _, rt in self._DATES_MODES if rt}
+        for rule in self._channel_rules():
+            if rule.get("rule_type") in dates_types and rule.get("enabled", True):
+                return rule
+        return None
+
+    def _build_dates_card(self):
+        card = QWidget()
+        card.setObjectName("sectionCard")
+        v = QVBoxLayout(card)
+        v.setContentsMargins(14, 12, 14, 14)
+        v.setSpacing(8)
+        hdr = QLabel("Specific Dates")
+        hdr.setObjectName("sectionHeader")
+        v.addWidget(hdr)
+        hint = QLabel("Great for one-off events, like a holiday marathon. Separate dates with commas.")
+        hint.setObjectName("fieldHelp")
+        hint.setWordWrap(True)
+        v.addWidget(hint)
+
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        self._dates_mode_combo = QComboBox()
+        self._dates_mode_combo.addItems([label for label, _ in self._DATES_MODES])
+        row.addWidget(self._dates_mode_combo, 1)
+        self._dates_input = QLineEdit()
+        self._dates_input.setPlaceholderText("e.g. 2026-12-24, 2026-12-25")
+        row.addWidget(self._dates_input, 2)
+        v.addLayout(row)
+
+        self._sync_dates_widgets()
+
+        self._dates_mode_combo.currentIndexChanged.connect(self._on_dates_changed)
+        self._dates_input.editingFinished.connect(self._on_dates_changed)
+        return card
+
+    def _sync_dates_widgets(self):
+        rule = self._dates_rule()
+        mode_labels = [label for label, _ in self._DATES_MODES]
+        if rule is None:
+            self._dates_mode_combo.blockSignals(True)
+            self._dates_mode_combo.setCurrentText(mode_labels[0])
+            self._dates_mode_combo.blockSignals(False)
+            self._dates_input.setText("")
+        else:
+            label = next((lbl for lbl, rt in self._DATES_MODES if rt == rule.get("rule_type")), mode_labels[0])
+            self._dates_mode_combo.blockSignals(True)
+            self._dates_mode_combo.setCurrentText(label)
+            self._dates_mode_combo.blockSignals(False)
+            dates_field = "only_on_dates" if rule.get("rule_type") == "only_on_dates" else "blocked_on_dates"
+            self._dates_input.setText(", ".join(rule.get(dates_field, []) or []))
+
+    def _on_dates_changed(self, *_args):
+        mode_text = self._dates_mode_combo.currentText()
+        rule_type = next((rt for lbl, rt in self._DATES_MODES if lbl == mode_text), "")
+        dates_types = {rt for _, rt in self._DATES_MODES if rt}
+        self._cfg["channel_rules"] = [
+            r for r in self._cfg.get("channel_rules", [])
+            if not (r.get("target", {}).get("channel_id") == self._channel_id and r.get("rule_type") in dates_types)
+        ]
+        if rule_type:
+            raw_dates = [d.strip() for d in self._dates_input.text().split(",")]
+            dates = [normalize_airing_date(d) for d in raw_dates if d]
+            dates = [d for d in dates if d]
+            dates_field = "only_on_dates" if rule_type == "only_on_dates" else "blocked_on_dates"
+            rule = normalize_airing_rule({
+                "level": "channel",
+                "rule_type": rule_type,
+                "rule_strength": "hint",
+                "enabled": True,
+                dates_field: dates,
+                "target": {"channel_id": self._channel_id, "title": "", "title_key": "", "genre": "", "catalog_item_id": ""},
+            })
+            self._cfg.setdefault("channel_rules", []).append(rule)
         self._rebuild_channel_rules_list()
 
     # ── Shows & Movies tab ───────────────────────────────────────────────────
@@ -21914,6 +22101,15 @@ class AdvancedConfigDialog(QDialog):
         top_row.addWidget(reset_all)
         catalog_layout.addLayout(top_row)
 
+        hints_note = QLabel(
+            "Each channel below has a Channel Hints… button — optional hints for when a channel feels "
+            "right, like a late-night movie block or a Christmas-only channel. Leave it off to let "
+            "MediaWave schedule it normally."
+        )
+        hints_note.setObjectName("fieldHelp")
+        hints_note.setWordWrap(True)
+        catalog_layout.addWidget(hints_note)
+
         header = QWidget()
         header_layout = QGridLayout(header)
         header_layout.setContentsMargins(8, 0, 8, 0)
@@ -22063,9 +22259,9 @@ class AdvancedConfigDialog(QDialog):
         # wrapping in QHBoxLayout and using addLayout is the workaround.
         panel_footer = QHBoxLayout()
         panel_footer.setSpacing(8)
-        airing_rules_btn = QPushButton("Airing Rules…")
+        airing_rules_btn = QPushButton("Channel Hints…")
         airing_rules_btn.setObjectName("airingRulesBtn")
-        airing_rules_btn.setToolTip("Open Airing Rules editor for this channel")
+        airing_rules_btn.setToolTip("Set optional hints for when this channel should air")
         airing_rules_btn.clicked.connect(lambda _=False, ci=info, cid=channel_id: self._open_airing_rules(ci, cid))
         panel_footer.addWidget(airing_rules_btn)
         panel_footer.addStretch(1)
