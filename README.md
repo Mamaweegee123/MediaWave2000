@@ -50,6 +50,8 @@ See [FEATURES.md](FEATURES.md) for the full list, but here's the short version:
 ### 1. Organize your media
 
 Each subfolder in your catalog becomes a channel. The folder name is the channel name.
+Ad-break folders named Commercials, Bumpers, Promos, or Station IDs are skipped
+as channels and can be configured separately in Advanced Config.
 
 ```
 My Catalog/
@@ -119,7 +121,7 @@ Beyond your own library, MediaWave includes three built-in channels:
 
 ## MediaWave Converter
 
-A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to either .mp4,  with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
+A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to .mp4 with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
 
 Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 

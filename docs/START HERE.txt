@@ -53,6 +53,9 @@ CHANNEL SETUP
 Each subfolder inside your catalog becomes one TV channel.
 The folder name becomes the channel name.
 
+Folders named Commercials, Bumpers, Promos, or Station IDs are reserved for
+ad-break clips and are skipped as TV channels.
+
   Channels/
     HBO/           <-- becomes channel "HBO"
       show01.mp4

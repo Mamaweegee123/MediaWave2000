@@ -441,6 +441,24 @@ LOCAL_POSTER_NAMES = ("poster.jpg", "poster.jpeg", "poster.png", "folder.jpg", "
 LOCAL_FANART_NAMES = ("fanart.jpg", "fanart.jpeg", "fanart.png", "background.jpg", "background.jpeg", "background.png", "backdrop.jpg", "backdrop.jpeg", "backdrop.png")
 LOCAL_CLEARLOGO_NAMES = ("clearlogo.png", "clearlogo.jpg", "clearlogo.jpeg", "logo.png", "logo.jpg", "logo.jpeg", "clearlogo-white.png")
 LOCAL_DESCRIPTION_NAMES = ("show.txt", "description.txt", "plot.txt", "summary.txt", "desc.txt", "about.txt")
+CATALOG_AUXILIARY_FOLDER_NAMES = {
+    "commercials",
+    "commercial",
+    "ads",
+    "adverts",
+    "advertisements",
+    "bumpers",
+    "promos",
+    "station ids",
+    "station id",
+    "idents",
+    "ids",
+}
+
+
+def is_catalog_auxiliary_folder_name(name):
+    normalized = re.sub(r"[^a-z0-9]+", " ", str(name or "").lower()).strip()
+    return normalized in CATALOG_AUXILIARY_FOLDER_NAMES
 
 
 def resolve_resource_path(*relative_candidates):
@@ -24221,10 +24239,11 @@ class ChannelSurfer(QWidget):
         self.catalog_path_label.setText(
             f"Welcome to MediaWave!\n"
             f"Your media folder is ready at:\n{user_dir}\n\n"
-            f"Put channel folders inside the Channels subfolder, then press Choose Catalog…"
+            f"Put channel folders inside the Channels subfolder, then press Choose Catalog…\n"
+            f"The first scan can take a few minutes for large libraries."
         )
         self.status.setText(
-            "First run — press Choose Catalog… to point MediaWave at your library."
+            "First run — press Choose Catalog… to point MediaWave at your library. The first scan can take a little while."
         )
 
     @Slot()
@@ -24318,6 +24337,7 @@ class ChannelSurfer(QWidget):
         channel_names = [
             item for item in sorted(os.listdir(folder), key=str.casefold)
             if os.path.isdir(os.path.join(folder, item))
+            and not is_catalog_auxiliary_folder_name(item)
         ]
         self.begin_catalog_progress(folder, len(channel_names))
         try:
@@ -24969,7 +24989,7 @@ class ChannelSurfer(QWidget):
         if is_first_parse:
             self.loading_detail.setText(
                 "First-time catalog parsing can take a little while depending on the size of your library. "
-                "Grab some carrots and apple juice while MediaWave gets everything ready."
+                "MediaWave is checking media health, reading durations, and preparing the Guide."
             )
         else:
             self.loading_detail.setText(compact_status_detail(folder, 112))
@@ -27667,7 +27687,11 @@ class ChannelSurfer(QWidget):
                 self.video_window.setFocus(Qt.ActiveWindowFocusReason)
             if self.video_window.guide_overlay.isVisible():
                 self.refresh_guide()
-            self.video_window.on_demand_overlay.hide()
+            if self.video_window.on_demand_overlay.isVisible():
+                if is_program_advance:
+                    self.refresh_on_demand()
+                else:
+                    self.video_window.on_demand_overlay.hide()
             if with_transition:
                 self.video_window.static.trigger(previous_frame)
                 self.switch_sound.stop()
@@ -27705,7 +27729,11 @@ class ChannelSurfer(QWidget):
                 self.video_window.setFocus(Qt.ActiveWindowFocusReason)
             if self.video_window.guide_overlay.isVisible():
                 self.refresh_guide()
-            self.video_window.on_demand_overlay.hide()
+            if self.video_window.on_demand_overlay.isVisible():
+                if is_program_advance:
+                    self.refresh_on_demand()
+                else:
+                    self.video_window.on_demand_overlay.hide()
             if with_transition:
                 self.video_window.static.trigger(previous_frame)
                 self.switch_sound.stop()
@@ -27738,7 +27766,11 @@ class ChannelSurfer(QWidget):
                 self.video_window.raise_()
                 self.video_window.activateWindow()
                 self.video_window.setFocus(Qt.ActiveWindowFocusReason)
-            self.video_window.on_demand_overlay.hide()
+            if self.video_window.on_demand_overlay.isVisible():
+                if is_program_advance:
+                    self.refresh_on_demand()
+                else:
+                    self.video_window.on_demand_overlay.hide()
             if with_transition:
                 self.video_window.static.trigger(previous_frame)
                 self.switch_sound.stop()
@@ -27860,7 +27892,8 @@ class ChannelSurfer(QWidget):
             self.refresh_guide()
         if self.video_window.on_demand_overlay.isVisible():
             self.refresh_on_demand()
-        self.video_window.on_demand_overlay.hide()
+            if not is_program_advance:
+                self.video_window.on_demand_overlay.hide()
         if with_transition:
             self.video_window.static.trigger(previous_frame)
             self.switch_sound.stop()
