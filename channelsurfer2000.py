@@ -26899,8 +26899,29 @@ class ChannelSurfer(QWidget):
         if not frame or not frame.isValid():
             return
 
+        # Vault never shows a live preview, so skip all per-frame work while it
+        # covers the screen (its sinks are fully detached anyway). Guide does
+        # show a live preview, so while it's open we take a cheap, throttled
+        # path: just convert the frame and feed the small preview pixmap,
+        # skipping the standby/black-frame detection and the full-screen video
+        # surface update, which are wasted while Guide covers the screen.
+        if self.video_window.is_vault_active():
+            return
+
         now = time.time()
-        if self.video_window.should_suspend_background_visuals():
+        guide_active = self.video_window.guide_overlay.isVisible()
+        if guide_active:
+            if self.current_youtube_channel() is None or not self.guide_preview_refresh_due():
+                return
+            image = frame.toImage()
+            if image.isNull():
+                return
+            pixmap = QPixmap.fromImage(image)
+            if pixmap.isNull():
+                return
+            self.nettv_last_frame = pixmap
+            self.last_video_frame = pixmap
+            self.video_window.guide_overlay.set_preview_frame(pixmap, mode="youtube")
             return
 
         image = frame.toImage()
@@ -26933,7 +26954,6 @@ class ChannelSurfer(QWidget):
                 self.last_video_frame = pixmap
                 self.video_window.video_surface.set_frame(pixmap)
                 self.video_window.hide_nettv_status()
-                self.update_guide_preview_frame_throttled(pixmap, mode="youtube")
             return
 
         if self.nettv_black_frame_started_at <= 0:
@@ -26955,10 +26975,18 @@ class ChannelSurfer(QWidget):
         if not frame or not frame.isValid():
             return
 
-        now = time.time()
-        if self.video_window.should_suspend_background_visuals():
+        # Vault never shows a live preview, so skip all per-frame work while it
+        # covers the screen. Guide does show a live preview, so its sinks stay
+        # attached (see suspend_video_decode_for_navigation_overlay) and we only
+        # throttle the conversion below instead of dropping frames entirely.
+        if self.video_window.is_vault_active():
             return
 
+        guide_active = self.video_window.guide_overlay.isVisible()
+        if guide_active and not self.guide_preview_refresh_due():
+            return
+
+        now = time.time()
         image = frame.toImage()
         if image.isNull():
             return
@@ -26988,12 +27016,13 @@ class ChannelSurfer(QWidget):
                             self.video_window.show_nettv_status(self.nettv_current_title or "NetTV", message)
                         return
             self.last_video_frame = pixmap
-            self.video_window.video_surface.set_frame(pixmap)
-            if self.video_window.guide_overlay.isVisible():
+            if guide_active:
                 current_channel = self.channels[self.current_channel] if self.channels and 0 <= self.current_channel < len(self.channels) else None
                 current_type = getattr(current_channel, "channel_type", "media")
                 if current_type not in ("weatherstar", "radiowave", "youtube"):
                     self.video_window.guide_overlay.set_preview_frame(pixmap)
+            else:
+                self.video_window.video_surface.set_frame(pixmap)
 
     @Slot()
     def up(self):
@@ -27617,7 +27646,6 @@ class ChannelSurfer(QWidget):
         if self.current_radiowave_channel() is not None:
             self.video_window.hide_radiowave_channel()
         self.video_window.suspend_background_visuals_for_navigation_overlay()
-        self.suspend_video_decode_for_navigation_overlay()
         self.guide_selection = self.current_channel
         self.video_window.guide_overlay.settings_open = False
         self.video_window.guide_overlay.settings_focus_index = 0
@@ -27645,21 +27673,9 @@ class ChannelSurfer(QWidget):
         self.last_guide_preview_frame_update = now
         return True
 
-    def is_special_preview_channel(self, channel):
-        return getattr(channel, "channel_type", "media") in ("weatherstar", "radiowave", "youtube")
-
     def static_special_channel_preview(self, channel):
         channel_type = getattr(channel, "channel_type", "media")
         return make_static_special_channel_preview(QSize(640, 360), channel_type, getattr(channel, "name", ""))
-
-    def update_guide_preview_frame_throttled(self, pixmap, mode="video", minimum_interval=GUIDE_PREVIEW_REFRESH_INTERVAL_SECONDS, force=False):
-        if not self.video_window.guide_overlay.isVisible():
-            return
-        current_channel = self.channels[self.current_channel] if self.channels and 0 <= self.current_channel < len(self.channels) else None
-        if self.is_special_preview_channel(current_channel):
-            return
-        if force or self.guide_preview_refresh_due(minimum_interval):
-            self.video_window.guide_overlay.set_preview_frame(pixmap, mode=mode)
 
     def refresh_guide(self, show=False):
         started_at = time.perf_counter()
@@ -29831,13 +29847,15 @@ class ChannelSurfer(QWidget):
             self.schedule_radiowave_state_refresh(0)
 
     def suspend_video_decode_for_navigation_overlay(self):
-        """Detach active video sinks while Guide/Vault fully cover playback.
+        """Detach active video sinks while Vault fully covers playback.
 
-        The navigation overlays paint over the video surface and use cached
-        preview frames, so per-frame videoFrameChanged work is wasted while the
-        user is scrolling. Detaching the sink lets playback audio continue while
-        NetTV/local video decode and frame conversion stop competing with the UI
-        thread.
+        Vault never shows a live video preview, so per-frame videoFrameChanged
+        work is wasted while the user is scrolling there. Detaching the sink
+        lets playback audio continue while NetTV/local video decode and frame
+        conversion stop competing with the UI thread. Guide does NOT use this —
+        Guide's preview window needs live frames, so its sinks stay attached
+        (see on_video_frame_changed / on_nettv_video_frame_changed, which
+        throttle and skip the heavy background-surface update instead).
         """
         if getattr(self, "_video_decode_suspended_for_navigation_overlay", False):
             return
