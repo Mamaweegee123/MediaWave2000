@@ -10,7 +10,8 @@ What this does (quick sync — default):
   2. Copies root channelsurfer2000.py  →  Linux Build Kit
   3. Copies root mediawave_converter.py to both build kits
   4. Copies root requirements.txt to both build kits
-  5. Copies dev/ PyInstaller specs to the Windows Build Kit
+  5. Copies dev/ PyInstaller specs to the Windows Build Kit and refreshes
+     top-level Windows-kit specs
   6. Runs scripts/assemble_mac_release.py to rebuild the macOS .app staging folder
 
 What --assets adds (full sync):
@@ -101,6 +102,31 @@ def _sync_file(src: Path, dst: Path, label: str) -> None:
     print(f"  ✓ {label} synced  ({dst.stat().st_size:,} bytes)")
 
 
+def _sync_text(text: str, dst: Path, label: str) -> None:
+    """Write text only when content changed, mirroring _sync_file output."""
+    src_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+    if dst.exists() and sha256(dst) == src_hash:
+        print(f"  ✓ {label} already in sync — no copy needed")
+        return
+    dst.write_text(text, encoding="utf-8")
+    if sha256(dst) != src_hash:
+        fail(f"Post-write checksum mismatch for {label}!")
+    print(f"  ✓ {label} synced  ({dst.stat().st_size:,} bytes)")
+
+
+def _windows_root_spec_text(spec_source: Path) -> str:
+    """Adapt a dev/ spec so it also works as a top-level Windows kit spec."""
+    text = spec_source.read_text(encoding="utf-8")
+    dev_base = (
+        "_spec_dir = os.path.dirname(os.path.abspath(SPEC))\n"
+        "_base = os.path.dirname(_spec_dir)\n"
+    )
+    root_base = "_base = os.path.dirname(os.path.abspath(SPEC))\n"
+    if dev_base not in text:
+        fail(f"Unexpected spec layout, cannot adapt for Windows Build Kit root: {spec_source}")
+    return text.replace(dev_base, root_base, 1)
+
+
 def _sync_dir(src_dir: Path, dst_dir: Path, label: str) -> None:
     """Sync src_dir into dst_dir file-by-file, copying only changed files.
 
@@ -179,6 +205,11 @@ def sync_windows_build_kit() -> None:
             spec_target = WIN_KIT_DIR / "dev" / spec_name
             spec_target.parent.mkdir(parents=True, exist_ok=True)
             _sync_file(spec_source, spec_target, f"dev/{spec_name} → Windows")
+            _sync_text(
+                _windows_root_spec_text(spec_source),
+                WIN_KIT_DIR / spec_name,
+                f"{spec_name} → Windows root",
+            )
 
 
 def sync_linux_build_kit() -> None:
