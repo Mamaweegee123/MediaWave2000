@@ -641,6 +641,9 @@ GUIDE_UI_SCALE_DEFAULT = dict(GUIDE_SCALE_OPTIONS)[GUIDE_SCALE_DEFAULT]
 # The live Guide preview can look alive at ~5 FPS without constantly rebuilding the grid.
 GUIDE_PREVIEW_REFRESH_INTERVAL_SECONDS = 0.20
 GUIDE_FORWARD_HORIZON_SECONDS = 4 * 3600   # max lookahead in Guide timeline (4 h)
+# Widest single Guide grid view is 4 half-hour columns (2 h); pad a bit so a
+# row's slots always cover the full visible window with margin to spare.
+GUIDE_ROW_FILL_WINDOW_SECONDS = 5 * 30 * 60
 RADIOWAVE_FALLBACK_DURATION_SECONDS = 180.0
 METADATA_REQUEST_TIMEOUT_SECONDS = 4
 RADIOWAVE_EMPTY_WARNING = (
@@ -2481,6 +2484,22 @@ def cached_youtube_video_path(entry):
 def youtube_download_template(entry):
     cache_key = youtube_video_cache_key(entry)
     return os.path.join(YOUTUBE_VIDEO_CACHE_DIR, f"{cache_key}.%(ext)s")
+
+
+def clear_youtube_video_cache():
+    # Refuse to follow the cache dir itself if it's a symlink — only ever clear
+    # the real on-disk cache, never whatever a symlink might point at.
+    if os.path.islink(YOUTUBE_VIDEO_CACHE_DIR) or not os.path.isdir(YOUTUBE_VIDEO_CACHE_DIR):
+        return
+    for name in os.listdir(YOUTUBE_VIDEO_CACHE_DIR):
+        path = os.path.join(YOUTUBE_VIDEO_CACHE_DIR, name)
+        try:
+            if os.path.isfile(path) or os.path.islink(path):
+                os.remove(path)
+            elif os.path.isdir(path):
+                shutil.rmtree(path)
+        except OSError:
+            pass
 
 
 def pixmap_has_visible_content(pixmap, threshold=10):
@@ -7077,7 +7096,7 @@ class Channel:
 
         items = []
         current_start = window_start - offset
-        for step in range(min(count, len(entries))):
+        for step in range(count):
             item_index = (start_index + step) % len(entries)
             entry = entries[item_index]
             start_time = current_start if step == 0 else items[-1]["end"]
@@ -21198,6 +21217,16 @@ class AdvancedConfigDialog(QDialog):
         test_layout.addWidget(self.dev_menu_enabled)
         layout.addWidget(test_card)
 
+        self.nettv_clear_cache_on_exit = QCheckBox("Delete NetTV cache on app close")
+        self.nettv_clear_cache_on_exit.setChecked(bool(_settings.get("nettv_clear_cache_on_exit", False)))
+        storage_card, storage_layout = self.build_section_card(
+            "NetTV Storage",
+            "NetTV caches downloaded YouTube video files on disk so channels can replay without "
+            "re-downloading. Enable this to wipe that cache every time the app closes.",
+        )
+        storage_layout.addWidget(self.nettv_clear_cache_on_exit)
+        layout.addWidget(storage_card)
+
         layout.addStretch(1)
         return self.build_scroll_tab(content)
 
@@ -21309,6 +21338,7 @@ class AdvancedConfigDialog(QDialog):
             "allow_empty_catalog_tv": self.allow_empty_catalog_tv.isChecked(),
             "allow_dummy_vault_catalog": self.allow_dummy_vault_catalog.isChecked(),
             "dev_menu_enabled": self.dev_menu_enabled.isChecked(),
+            "nettv_clear_cache_on_exit": self.nettv_clear_cache_on_exit.isChecked(),
             "commercials": commercials,
             "catalog_channel_settings": self.collect_catalog_channel_settings(),
             "channel_bug": self._collect_channel_bug_settings(),
@@ -23322,6 +23352,7 @@ class ChannelSurfer(QWidget):
         self.app_settings["allow_empty_catalog_tv"] = values["allow_empty_catalog_tv"]
         self.app_settings["allow_dummy_vault_catalog"] = values["allow_dummy_vault_catalog"]
         self.app_settings["dev_menu_enabled"] = values["dev_menu_enabled"]
+        self.app_settings["nettv_clear_cache_on_exit"] = values.get("nettv_clear_cache_on_exit", False)
         self.app_settings["commercials"] = normalize_commercials_config(values.get("commercials", {}))
         self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(values.get("catalog_channel_settings", {}))
         self.app_settings["channel_bug"] = normalize_channel_bug_settings(values.get("channel_bug", {}))
@@ -26899,8 +26930,29 @@ class ChannelSurfer(QWidget):
         if not frame or not frame.isValid():
             return
 
+        # Vault never shows a live preview, so skip all per-frame work while it
+        # covers the screen (its sinks are fully detached anyway). Guide does
+        # show a live preview, so while it's open we take a cheap, throttled
+        # path: just convert the frame and feed the small preview pixmap,
+        # skipping the standby/black-frame detection and the full-screen video
+        # surface update, which are wasted while Guide covers the screen.
+        if self.video_window.is_vault_active():
+            return
+
         now = time.time()
-        if self.video_window.should_suspend_background_visuals():
+        guide_active = self.video_window.guide_overlay.isVisible()
+        if guide_active:
+            if self.current_youtube_channel() is None or not self.guide_preview_refresh_due():
+                return
+            image = frame.toImage()
+            if image.isNull():
+                return
+            pixmap = QPixmap.fromImage(image)
+            if pixmap.isNull():
+                return
+            self.nettv_last_frame = pixmap
+            self.last_video_frame = pixmap
+            self.video_window.guide_overlay.set_preview_frame(pixmap, mode="youtube")
             return
 
         image = frame.toImage()
@@ -26933,7 +26985,6 @@ class ChannelSurfer(QWidget):
                 self.last_video_frame = pixmap
                 self.video_window.video_surface.set_frame(pixmap)
                 self.video_window.hide_nettv_status()
-                self.update_guide_preview_frame_throttled(pixmap, mode="youtube")
             return
 
         if self.nettv_black_frame_started_at <= 0:
@@ -26955,10 +27006,18 @@ class ChannelSurfer(QWidget):
         if not frame or not frame.isValid():
             return
 
-        now = time.time()
-        if self.video_window.should_suspend_background_visuals():
+        # Vault never shows a live preview, so skip all per-frame work while it
+        # covers the screen. Guide does show a live preview, so its sinks stay
+        # attached (see suspend_video_decode_for_navigation_overlay) and we only
+        # throttle the conversion below instead of dropping frames entirely.
+        if self.video_window.is_vault_active():
             return
 
+        guide_active = self.video_window.guide_overlay.isVisible()
+        if guide_active and not self.guide_preview_refresh_due():
+            return
+
+        now = time.time()
         image = frame.toImage()
         if image.isNull():
             return
@@ -26988,12 +27047,13 @@ class ChannelSurfer(QWidget):
                             self.video_window.show_nettv_status(self.nettv_current_title or "NetTV", message)
                         return
             self.last_video_frame = pixmap
-            self.video_window.video_surface.set_frame(pixmap)
-            if self.video_window.guide_overlay.isVisible():
+            if guide_active:
                 current_channel = self.channels[self.current_channel] if self.channels and 0 <= self.current_channel < len(self.channels) else None
                 current_type = getattr(current_channel, "channel_type", "media")
                 if current_type not in ("weatherstar", "radiowave", "youtube"):
                     self.video_window.guide_overlay.set_preview_frame(pixmap)
+            else:
+                self.video_window.video_surface.set_frame(pixmap)
 
     @Slot()
     def up(self):
@@ -27460,7 +27520,7 @@ class ChannelSurfer(QWidget):
                     "summary": detail_summary,
                 })
                 continue
-            programs = channel.get_programs_for_window(timeline_start, 10)
+            programs = channel.get_programs_for_window(timeline_start, 40)
             info = channel.get_now_next()
             if not programs or not info:
                 rows.append({
@@ -27528,6 +27588,19 @@ class ChannelSurfer(QWidget):
                     "end": timeline_start + (30 * 60),
                     "path": "",
                 }]
+
+            # Normalize slot coverage so the row never shows blank space inside
+            # the visible Guide window — extend backward/forward and close any
+            # internal gaps rather than letting the row stop short.
+            window_end = timeline_start + GUIDE_ROW_FILL_WINDOW_SECONDS
+            if slot_data[0]["start"] > timeline_start:
+                slot_data[0]["start"] = timeline_start
+                slot_data[0]["time"] = time.strftime("%I:%M %p", time.localtime(timeline_start)).lstrip("0")
+            for gap_index in range(len(slot_data) - 1):
+                if slot_data[gap_index]["end"] < slot_data[gap_index + 1]["start"]:
+                    slot_data[gap_index]["end"] = slot_data[gap_index + 1]["start"]
+            if slot_data[-1]["end"] < window_end:
+                slot_data[-1]["end"] = window_end
 
             detail_slot = slot_data[0]
             detail_slot_index = 0
@@ -27617,7 +27690,6 @@ class ChannelSurfer(QWidget):
         if self.current_radiowave_channel() is not None:
             self.video_window.hide_radiowave_channel()
         self.video_window.suspend_background_visuals_for_navigation_overlay()
-        self.suspend_video_decode_for_navigation_overlay()
         self.guide_selection = self.current_channel
         self.video_window.guide_overlay.settings_open = False
         self.video_window.guide_overlay.settings_focus_index = 0
@@ -27645,21 +27717,9 @@ class ChannelSurfer(QWidget):
         self.last_guide_preview_frame_update = now
         return True
 
-    def is_special_preview_channel(self, channel):
-        return getattr(channel, "channel_type", "media") in ("weatherstar", "radiowave", "youtube")
-
     def static_special_channel_preview(self, channel):
         channel_type = getattr(channel, "channel_type", "media")
         return make_static_special_channel_preview(QSize(640, 360), channel_type, getattr(channel, "name", ""))
-
-    def update_guide_preview_frame_throttled(self, pixmap, mode="video", minimum_interval=GUIDE_PREVIEW_REFRESH_INTERVAL_SECONDS, force=False):
-        if not self.video_window.guide_overlay.isVisible():
-            return
-        current_channel = self.channels[self.current_channel] if self.channels and 0 <= self.current_channel < len(self.channels) else None
-        if self.is_special_preview_channel(current_channel):
-            return
-        if force or self.guide_preview_refresh_due(minimum_interval):
-            self.video_window.guide_overlay.set_preview_frame(pixmap, mode=mode)
 
     def refresh_guide(self, show=False):
         started_at = time.perf_counter()
@@ -29831,13 +29891,15 @@ class ChannelSurfer(QWidget):
             self.schedule_radiowave_state_refresh(0)
 
     def suspend_video_decode_for_navigation_overlay(self):
-        """Detach active video sinks while Guide/Vault fully cover playback.
+        """Detach active video sinks while Vault fully covers playback.
 
-        The navigation overlays paint over the video surface and use cached
-        preview frames, so per-frame videoFrameChanged work is wasted while the
-        user is scrolling. Detaching the sink lets playback audio continue while
-        NetTV/local video decode and frame conversion stop competing with the UI
-        thread.
+        Vault never shows a live video preview, so per-frame videoFrameChanged
+        work is wasted while the user is scrolling there. Detaching the sink
+        lets playback audio continue while NetTV/local video decode and frame
+        conversion stop competing with the UI thread. Guide does NOT use this —
+        Guide's preview window needs live frames, so its sinks stay attached
+        (see on_video_frame_changed / on_nettv_video_frame_changed, which
+        throttle and skip the heavy background-surface update instead).
         """
         if getattr(self, "_video_decode_suspended_for_navigation_overlay", False):
             return
@@ -30876,6 +30938,8 @@ class ChannelSurfer(QWidget):
         self.stop_radiowave_background()
         self.video_window.static.hide()
         save_json_file(RESUME_STATE_FILE, self.resume_state)
+        if self.app_settings.get("nettv_clear_cache_on_exit", False):
+            clear_youtube_video_cache()
         self.video_window.close()
         super().closeEvent(event)
 
