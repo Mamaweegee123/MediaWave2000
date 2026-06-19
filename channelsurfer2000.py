@@ -641,6 +641,9 @@ GUIDE_UI_SCALE_DEFAULT = dict(GUIDE_SCALE_OPTIONS)[GUIDE_SCALE_DEFAULT]
 # The live Guide preview can look alive at ~5 FPS without constantly rebuilding the grid.
 GUIDE_PREVIEW_REFRESH_INTERVAL_SECONDS = 0.20
 GUIDE_FORWARD_HORIZON_SECONDS = 4 * 3600   # max lookahead in Guide timeline (4 h)
+# Widest single Guide grid view is 4 half-hour columns (2 h); pad a bit so a
+# row's slots always cover the full visible window with margin to spare.
+GUIDE_ROW_FILL_WINDOW_SECONDS = 5 * 30 * 60
 RADIOWAVE_FALLBACK_DURATION_SECONDS = 180.0
 METADATA_REQUEST_TIMEOUT_SECONDS = 4
 RADIOWAVE_EMPTY_WARNING = (
@@ -7093,7 +7096,7 @@ class Channel:
 
         items = []
         current_start = window_start - offset
-        for step in range(min(count, len(entries))):
+        for step in range(count):
             item_index = (start_index + step) % len(entries)
             entry = entries[item_index]
             start_time = current_start if step == 0 else items[-1]["end"]
@@ -27517,7 +27520,7 @@ class ChannelSurfer(QWidget):
                     "summary": detail_summary,
                 })
                 continue
-            programs = channel.get_programs_for_window(timeline_start, 10)
+            programs = channel.get_programs_for_window(timeline_start, 40)
             info = channel.get_now_next()
             if not programs or not info:
                 rows.append({
@@ -27585,6 +27588,19 @@ class ChannelSurfer(QWidget):
                     "end": timeline_start + (30 * 60),
                     "path": "",
                 }]
+
+            # Normalize slot coverage so the row never shows blank space inside
+            # the visible Guide window — extend backward/forward and close any
+            # internal gaps rather than letting the row stop short.
+            window_end = timeline_start + GUIDE_ROW_FILL_WINDOW_SECONDS
+            if slot_data[0]["start"] > timeline_start:
+                slot_data[0]["start"] = timeline_start
+                slot_data[0]["time"] = time.strftime("%I:%M %p", time.localtime(timeline_start)).lstrip("0")
+            for gap_index in range(len(slot_data) - 1):
+                if slot_data[gap_index]["end"] < slot_data[gap_index + 1]["start"]:
+                    slot_data[gap_index]["end"] = slot_data[gap_index + 1]["start"]
+            if slot_data[-1]["end"] < window_end:
+                slot_data[-1]["end"] = window_end
 
             detail_slot = slot_data[0]
             detail_slot_index = 0
