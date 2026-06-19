@@ -18,13 +18,18 @@
 Each immediate folder inside the selected catalog becomes a channel. Put
 playable video files inside those channel folders.
 
+Folders named Commercials, Bumpers, Promos, or Station IDs are treated as
+ad-break asset folders and skipped as channels. Configure them in Advanced
+Config > Commercials.
+
 MediaWave can use folders on internal disks, external drives, flash drives, or
 network shares. Your media is not copied into the application.
 
 ## Private Beta Safety
 
 - Keep a backup of your media library.
-- Leave media quarantine disabled unless specifically testing it.
+- Broken or unreadable video files may be moved to a sibling `Broken` folder
+  during catalog validation; keep backups of anything you are testing.
 - Do not share packages outside the approved private-beta group.
 - Do not send logs, screenshots, or settings files without checking them for
   personal paths and media names.

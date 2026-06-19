@@ -97,8 +97,8 @@ SETTINGS RESET AFTER UPDATE
 -----------------------------
   Settings are stored at:
 
-    Windows:  %APPDATA%\MediaWave 2000\app_settings.json
-    macOS:    ~/Library/Application Support/MediaWave 2000/
+    Windows:  %APPDATA%\MediaWave2000\app_settings.json
+    macOS:    ~/Library/Application Support/MediaWave2000/
     Portable: <app folder>/User Content/Settings/
 
   Do not delete these files unless you want a full reset.

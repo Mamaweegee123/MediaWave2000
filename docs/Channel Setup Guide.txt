@@ -28,6 +28,10 @@ MediaWave scans for video files recursively inside each channel folder,
 so nesting by category is optional. You can also put files directly
 in the channel folder if you want to keep it simple.
 
+Top-level folders named Commercials, Bumpers, Promos, or Station IDs are
+treated as ad-break asset folders, not TV channels. Put those clips anywhere
+you like, then point Advanced Config > Commercials at that folder.
+
 Keeping folder names clean helps — avoid special characters that your
 OS might not like (colons, slashes, that sort of thing).
 

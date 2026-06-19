@@ -53,6 +53,9 @@ CHANNEL SETUP
 Each subfolder inside your catalog becomes one TV channel.
 The folder name becomes the channel name.
 
+Folders named Commercials, Bumpers, Promos, or Station IDs are reserved for
+ad-break clips and are skipped as TV channels.
+
   Channels/
     HBO/           <-- becomes channel "HBO"
       show01.mp4
@@ -80,6 +83,15 @@ The User Content/Commercials folder is ready to use as a starting point,
 but any folder works fine.
 
 See: docs/Commercial Setup Guide.txt
+
+-------------------------------------------------------------------------------
+
+POSTERS, ARTWORK & DESCRIPTIONS (OPTIONAL)
+---------------------------------------------
+Drop a poster.jpg, fanart.jpg, logo.png, or description.txt next to a show
+or movie, and MediaWave's Vault will pick it up automatically.
+
+See: docs/Metadata & Artwork Guide.txt
 
 -------------------------------------------------------------------------------
 
@@ -117,10 +129,11 @@ DOCS FOLDER
 -----------
 Guides are in the docs/ folder:
 
-  Channel Setup Guide.txt     - folder structure, logos, catalogs
-  Commercial Setup Guide.txt  - setting up ad breaks
-  Converter Guide.txt         - converting video files
-  Troubleshooting.txt         - when something goes sideways
+  Channel Setup Guide.txt       - folder structure, logos, catalogs
+  Commercial Setup Guide.txt    - setting up ad breaks
+  Metadata & Artwork Guide.txt  - posters, descriptions, artwork
+  Converter Guide.txt           - converting video files
+  Troubleshooting.txt           - when something goes sideways
 
 -------------------------------------------------------------------------------
 
