@@ -41,7 +41,19 @@ python scripts/sync_release_targets.py
 
 Pass `--assets` to also resync static asset folders (`assets/`, `logos/`, `docs/`, `hooks/`, `Fonts/`, `icons/`) into the build kits.
 
-### macOS
+### Development Build
+
+For a quick, throwaway `.app` you can launch after a feature pass, without touching anything under `release/`:
+
+```
+./build_dev.sh
+```
+
+This cleans out `Dev Testing/`, rebuilds both bundles with PyInstaller, copies them in as `Dev Testing/MediaWave.app` and `Dev Testing/MediaWave Converter.app`, and verifies they exist. Pass `--open` to launch `MediaWave.app` automatically once the build finishes. `Dev Testing/` is gitignored — always safe to delete and regenerate.
+
+### Release Build
+
+Existing release workflow — unchanged by the dev build script above.
 
 1. Build the `.app` bundles with PyInstaller using the specs in `dev/`:
    ```
@@ -101,3 +113,4 @@ Never commit these — they're user/runtime data, not source.
 
 - `archive/` (gitignored) holds old backups and one-off artifacts moved out of the repo root during cleanup — safe to delete locally if you don't need them, but nothing in there was deleted outright.
 - `release/` (gitignored) is build output only; always safe to wipe and regenerate via the scripts above.
+- `Dev Testing/` (gitignored) is `build_dev.sh` output only; always safe to wipe and regenerate.

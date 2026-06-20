@@ -67,6 +67,7 @@ youtube_video_cache/
 # Keep the bundled UI sound asset tracked.
 !assets/channel_switch.wav
 release/
+Dev Testing/
 
 # Local-only scratch/backups moved out of the way during cleanup
 archive/
