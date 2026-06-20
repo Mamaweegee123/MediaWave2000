@@ -12,7 +12,7 @@ Put your videos in folders, open MediaWave2000, and watch TV!
 
 MediaWave2000 is a desktop app that transforms your local video collection into a fully functional fake cable channel system - complete with a scrollable TV guide, "On-Demand" Vault, scheduled programming, commercial breaks, and themed on-screen displays.
 
-If you've ever tried **FieldStation42** and wanted something simpler to easily turn your media catalog into a working cable system, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No configuring schedules, no .Json files, just folders!
+If you've ever tried **FieldStation42** and wanted something simpler to easily turn your media catalog into a working cable system, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No configuring schedules, no .json files, just folders!
 
 ---
 
