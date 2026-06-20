@@ -296,6 +296,40 @@ FRAMING_CHOICES = {
     "Keep More Picture": "Preserves more of the image when shapes do not match.",
     "Fill Screen More": "Crops more aggressively to fill the target shape.",
 }
+IMPORT_NOTICE_TEXT = (
+    "Only import content you own, have permission to use, or are otherwise legally "
+    "allowed to download. You are responsible for how this tool is used."
+)
+IMPORT_PRESETS = {
+    "Best Quality": {
+        "description": "Downloads the highest quality video and audio available.",
+        "format_args": ["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"],
+    },
+    "720p TV-Friendly": {
+        "description": "Caps resolution at 720p for smaller, TV-friendly files.",
+        "format_args": [
+            "-f",
+            "bestvideo[height<=720]+bestaudio/best[height<=720]",
+            "--merge-output-format",
+            "mp4",
+        ],
+    },
+    "Audio Only": {
+        "description": "Extracts just the audio track as an MP3 file.",
+        "format_args": ["-f", "bestaudio", "-x", "--audio-format", "mp3"],
+    },
+    "MediaWave-Ready MP4": {
+        "description": "Downloads into a plain MP4 container that plays well with the converter.",
+        "format_args": [
+            "-f",
+            "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+            "--merge-output-format",
+            "mp4",
+            "--remux-video",
+            "mp4",
+        ],
+    },
+}
 LEGACY_ASPECT_LABELS = {
     "Classic 4:3": "Classic TV",
     "Fullscreen 16:9": "Widescreen",
@@ -543,6 +577,7 @@ def available_encoders() -> set[str]:
 
 FFMPEG_PATH = resolve_executable("ffmpeg")
 FFPROBE_PATH = resolve_executable("ffprobe")
+YTDLP_PATH = resolve_executable("yt-dlp")
 FFMPEG_HAS_SUBTITLES_FILTER = ffmpeg_supports_subtitles_filter(FFMPEG_PATH)
 FFMPEG_HAS_LOUDNORM_FILTER = ffmpeg_supports_loudnorm_filter(FFMPEG_PATH)
 SUBTITLE_BURN_LABEL = (
@@ -2277,11 +2312,119 @@ class SidebarWidget(QWidget):
         painter.end()
 
 
+_YTDLP_PROGRESS_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)%")
+
+
+class ImportWorker(QThread):
+    log_message = Signal(str)
+    progress_changed = Signal(int)
+    phase_changed = Signal(str)
+    ytdlp_missing = Signal(str)
+    finished_summary = Signal(dict)
+
+    def __init__(self, url: str, destination: Path, preset_label: str):
+        super().__init__()
+        self.url = url
+        self.destination = destination
+        self.preset_label = preset_label
+        self._cancel_requested = False
+        self._active_process: subprocess.Popen[str] | None = None
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+        if self._active_process and self._active_process.poll() is None:
+            try:
+                self._active_process.terminate()
+            except OSError:
+                pass
+
+    def force_kill_active_process(self) -> None:
+        if self._active_process and self._active_process.poll() is None:
+            try:
+                self._active_process.kill()
+            except OSError:
+                pass
+
+    def run(self) -> None:
+        if not YTDLP_PATH:
+            self.ytdlp_missing.emit(
+                "yt-dlp could not be found. Install yt-dlp, or bundle the binary with this app."
+            )
+            return
+
+        preset = IMPORT_PRESETS.get(self.preset_label, IMPORT_PRESETS["Best Quality"])
+        command = [
+            YTDLP_PATH,
+            "--newline",
+            "--no-color",
+            "--ignore-errors",
+            "-o",
+            str(self.destination / "%(title)s.%(ext)s"),
+            "-o",
+            "playlist:" + str(self.destination / "%(playlist_title)s" / "%(playlist_index)s - %(title)s.%(ext)s"),
+            *preset["format_args"],
+            self.url,
+        ]
+
+        self.phase_changed.emit("Starting import...")
+        self.log_message.emit(f"Running: {' '.join(command)}")
+
+        try:
+            self._active_process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1,
+            )
+        except OSError as exc:
+            self.finished_summary.emit({"canceled": False, "failed": True, "error": str(exc)})
+            return
+
+        try:
+            assert self._active_process.stdout is not None
+            for raw_line in self._active_process.stdout:
+                if self._cancel_requested:
+                    self.request_cancel()
+                    break
+                line = raw_line.strip()
+                if not line:
+                    continue
+                self.log_message.emit(line)
+                match = _YTDLP_PROGRESS_RE.search(line)
+                if match and line.startswith("[download]"):
+                    self.progress_changed.emit(int(clamp(float(match.group(1)), 0.0, 100.0)))
+                if line.startswith("[download] Destination:"):
+                    self.phase_changed.emit(line.split("Destination:", 1)[1].strip())
+                elif line.startswith("[Merger]") or line.startswith("[ExtractAudio]") or line.startswith("[VideoRemuxer]"):
+                    self.phase_changed.emit(line)
+
+            return_code = self._active_process.wait()
+        finally:
+            self._active_process = None
+
+        if self._cancel_requested:
+            self.finished_summary.emit({"canceled": True, "failed": False})
+            return
+
+        if return_code != 0:
+            self.finished_summary.emit(
+                {"canceled": False, "failed": True, "error": "yt-dlp reported an error. See the log for details."}
+            )
+            return
+
+        self.progress_changed.emit(100)
+        self.finished_summary.emit({"canceled": False, "failed": False})
+
+
 class MediaWaveConverterWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.primary_font_family, self.secondary_font_family = load_brand_fonts()
         self.worker: BatchWorker | None = None
+        self.import_worker: ImportWorker | None = None
+        self._import_cancel_in_progress = False
+        self._close_after_import_cancel = False
         self.last_options: ConversionOptions | None = None
         self.source_rows: dict[str, int] = {}
         self._source_paths: list[Path] = []
@@ -2308,6 +2451,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self._settings_loaded = True
         self.connect_settings_autosave()
         self.refresh_ffmpeg_status()
+        self.refresh_ytdlp_status()
         self.refresh_main_summary()
         self.resume_button.setEnabled(self.load_session() is not None)
 
@@ -2367,10 +2511,12 @@ class MediaWaveConverterWindow(QMainWindow):
         self.converter_nav = self.make_nav_button("converter", "📼  Converter")
         self.queue_nav = self.make_nav_button("queue", "📋  Queue")
         self.rename_nav = self.make_nav_button("rename", "✨  Rename your Files!")
+        self.import_nav = self.make_nav_button("import", "🔗  Import from URL")
         self.advanced_nav = self.make_nav_button("advanced", "⚙  Advanced Settings")
         sidebar_layout.addWidget(self.converter_nav)
         sidebar_layout.addWidget(self.queue_nav)
         sidebar_layout.addWidget(self.rename_nav)
+        sidebar_layout.addWidget(self.import_nav)
         sidebar_layout.addWidget(self.advanced_nav)
 
         sidebar_layout.addStretch()
@@ -2409,10 +2555,12 @@ class MediaWaveConverterWindow(QMainWindow):
         self.converter_page = self.build_converter_page()
         self.queue_page = self.build_queue_page()
         self.rename_page = self.build_rename_page()
+        self.import_page = self.build_import_page()
         self.advanced_page = self.build_advanced_page()
         self.page_stack.addWidget(self.converter_page)
         self.page_stack.addWidget(self.queue_page)
         self.page_stack.addWidget(self.rename_page)
+        self.page_stack.addWidget(self.import_page)
         self.page_stack.addWidget(self.advanced_page)
         self.switch_page("converter")
 
@@ -2897,6 +3045,109 @@ class MediaWaveConverterWindow(QMainWindow):
         layout.addWidget(preview_panel)
         return page
 
+    def build_import_page(self) -> QWidget:
+        page, layout = self.make_scroll_page()
+
+        notice_panel = QFrame()
+        notice_panel.setObjectName("panel")
+        notice_layout = QVBoxLayout(notice_panel)
+        notice_layout.setContentsMargins(18, 16, 18, 16)
+        notice_layout.setSpacing(9)
+        notice_layout.addWidget(self.panel_heading("Import from URL"))
+        intro = QLabel(
+            "Paste a video or playlist link and import it into a folder of your choosing using yt-dlp. "
+            "This is a general-purpose URL importer, not a service for any particular site."
+        )
+        intro.setObjectName("dialogNote")
+        intro.setWordWrap(True)
+        notice_layout.addWidget(intro)
+        legal_notice = QLabel(IMPORT_NOTICE_TEXT)
+        legal_notice.setObjectName("legalNotice")
+        legal_notice.setWordWrap(True)
+        notice_layout.addWidget(legal_notice)
+
+        self.ytdlp_status_label = QLabel()
+        self.ytdlp_status_label.setWordWrap(True)
+        notice_layout.addWidget(self.ytdlp_status_label)
+        layout.addWidget(notice_panel)
+
+        source_panel = QFrame()
+        source_panel.setObjectName("panel")
+        source_layout = QVBoxLayout(source_panel)
+        source_layout.setContentsMargins(18, 16, 18, 16)
+        source_layout.setSpacing(10)
+        source_layout.addWidget(self.panel_heading("Source"))
+
+        self.import_url_edit = QLineEdit()
+        self.import_url_edit.setPlaceholderText("Paste a video or playlist URL")
+        source_layout.addLayout(self.form_row("URL", self.import_url_edit))
+
+        self.import_dest_edit = QLineEdit()
+        self.import_dest_edit.setPlaceholderText("Choose a destination folder")
+        import_dest_button = QPushButton("Browse")
+        import_dest_button.clicked.connect(self.pick_import_destination)
+        source_layout.addLayout(self.form_row("Save To", self.import_dest_edit, import_dest_button))
+
+        self.import_preset_combo = QComboBox()
+        self.import_preset_combo.addItems(list(IMPORT_PRESETS.keys()))
+        source_layout.addLayout(self.form_row("Preset", self.import_preset_combo))
+        self.import_preset_help = QLabel(IMPORT_PRESETS["Best Quality"]["description"])
+        self.import_preset_help.setObjectName("fieldHelp")
+        self.import_preset_help.setWordWrap(True)
+        source_layout.addWidget(self.import_preset_help)
+        self.import_preset_combo.currentTextChanged.connect(self.update_import_preset_help)
+        layout.addWidget(source_panel)
+
+        action_panel = QFrame()
+        action_panel.setObjectName("panel")
+        action_layout = QVBoxLayout(action_panel)
+        action_layout.setContentsMargins(18, 16, 18, 16)
+        action_layout.setSpacing(10)
+
+        self.import_phase_label = QLabel("Ready to import.")
+        self.import_phase_label.setObjectName("dialogNote")
+        self.import_phase_label.setWordWrap(True)
+        action_layout.addWidget(self.import_phase_label)
+
+        self.import_progress = QProgressBar()
+        self.import_progress.setRange(0, 100)
+        action_layout.addWidget(self.import_progress)
+
+        import_action_row = QHBoxLayout()
+        import_action_row.setSpacing(8)
+        self.import_start_button = QPushButton("Start Import")
+        self.import_start_button.setObjectName("saveButton")
+        self.import_start_button.clicked.connect(self.start_import)
+        self.import_cancel_button = QPushButton("Cancel")
+        self.import_cancel_button.clicked.connect(self.cancel_import)
+        self.import_cancel_button.setEnabled(False)
+        import_action_row.addWidget(self.import_start_button, 2)
+        import_action_row.addWidget(self.import_cancel_button)
+        action_layout.addLayout(import_action_row)
+        layout.addWidget(action_panel)
+
+        log_panel = QFrame()
+        log_panel.setObjectName("panel")
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(18, 16, 18, 16)
+        log_layout.setSpacing(10)
+        log_top = QHBoxLayout()
+        log_top.setSpacing(10)
+        log_top.addWidget(self.panel_heading("Log"))
+        log_top.addStretch()
+        clear_import_log_button = QPushButton("Clear Log")
+        clear_import_log_button.clicked.connect(lambda: self.import_log_output.clear())
+        log_top.addWidget(clear_import_log_button)
+        log_layout.addLayout(log_top)
+        self.import_log_output = QPlainTextEdit()
+        self.import_log_output.setReadOnly(True)
+        self.import_log_output.setMaximumBlockCount(1200)
+        self.import_log_output.setMinimumHeight(190)
+        log_layout.addWidget(self.import_log_output, 1)
+        layout.addWidget(log_panel, 1)
+
+        return page
+
     def build_advanced_page(self) -> QWidget:
         page, layout = self.make_scroll_page()
 
@@ -2997,6 +3248,7 @@ class MediaWaveConverterWindow(QMainWindow):
             "converter": self.converter_page,
             "queue": self.queue_page,
             "rename": self.rename_page,
+            "import": self.import_page,
             "advanced": self.advanced_page,
         }
         target = page_map.get(page_key, self.converter_page)
@@ -3343,6 +3595,26 @@ class MediaWaveConverterWindow(QMainWindow):
                 margin: -6px 0;
                 border-radius: 9px;
             }
+            QLabel#importStatusOk {
+                color: rgba(110,231,150,255);
+                font-size: 12px;
+                font-weight: 600;
+                background: transparent;
+            }
+            QLabel#importStatusMissing {
+                color: rgba(255,140,140,255);
+                font-size: 12px;
+                font-weight: 600;
+                background: transparent;
+            }
+            QLabel#legalNotice {
+                color: rgba(255,196,110,255);
+                font-size: 11px;
+                background: rgba(40,30,10,160);
+                border: 1px solid rgba(255,196,36,90);
+                border-radius: 6px;
+                padding: 8px 10px;
+            }
             """
         )
 
@@ -3389,6 +3661,10 @@ class MediaWaveConverterWindow(QMainWindow):
         )
         if subtitle_pref in SUBTITLE_PREFERENCES:
             self.subtitle_pref_combo.setCurrentText(subtitle_pref)
+        self.import_dest_edit.setText(settings.get("import_dest_root", ""))
+        import_preset = settings.get("import_preset_label", "Best Quality")
+        if import_preset in IMPORT_PRESETS:
+            self.import_preset_combo.setCurrentText(import_preset)
         self.refresh_main_summary()
 
     def connect_settings_autosave(self) -> None:
@@ -3404,6 +3680,8 @@ class MediaWaveConverterWindow(QMainWindow):
             self.encoder_combo,
             self.audio_pref_combo,
             self.subtitle_pref_combo,
+            self.import_dest_edit,
+            self.import_preset_combo,
         ]
         for widget in widgets:
             if isinstance(widget, QLineEdit):
@@ -3432,6 +3710,8 @@ class MediaWaveConverterWindow(QMainWindow):
             "audio_preference": self.audio_pref_combo.currentText(),
             "audio_leveling_enabled": self.audio_leveling_checkbox.isChecked() and FFMPEG_HAS_LOUDNORM_FILTER,
             "subtitle_preference": self.subtitle_pref_combo.currentText(),
+            "import_dest_root": self.import_dest_edit.text().strip(),
+            "import_preset_label": self.import_preset_combo.currentText(),
         }
         save_json(SETTINGS_FILE, payload)
 
@@ -3450,6 +3730,22 @@ class MediaWaveConverterWindow(QMainWindow):
                 return
             self._close_after_cancel = True
             self.cancel_batch()
+            event.ignore()
+            return
+        if self.import_worker and self.import_worker.isRunning():
+            if self._close_after_import_cancel:
+                event.ignore()
+                return
+            answer = QMessageBox.question(
+                self,
+                "Import In Progress",
+                "An import is still running. Stop it and close the app?",
+            )
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            self._close_after_import_cancel = True
+            self.cancel_import()
             event.ignore()
             return
         self.save_settings()
@@ -3477,6 +3773,124 @@ class MediaWaveConverterWindow(QMainWindow):
                 "Install ffmpeg and make sure it is on your PATH, "
                 "or place ffmpeg.exe in the same folder as this app."
             )
+
+    def refresh_ytdlp_status(self) -> None:
+        if not hasattr(self, "ytdlp_status_label"):
+            return
+        if YTDLP_PATH:
+            self.ytdlp_status_label.setObjectName("importStatusOk")
+            self.ytdlp_status_label.setText(f"yt-dlp is available ({YTDLP_PATH}).")
+        else:
+            self.ytdlp_status_label.setObjectName("importStatusMissing")
+            self.ytdlp_status_label.setText(
+                "yt-dlp was not found. Install yt-dlp and make sure it is on your PATH, "
+                "or place it in the same folder as this app, to use the import assistant."
+            )
+        self.ytdlp_status_label.style().unpolish(self.ytdlp_status_label)
+        self.ytdlp_status_label.style().polish(self.ytdlp_status_label)
+        if hasattr(self, "import_start_button"):
+            self.import_start_button.setEnabled(bool(YTDLP_PATH))
+
+    def update_import_preset_help(self, preset_label: str) -> None:
+        preset = IMPORT_PRESETS.get(preset_label)
+        if preset:
+            self.import_preset_help.setText(preset["description"])
+
+    def pick_import_destination(self) -> None:
+        current = self.import_dest_edit.text().strip() or str(Path.home())
+        folder = QFileDialog.getExistingDirectory(self, "Choose Destination Folder", current)
+        if not folder:
+            return
+        self.import_dest_edit.setText(folder)
+        self.save_settings()
+
+    def start_import(self) -> None:
+        if self.import_worker and self.import_worker.isRunning():
+            return
+        if not YTDLP_PATH:
+            QMessageBox.warning(
+                self,
+                "yt-dlp Missing",
+                "yt-dlp is required to import from a URL. Install yt-dlp first.",
+            )
+            return
+        url = self.import_url_edit.text().strip()
+        if not url:
+            QMessageBox.warning(self, "URL Needed", "Paste a video or playlist URL first.")
+            return
+        destination_text = self.import_dest_edit.text().strip()
+        if not destination_text:
+            QMessageBox.warning(self, "Destination Needed", "Choose a destination folder first.")
+            return
+        destination = Path(destination_text).expanduser()
+        try:
+            destination.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            QMessageBox.warning(self, "Destination Problem", f"Could not use that folder: {exc}")
+            return
+
+        self.save_settings()
+        self.import_log_output.clear()
+        self.import_progress.setValue(0)
+        self.import_phase_label.setText("Starting import...")
+        self.import_worker = ImportWorker(url, destination, self.import_preset_combo.currentText())
+        self.import_worker.log_message.connect(self.append_import_log)
+        self.import_worker.progress_changed.connect(self.import_progress.setValue)
+        self.import_worker.phase_changed.connect(self.import_phase_label.setText)
+        self.import_worker.ytdlp_missing.connect(self.show_ytdlp_warning)
+        self.import_worker.finished_summary.connect(self.handle_import_finished)
+        self.import_worker.finished.connect(self.finish_close_after_import_worker)
+        self._import_cancel_in_progress = False
+        self._close_after_import_cancel = False
+        self.import_start_button.setEnabled(False)
+        self.import_cancel_button.setEnabled(True)
+        self.import_worker.start()
+
+    def cancel_import(self) -> None:
+        if self._import_cancel_in_progress:
+            return
+        self._import_cancel_in_progress = True
+        if self.import_worker and self.import_worker.isRunning():
+            self.import_worker.request_cancel()
+            self.import_phase_label.setText("Stopping import...")
+            QTimer.singleShot(2500, self.force_stop_import_worker_if_needed)
+        self.import_cancel_button.setEnabled(False)
+
+    def force_stop_import_worker_if_needed(self) -> None:
+        if self.import_worker and self.import_worker.isRunning() and self._import_cancel_in_progress:
+            self.import_phase_label.setText("Finishing shutdown...")
+            self.import_worker.force_kill_active_process()
+
+    def finish_close_after_import_worker(self) -> None:
+        if self._close_after_import_cancel:
+            self._close_after_import_cancel = False
+            self.close()
+
+    def append_import_log(self, message: str) -> None:
+        stamp = time.strftime("%H:%M:%S")
+        self.import_log_output.appendPlainText(f"[{stamp}] {message}")
+
+    def show_ytdlp_warning(self, message: str) -> None:
+        QMessageBox.warning(self, "Import Tools Missing", message)
+        self.import_start_button.setEnabled(bool(YTDLP_PATH))
+        self.import_cancel_button.setEnabled(False)
+
+    def handle_import_finished(self, summary: dict[str, Any]) -> None:
+        self.import_start_button.setEnabled(bool(YTDLP_PATH))
+        self.import_cancel_button.setEnabled(False)
+        self._import_cancel_in_progress = False
+        if summary.get("canceled"):
+            self.import_phase_label.setText("Import stopped.")
+            self.append_import_log("Import stopped by user.")
+            return
+        if summary.get("failed"):
+            self.import_phase_label.setText("Import failed.")
+            error = summary.get("error", "")
+            if error:
+                self.append_import_log(error)
+            return
+        self.import_phase_label.setText("Import finished.")
+        self.append_import_log("Import finished.")
 
     def sync_advanced_size_options(self) -> None:
         if not hasattr(self, "size_combo"):
