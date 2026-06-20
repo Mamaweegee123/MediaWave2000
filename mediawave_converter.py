@@ -2463,7 +2463,7 @@ class ImportWorker(QThread):
                 if not line:
                     continue
                 self.log_message.emit(line)
-                if line.startswith("ERROR:") or line.startswith("WARNING:"):
+                if line.startswith("ERROR:"):
                     error_lines.append(line)
                     error_lines = error_lines[-20:]
                 match = _YTDLP_PROGRESS_RE.search(line)
@@ -2483,31 +2483,41 @@ class ImportWorker(QThread):
             self.finished_summary.emit({"canceled": True, "failed": False})
             return
 
-        if return_code != 0:
-            error_text = "\n".join(error_lines) or "yt-dlp exited with an error."
+        # With --ignore-errors, yt-dlp keeps going past a private/unavailable/
+        # age-restricted item in a playlist but still exits non-zero overall.
+        # A non-zero exit code on its own does NOT mean nothing downloaded —
+        # check what actually landed in staging before deciding success/failure,
+        # so one bad item in a 14-item playlist doesn't strand the other 13.
+        files = import_media_candidates(staging_root)
+        error_text = "\n".join(error_lines)
+
+        if not files:
+            if return_code != 0 or error_lines:
+                message = friendly_ytdlp_error(error_text or "yt-dlp exited with an error.")
+            else:
+                message = "No media files were found after import."
             self.log_message.emit(f"Import failed. Files kept for troubleshooting at {staging_root}.")
             self.finished_summary.emit(
                 {
                     "canceled": False,
                     "failed": True,
-                    "error": friendly_ytdlp_error(error_text),
+                    "error": message,
                     "staging_root": str(staging_root),
                 }
             )
             return
 
-        files = import_media_candidates(staging_root)
-        if not files:
-            self.log_message.emit(f"No media files were found after import. Files kept at {staging_root}.")
-            self.finished_summary.emit(
-                {
-                    "canceled": False,
-                    "failed": True,
-                    "error": "No media files were found after import.",
-                    "staging_root": str(staging_root),
-                }
+        partial_note: str | None = None
+        if error_lines:
+            partial_note = (
+                f"{len(error_lines)} item(s) could not be imported "
+                f"({friendly_ytdlp_error(error_text)}). Continuing with the {len(files)} file(s) that did download."
             )
-            return
+            self.log_message.emit(partial_note)
+        elif return_code != 0:
+            self.log_message.emit(
+                f"yt-dlp exited with a non-zero status, but {len(files)} file(s) downloaded successfully. Continuing."
+            )
 
         self.progress_changed.emit(100)
 
@@ -2520,6 +2530,7 @@ class ImportWorker(QThread):
                     "staging_root": str(staging_root),
                     "files": [str(path) for path in files],
                     "destination": str(self.destination),
+                    "partial_note": partial_note,
                 }
             )
             return
@@ -2555,6 +2566,7 @@ class ImportWorker(QThread):
                 "convert_after": False,
                 "moved_count": moved,
                 "destination": str(self.destination),
+                "partial_note": partial_note,
             }
         )
 
@@ -2569,6 +2581,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self._import_cancel_in_progress = False
         self._close_after_import_cancel = False
         self._active_import_staging_root: Path | None = None
+        self._active_import_partial_note: str | None = None
         self.last_options: ConversionOptions | None = None
         self.source_rows: dict[str, int] = {}
         self._source_paths: list[Path] = []
@@ -4111,8 +4124,9 @@ class MediaWaveConverterWindow(QMainWindow):
             return
 
         moved_count = summary.get("moved_count", 0)
-        self.set_import_stage("Complete")
-        self.import_phase_label.setText("Import finished.")
+        partial_note = summary.get("partial_note")
+        self.set_import_stage("Complete (with errors)" if partial_note else "Complete")
+        self.import_phase_label.setText("Import finished." if not partial_note else partial_note)
         self.append_import_log(
             f"Import finished. {moved_count} file{'s' if moved_count != 1 else ''} saved to "
             f"{summary.get('destination', self.import_dest_edit.text().strip())}."
@@ -4152,6 +4166,7 @@ class MediaWaveConverterWindow(QMainWindow):
         )
 
         self._active_import_staging_root = staging_root
+        self._active_import_partial_note = summary.get("partial_note")
         self.set_import_stage("Converting")
         self.import_phase_label.setText("Starting conversion...")
         self.import_progress.setValue(0)
@@ -4170,6 +4185,8 @@ class MediaWaveConverterWindow(QMainWindow):
     def handle_import_convert_finished(self, summary: dict[str, Any]) -> None:
         staging_root = self._active_import_staging_root
         self._active_import_staging_root = None
+        partial_note = self._active_import_partial_note
+        self._active_import_partial_note = None
         if summary.get("canceled"):
             if staging_root:
                 shutil.rmtree(staging_root, ignore_errors=True)
@@ -4194,12 +4211,14 @@ class MediaWaveConverterWindow(QMainWindow):
 
         if staging_root:
             shutil.rmtree(staging_root, ignore_errors=True)
-        self.set_import_stage("Complete")
-        self.import_phase_label.setText("Import finished.")
+        self.set_import_stage("Complete (with errors)" if partial_note else "Complete")
+        self.import_phase_label.setText(partial_note or "Import finished.")
         self.append_import_log(
             f"Import + convert finished. {processed} file{'s' if processed != 1 else ''} converted into "
             f"{self.import_dest_edit.text().strip()}."
         )
+        if partial_note:
+            self.append_import_log(partial_note)
         self.finalize_import_ui()
 
     def sync_advanced_size_options(self) -> None:
