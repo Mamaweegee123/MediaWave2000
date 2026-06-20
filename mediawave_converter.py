@@ -2417,15 +2417,21 @@ class ImportWorker(QThread):
         preset = IMPORT_PRESETS.get(self.preset_label, IMPORT_PRESETS[DEFAULT_IMPORT_PRESET])
         staging_root = Path(tempfile.mkdtemp(prefix="mediawave_import_"))
         self.staging_root = staging_root
+        # A single default template: %(playlist_title|)s renders empty (not yt-dlp's
+        # "NA" placeholder) for a standalone video, so the playlist subfolder and
+        # index prefix only appear when the URL is actually a playlist. There is no
+        # "playlist:" output-template type in yt-dlp — passing one made it try to
+        # mkdir a literal directory named "playlist:" and fail every download.
+        output_template = str(
+            staging_root / "%(playlist_title|)s" / "%(playlist_index|)s%(playlist_index&. |)s%(title)s.%(ext)s"
+        )
         command = [
             YTDLP_PATH,
             "--newline",
             "--no-color",
             "--ignore-errors",
             "-o",
-            str(staging_root / "%(title)s.%(ext)s"),
-            "-o",
-            "playlist:" + str(staging_root / "%(playlist_title)s" / "%(playlist_index)s - %(title)s.%(ext)s"),
+            output_template,
             *preset["format_args"],
             self.url,
         ]
