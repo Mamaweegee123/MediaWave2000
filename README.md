@@ -4,32 +4,31 @@
 
 <img width="288" height="180" alt="Kapture 2026-06-14 at 21 13 51" src="https://github.com/user-attachments/assets/9cc72a69-b647-43a5-8338-ebb50590794f" />
 
-Put your videos in folders. Open MediaWave2000. Watch TV.
+Put your videos in folders, open MediaWave2000, and watch TV!
 
 ---
 
 ## What is this?
 
-MediaWave2000 is a desktop app that transforms your local video collection into a fully functional fake cable channel system — complete with a scrollable TV guide, "On-Demand" Vault, scheduled programming, commercial breaks, and themed on-screen displays.
+MediaWave2000 is a desktop app that transforms your local video collection into a fully functional fake cable channel system - complete with a scrollable TV guide, "On-Demand" Vault, scheduled programming, commercial breaks, and themed on-screen displays.
 
-If you've ever tried **FieldStation42** and wanted something simpler to easily turn your media catalog into a working cable system, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No configuring schedules, no .Json files, just folders.
+If you've ever tried **FieldStation42** and wanted something simpler to easily turn your media catalog into a working cable system, this was made for you. MediaWave2000 sets itself up automatically from your folder structure. No configuring schedules, no .Json files, just folders!
 
 ---
 
 ## Screenshots
 
-<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 50 10 PM" src="https://github.com/user-attachments/assets/3b067621-d439-4e72-9784-3e24ddfdd80f" />
-<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 50 22 PM" src="https://github.com/user-attachments/assets/0e07911e-8c8a-4c58-83b4-a3c898eb3fc8" />
-<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 50 39 PM" src="https://github.com/user-attachments/assets/46628089-2b56-4edc-b134-1382f47a080f" />
-
-<img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 49 45 PM" src="https://github.com/user-attachments/assets/166b03b1-f7d1-435a-a04e-f69c7876d04e" />
+<img width="1440" height="900" alt="Screenshot 2026-06-20 at 2 11 32 PM" src="https://github.com/user-attachments/assets/37fc6849-83fe-4485-a5a9-d55a97720a40" />
+<img width="1440" height="900" alt="Screenshot 2026-06-20 at 2 11 48 PM" src="https://github.com/user-attachments/assets/c3f3966b-ebc0-43c9-8472-e309c4a53f03" />
+<img width="1440" height="900" alt="Screenshot 2026-06-20 at 2 12 09 PM" src="https://github.com/user-attachments/assets/0eacfe00-a23a-4682-97ba-2f0cb8cddf8f" />
+<img width="1440" height="900" alt="Screenshot 2026-06-20 at 2 12 28 PM" src="https://github.com/user-attachments/assets/f5c1cd64-f09b-4b48-8ff8-6a24868bf067" />
 <img width="1440" height="900" alt="Screenshot 2026-06-14 at 8 51 00 PM" src="https://github.com/user-attachments/assets/97149040-1a1e-4152-bc0e-461fc858d5f1" />
 
 ---
 
 ## Features
 
-See [FEATURES.md](FEATURES.md) for the full list, but here's the short version:
+See [FEATURES.md](FEATURES.md) for the full list, but here's the basics:
 
 - **Scrollable TV Guide** — browse your lineup like the old digital cable you know and love!
 - **The Vault** — on-demand section, like a local streaming library
@@ -40,6 +39,7 @@ See [FEATURES.md](FEATURES.md) for the full list, but here's the short version:
 - **Companion channels** — WeatherStar connectivity, RadioWave TV (music visualizer), NetTV (YouTube playlists)
 - **MediaWave Converter** — companion app to batch-prep files for smooth playback
 - Works on **Mac**, **Windows**, and in the future, Linux.
+- More always being worked on!
 
 ---
 
@@ -119,7 +119,7 @@ Beyond your own library, MediaWave includes three built-in channels:
 
 ## MediaWave Converter
 
-A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to .mp4, .mkv, or .avi with consistent framing — removes letterboxing, normalizes resolution, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't play smoothly out of the box.
+A separate app included with MediaWave2000. Drop video files onto it and it batch-converts them to .mp4, .mkv, or .avi with consistent framing — removes letterboxing, normalizes resolution and audio, handles subtitle burn-in. Useful for old MKVs, weird rips, or anything that doesn't quite play how you'd like.
 
 Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 
@@ -150,7 +150,7 @@ Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 ## FAQ
 
 **Do I need to convert all my files?**
-Nope! Most modern MP4s play fine as-is. Use the Converter when something doesn't look right, or if you want all your files to be the same format, audio level etc.
+Nope! Most modern video files play fine as-is. Use the Converter when something doesn't look right, or if you want all your files to be the same format, audio level etc.
 
 **Can I use an external drive?**
 Yes, your catalog can live anywhere your system can read — USB drive, NAS, network share, wherever.
@@ -165,7 +165,7 @@ Yes. Free to download, no account required, no subscription.
 
 ## Developing MediaWave2000
 
-Working on the source code? See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for how to run the app from source, build each platform, cut a release, and where runtime/cache files live.
+MediaWave2000 came to be after I realized how cool **FieldStation42** was but wanted something that can automatically convert your entire catalog just by the click of a button and it kind of ballooned out to what it is now (with more features coming soon!). I really want this to be something completely customizeable by you and build a community where we can share our setups, custom themes (when implemented), and bring back the golden age of television! This is still a very early beta so feel free to reach out and let me know of naything you found that needs fixing or features youd personally like to see! 
 
 ---
 
