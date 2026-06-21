@@ -2454,7 +2454,19 @@ class ImportWorker(QThread):
             return
 
         preset = IMPORT_PRESETS.get(self.preset_label, IMPORT_PRESETS[DEFAULT_IMPORT_PRESET])
-        staging_root = Path(tempfile.mkdtemp(prefix="mediawave_import_"))
+        # Stage on the SAME volume as the chosen destination, not the system temp
+        # directory (which on macOS/Windows is almost always the boot drive). A
+        # large playlist downloaded to an external/secondary drive would otherwise
+        # silently fill up the boot drive instead, failing with "No space left on
+        # device" partway through with no obvious explanation.
+        try:
+            staging_root = Path(tempfile.mkdtemp(prefix=".mediawave_import_", dir=str(self.destination)))
+        except OSError as exc:
+            self.log_message.emit(
+                f"Could not create a staging folder next to the destination ({exc}); falling back to the "
+                "system temp folder. Large playlists may run out of space there if it's on a different drive."
+            )
+            staging_root = Path(tempfile.mkdtemp(prefix="mediawave_import_"))
         self.staging_root = staging_root
         # A single default template: %(playlist_title|)s renders empty (not yt-dlp's
         # "NA" placeholder) for a standalone video, so the playlist subfolder and
