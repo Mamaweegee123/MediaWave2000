@@ -847,8 +847,11 @@ def clean_filename_words(value: str) -> str:
 
 
 _LEADING_IMPORT_INDEX_RE = re.compile(r"^\d{1,3}[.\-_]\s*")
+# Covers both abbreviated "(S1, E1)" and full-word "(Season 24 Episode 6)" /
+# "(Season 1, Episode 2)" — comma optional either way, "Season"/"Episode" case-insensitive.
 _IMPORT_SEASON_EPISODE_PAREN_RE = re.compile(
-    r"^(?P<title>.*?)\s*\(\s*S(?P<season>\d{1,2})\s*,?\s*E(?P<episode>\d{1,3})\s*\)(?:[ ._:|-]+(?P<name>.*))?$",
+    r"^(?P<title>.*?)\s*\(\s*(?:Season|S)\s*(?P<season>\d{1,3})\s*,?\s*(?:Episode|EP?)\s*(?P<episode>\d{1,4})\s*\)"
+    r"(?:[ ._:|-]+(?P<name>.*))?$",
     re.I,
 )
 # yt-dlp/TVmaze-style video titles are often "Show Name: Episode Title (S1, E1)" —
@@ -857,6 +860,8 @@ _IMPORT_SEASON_EPISODE_PAREN_RE = re.compile(
 # drag the episode subtitle along with it, and so the real episode title is captured
 # from there instead of from whatever trails the "(S1, E1)" marker (e.g. "Full Episode").
 _SHOW_EPISODE_COLON_RE = re.compile(r"^(?P<show>.+?)\s*[:：]\s*(?P<episode_title>.+)$")
+# Some sources use a hyphen instead of a colon: "Bob Ross - Mirrored Images (Season 24 Episode 6)".
+_SHOW_EPISODE_DASH_RE = re.compile(r"^(?P<show>.+?)\s+-\s+(?P<episode_title>.+)$")
 
 
 def parse_rename_file(path: Path) -> RenameFileInfo:
@@ -872,9 +877,9 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
     paren_match = _IMPORT_SEASON_EPISODE_PAREN_RE.match(working_stem)
     if paren_match:
         raw_title = paren_match.group("title")
-        colon_split = _SHOW_EPISODE_COLON_RE.match(raw_title)
-        show_title = colon_split.group("show") if colon_split else raw_title
-        episode_title = colon_split.group("episode_title") if colon_split else (paren_match.group("name") or "")
+        split = _SHOW_EPISODE_COLON_RE.match(raw_title) or _SHOW_EPISODE_DASH_RE.match(raw_title)
+        show_title = split.group("show") if split else raw_title
+        episode_title = split.group("episode_title") if split else (paren_match.group("name") or "")
         return RenameFileInfo(
             path=path,
             guessed_title=clean_filename_words(show_title),
