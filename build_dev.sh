@@ -71,7 +71,19 @@ if ! command -v pyinstaller >/dev/null 2>&1; then
 fi
 
 echo "Step 1: Cleaning old Dev Testing output..."
-rm -rf "$DEV_DIR"
+# Finder can re-write a .DS_Store into $DEV_DIR mid-delete if the folder was
+# recently opened/indexed (e.g. via `open` for a test launch), making a single
+# `rm -rf` fail with "Directory not empty". Retry a few times before giving up.
+clean_attempt=0
+while [[ -e "$DEV_DIR" ]]; do
+    clean_attempt=$((clean_attempt + 1))
+    if [[ $clean_attempt -gt 5 ]]; then
+        echo "ERROR: could not remove $DEV_DIR after $((clean_attempt - 1)) attempts." >&2
+        exit 1
+    fi
+    rm -rf "$DEV_DIR" 2>/dev/null || true
+    [[ -e "$DEV_DIR" ]] && sleep 0.5
+done
 mkdir -p "$DEV_DIR"
 echo "  Cleaned: $DEV_DIR"
 

@@ -781,6 +781,12 @@ _YTDLP_ERROR_HINTS: list[tuple[tuple[str, ...], str]] = [
         "That video is unavailable. It may have been removed or made private.",
     ),
     (
+        ("confirm you're not a bot", "confirm you’re not a bot"),
+        "YouTube flagged this request as automated traffic and is asking for sign-in to verify you're not a "
+        "bot. This can happen even for videos you have full rights to — it's not specific to this import. "
+        "Try again in a few minutes, from a different network, or with a different URL.",
+    ),
+    (
         ("sign in to confirm", "login required", "use --cookies", "age-restricted", "age restricted"),
         "That content requires sign-in, age verification, or cookies that MediaWave does not provide. "
         "Try a publicly accessible URL.",
