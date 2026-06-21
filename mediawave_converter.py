@@ -333,6 +333,26 @@ IMPORT_PRESETS = {
     },
 }
 IMPORT_MEDIA_EXTENSIONS = SUPPORTED_VIDEO_EXTENSIONS | {".mp3", ".m4a", ".aac", ".opus", ".wav", ".flac"}
+
+# Browsers supported for --cookies-from-browser. Safari is macOS-only;
+# yt-dlp enforces this at runtime too.
+IMPORT_COOKIE_BROWSERS = ["chrome", "chromium", "firefox", "edge", "safari"]
+
+
+def import_available_cookie_browsers() -> list[str]:
+    if sys.platform == "darwin":
+        return list(IMPORT_COOKIE_BROWSERS)
+    return [b for b in IMPORT_COOKIE_BROWSERS if b != "safari"]
+
+
+def import_cookie_args(cookies_browser: str, cookies_file: str) -> list[str]:
+    browser = (cookies_browser or "").strip().lower()
+    file_path = (cookies_file or "").strip()
+    if browser and browser in import_available_cookie_browsers():
+        return ["--cookies-from-browser", browser]
+    if file_path and Path(file_path).is_file():
+        return ["--cookies", file_path]
+    return []
 LEGACY_ASPECT_LABELS = {
     "Classic 4:3": "Classic TV",
     "Fullscreen 16:9": "Widescreen",
@@ -784,12 +804,12 @@ _YTDLP_ERROR_HINTS: list[tuple[tuple[str, ...], str]] = [
         ("confirm you're not a bot", "confirm you’re not a bot"),
         "YouTube flagged this request as automated traffic and is asking for sign-in to verify you're not a "
         "bot. This can happen even for videos you have full rights to — it's not specific to this import. "
-        "Try again in a few minutes, from a different network, or with a different URL.",
+        "Turn on browser cookies above and try again, or retry later from a different network.",
     ),
     (
         ("sign in to confirm", "login required", "use --cookies", "age-restricted", "age restricted"),
         "That content requires sign-in, age verification, or cookies that MediaWave does not provide. "
-        "Try a publicly accessible URL.",
+        "Turn on browser cookies above, or try a publicly accessible URL.",
     ),
 ]
 
@@ -2077,6 +2097,8 @@ class BatchWorker(QThread):
                 return
             except RuntimeError as exc:
                 last_error = str(exc)
+                if self._cancel_requested:
+                    raise
                 if allow_burn_retry and self.is_subtitle_burn_failure(last_error):
                     allow_burn_retry = False
                     if output_path.exists():
@@ -2247,7 +2269,7 @@ class BatchWorker(QThread):
             for raw_line in self._active_process.stdout:
                 if self._cancel_requested:
                     self.request_cancel()
-                    raise RuntimeError("Canceled.")
+                    break
                 line = raw_line.strip()
                 if not line or "=" not in line:
                     if line:
@@ -2384,12 +2406,22 @@ class ImportWorker(QThread):
     ytdlp_missing = Signal(str)
     finished_summary = Signal(dict)
 
-    def __init__(self, url: str, destination: Path, preset_label: str, convert_after: bool):
+    def __init__(
+        self,
+        url: str,
+        destination: Path,
+        preset_label: str,
+        convert_after: bool,
+        cookies_browser: str = "",
+        cookies_file: str = "",
+    ):
         super().__init__()
         self.url = url
         self.destination = destination
         self.preset_label = preset_label
         self.convert_after = convert_after
+        self.cookies_browser = cookies_browser
+        self.cookies_file = cookies_file
         self._cancel_requested = False
         self._active_process: subprocess.Popen[str] | None = None
         self.staging_root: Path | None = None
@@ -2435,6 +2467,7 @@ class ImportWorker(QThread):
             "-o",
             output_template,
             *preset["format_args"],
+            *import_cookie_args(self.cookies_browser, self.cookies_file),
             self.url,
         ]
 
@@ -3256,6 +3289,41 @@ class MediaWaveConverterWindow(QMainWindow):
         self.import_preset_combo.currentTextChanged.connect(self.update_import_preset_help)
         layout.addWidget(source_panel)
 
+        auth_panel = QFrame()
+        auth_panel.setObjectName("panel")
+        auth_layout = QVBoxLayout(auth_panel)
+        auth_layout.setContentsMargins(18, 16, 18, 16)
+        auth_layout.setSpacing(10)
+        auth_layout.addWidget(self.panel_heading("YouTube Authentication"))
+        auth_note = QLabel(
+            "If YouTube asks for sign-in verification, enable browser cookies below. Cookies are read "
+            "directly from your browser — no values are stored in the app. Safari is available on macOS only."
+        )
+        auth_note.setObjectName("dialogNote")
+        auth_note.setWordWrap(True)
+        auth_layout.addWidget(auth_note)
+
+        self.import_cookies_enabled = QCheckBox("Use browser cookies for YouTube (helps with bot verification)")
+        auth_layout.addWidget(self.import_cookies_enabled)
+
+        self.import_cookies_browser_combo = QComboBox()
+        self.import_cookies_browser_combo.addItems(
+            [b.capitalize() for b in import_available_cookie_browsers()]
+        )
+        self.import_cookies_browser_combo.setEnabled(False)
+        self.import_cookies_enabled.toggled.connect(self.import_cookies_browser_combo.setEnabled)
+        auth_layout.addLayout(self.form_row("Browser", self.import_cookies_browser_combo))
+
+        self.import_cookies_file_edit = QLineEdit()
+        self.import_cookies_file_edit.setReadOnly(True)
+        self.import_cookies_file_edit.setPlaceholderText("Optional: path to a cookies.txt file")
+        import_cookies_file_button = QPushButton("Browse")
+        import_cookies_file_button.clicked.connect(self.pick_import_cookies_file)
+        auth_layout.addLayout(
+            self.form_row("Cookie File (optional)", self.import_cookies_file_edit, import_cookies_file_button)
+        )
+        layout.addWidget(auth_panel)
+
         action_panel = QFrame()
         action_panel.setObjectName("panel")
         action_layout = QVBoxLayout(action_panel)
@@ -3829,6 +3897,14 @@ class MediaWaveConverterWindow(QMainWindow):
             import_preset = DEFAULT_IMPORT_PRESET
         self.import_preset_combo.setCurrentText(import_preset)
         self.update_import_preset_help(import_preset)
+        saved_cookies_browser = (settings.get("import_cookies_browser") or "").strip().lower()
+        available_browsers = import_available_cookie_browsers()
+        browser_index = (
+            available_browsers.index(saved_cookies_browser) if saved_cookies_browser in available_browsers else 0
+        )
+        self.import_cookies_browser_combo.setCurrentIndex(browser_index)
+        self.import_cookies_enabled.setChecked(bool(saved_cookies_browser))
+        self.import_cookies_file_edit.setText((settings.get("import_cookies_file") or "").strip())
         self.refresh_main_summary()
 
     def connect_settings_autosave(self) -> None:
@@ -3846,6 +3922,7 @@ class MediaWaveConverterWindow(QMainWindow):
             self.subtitle_pref_combo,
             self.import_dest_edit,
             self.import_preset_combo,
+            self.import_cookies_browser_combo,
         ]
         for widget in widgets:
             if isinstance(widget, QLineEdit):
@@ -3857,6 +3934,7 @@ class MediaWaveConverterWindow(QMainWindow):
             self.recursive_checkbox,
             self.skip_checkbox,
             self.audio_leveling_checkbox,
+            self.import_cookies_enabled,
         ):
             checkbox.toggled.connect(lambda _checked: self.save_settings())
 
@@ -3880,6 +3958,13 @@ class MediaWaveConverterWindow(QMainWindow):
             "subtitle_preference": self.subtitle_pref_combo.currentText(),
             "import_dest_root": self.import_dest_edit.text().strip(),
             "import_preset_label": self.import_preset_combo.currentText(),
+            "import_cookies_browser": (
+                import_available_cookie_browsers()[self.import_cookies_browser_combo.currentIndex()]
+                if self.import_cookies_enabled.isChecked()
+                and self.import_cookies_browser_combo.currentIndex() < len(import_available_cookie_browsers())
+                else ""
+            ),
+            "import_cookies_file": self.import_cookies_file_edit.text().strip(),
         }
         save_json(SETTINGS_FILE, payload)
 
@@ -3976,6 +4061,16 @@ class MediaWaveConverterWindow(QMainWindow):
         self.import_dest_edit.setText(folder)
         self.save_settings()
 
+    def pick_import_cookies_file(self) -> None:
+        configured = self.import_cookies_file_edit.text().strip()
+        start = configured if configured else str(Path.home())
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Choose cookies.txt File", start, "Cookie files (*.txt);;All files (*)"
+        )
+        if path:
+            self.import_cookies_file_edit.setText(path)
+            self.save_settings()
+
     def start_import(self) -> None:
         if self.import_worker and self.import_worker.isRunning():
             return
@@ -4020,12 +4115,28 @@ class MediaWaveConverterWindow(QMainWindow):
             )
             return
 
+        cookies_browsers = import_available_cookie_browsers()
+        cookies_browser = (
+            cookies_browsers[self.import_cookies_browser_combo.currentIndex()]
+            if self.import_cookies_enabled.isChecked()
+            and self.import_cookies_browser_combo.currentIndex() < len(cookies_browsers)
+            else ""
+        )
+        cookies_file = self.import_cookies_file_edit.text().strip()
+
         self.save_settings()
         self.import_log_output.clear()
         self.import_progress.setValue(0)
         self.import_phase_label.setText("Starting import...")
         self.set_import_stage("Importing")
-        self.import_worker = ImportWorker(url, destination, self.import_preset_combo.currentText(), convert_after)
+        self.import_worker = ImportWorker(
+            url,
+            destination,
+            self.import_preset_combo.currentText(),
+            convert_after,
+            cookies_browser,
+            cookies_file,
+        )
         self.import_worker.log_message.connect(self.append_import_log)
         self.import_worker.progress_changed.connect(self.import_progress.setValue)
         self.import_worker.phase_changed.connect(self.import_phase_label.setText)
