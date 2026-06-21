@@ -811,6 +811,11 @@ _YTDLP_ERROR_HINTS: list[tuple[tuple[str, ...], str]] = [
         "That content requires sign-in, age verification, or cookies that MediaWave does not provide. "
         "Turn on browser cookies above, or try a publicly accessible URL.",
     ),
+    (
+        ("requested format is not available", "only images are available"),
+        "YouTube only offered images for this video, which usually means its signature challenge could not "
+        "be solved. Install Deno (https://deno.land) so yt-dlp can solve it, then try again.",
+    ),
 ]
 
 
@@ -2459,15 +2464,36 @@ class ImportWorker(QThread):
         output_template = str(
             staging_root / "%(playlist_title|)s" / "%(playlist_index|)s%(playlist_index&. |)s%(title)s.%(ext)s"
         )
+        cookie_args = import_cookie_args(self.cookies_browser, self.cookies_file)
+        client_args = (
+            # The default "android_vr" client is most often hit with "Sign in to
+            # confirm you're not a bot," even when cookies are supplied. "tv" and
+            # "web_creator" cooperate with cookies instead — verified across an
+            # entire previously-failing playlist with zero failures. Only override
+            # the client list when cookies are actually provided: without cookies,
+            # those two clients are themselves more likely to demand sign-in than
+            # the default order, which already works for ordinary public videos.
+            ["--extractor-args", "youtube:player_client=tv,web_creator"]
+            if cookie_args
+            else []
+        )
         command = [
             YTDLP_PATH,
             "--newline",
             "--no-color",
             "--ignore-errors",
+            # YouTube's "n" signature challenge requires a small JS solver script
+            # that yt-dlp fetches from its own official GitHub releases on demand
+            # (the same mechanism yt-dlp's own builds use). Without this, many
+            # videos only expose image/storyboard "formats" and every real
+            # download fails with "Requested format is not available."
+            "--remote-components",
+            "ejs:github",
+            *client_args,
             "-o",
             output_template,
             *preset["format_args"],
-            *import_cookie_args(self.cookies_browser, self.cookies_file),
+            *cookie_args,
             self.url,
         ]
 
