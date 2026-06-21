@@ -2477,11 +2477,13 @@ class ImportWorker(QThread):
             if cookie_args
             else []
         )
+        ffmpeg_location_args = ["--ffmpeg-location", FFMPEG_PATH] if FFMPEG_PATH else []
         command = [
             YTDLP_PATH,
             "--newline",
             "--no-color",
             "--ignore-errors",
+            *ffmpeg_location_args,
             # YouTube's "n" signature challenge requires a small JS solver script
             # that yt-dlp fetches from its own official GitHub releases on demand
             # (the same mechanism yt-dlp's own builds use). Without this, many
