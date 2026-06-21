@@ -847,6 +847,16 @@ def clean_filename_words(value: str) -> str:
 
 
 _LEADING_IMPORT_INDEX_RE = re.compile(r"^\d{1,3}[.\-_]\s*")
+_IMPORT_SEASON_EPISODE_PAREN_RE = re.compile(
+    r"^(?P<title>.*?)\s*\(\s*S(?P<season>\d{1,2})\s*,?\s*E(?P<episode>\d{1,3})\s*\)(?:[ ._:|-]+(?P<name>.*))?$",
+    re.I,
+)
+# yt-dlp/TVmaze-style video titles are often "Show Name: Episode Title (S1, E1)" —
+# filename-sanitized to a fullwidth colon ("：") since MediaWave imports run through
+# yt-dlp's sanitizer. Split on the colon so the show name (used for matching) doesn't
+# drag the episode subtitle along with it, and so the real episode title is captured
+# from there instead of from whatever trails the "(S1, E1)" marker (e.g. "Full Episode").
+_SHOW_EPISODE_COLON_RE = re.compile(r"^(?P<show>.+?)\s*[:：]\s*(?P<episode_title>.+)$")
 
 
 def parse_rename_file(path: Path) -> RenameFileInfo:
@@ -858,14 +868,22 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
     # a separator (no space first), so genuine number-led titles like "01 Naruto" or
     # "01 - Naruto" are left alone.
     working_stem = _LEADING_IMPORT_INDEX_RE.sub("", stem, count=1)
+
+    paren_match = _IMPORT_SEASON_EPISODE_PAREN_RE.match(working_stem)
+    if paren_match:
+        raw_title = paren_match.group("title")
+        colon_split = _SHOW_EPISODE_COLON_RE.match(raw_title)
+        show_title = colon_split.group("show") if colon_split else raw_title
+        episode_title = colon_split.group("episode_title") if colon_split else (paren_match.group("name") or "")
+        return RenameFileInfo(
+            path=path,
+            guessed_title=clean_filename_words(show_title),
+            season=int(paren_match.group("season")),
+            episode=int(paren_match.group("episode")),
+            existing_episode_title=clean_filename_words(episode_title),
+        )
+
     patterns = [
-        # "(S1, E1)" / "(S01,E12)" / "(S1 E1)" — what yt-dlp/TVmaze-style episode
-        # titles look like, e.g. titles pulled in via the import-from-URL feature.
-        re.compile(
-            r"^(?P<title>.*?)\s*\(\s*S(?P<season>\d{1,2})\s*,?\s*E(?P<episode>\d{1,3})\s*\)"
-            r"(?:[ ._:|-]+(?P<name>.*))?$",
-            re.I,
-        ),
         re.compile(r"^(?P<title>.*?)[ ._-]+S(?P<season>\d{1,2})E(?P<episode>\d{1,3})(?:[ ._-]+(?P<name>.*))?$", re.I),
         re.compile(r"^(?P<title>.*?)[ ._-]+(?P<season>\d{1,2})x(?P<episode>\d{1,3})(?:[ ._-]+(?P<name>.*))?$", re.I),
     ]
@@ -4481,6 +4499,11 @@ class MediaWaveConverterWindow(QMainWindow):
         self.add_rename_paths(paths)
 
     def add_rename_paths(self, paths: list[Path]) -> None:
+        # Drop already-renamed entries from the previous batch before adding more files.
+        # They're done; keeping them around only risks a later match (for a different
+        # show) recomputing their proposed_name/status and corrupting an already-renamed
+        # file's record.
+        self._rename_files = [item for item in self._rename_files if item.status != "Renamed"]
         known = {item.path.resolve() for item in self._rename_files}
         parser = parse_movie_file if self.rename_mode_combo.currentText() == "Movies" else parse_rename_file
         for path in paths:
@@ -4666,6 +4689,8 @@ class MediaWaveConverterWindow(QMainWindow):
         matched = 0
         proposed_targets: set[Path] = set()
         for item in self._rename_files:
+            if item.status == "Renamed":
+                continue
             confidence = metadata_match_confidence(item.guessed_title, movie_title, item.guessed_year, movie_year)
             year_conflict = bool(item.guessed_year and movie_year and item.guessed_year != movie_year)
             if confidence < 78 or year_conflict:
@@ -4702,6 +4727,8 @@ class MediaWaveConverterWindow(QMainWindow):
         show_title = safe_filename_part(str(result["title"]))
         proposed_targets: set[Path] = set()
         for item in self._rename_files:
+            if item.status == "Renamed":
+                continue
             if item.episode is None:
                 item.proposed_name = ""
                 item.status = "Needs an episode number"
