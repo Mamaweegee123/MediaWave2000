@@ -846,14 +846,31 @@ def clean_filename_words(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip(" -")
 
 
+_LEADING_IMPORT_INDEX_RE = re.compile(r"^\d{1,3}[.\-_]\s*")
+
+
 def parse_rename_file(path: Path) -> RenameFileInfo:
     stem = path.stem
+    # The import-from-URL feature names playlist items "01. Title...", "02. Title...".
+    # That index isn't part of the show/episode title, so strip it before looking for
+    # season/episode markers — otherwise it pollutes the guessed title and can shift
+    # the patterns below out of alignment. Only matches digits immediately followed by
+    # a separator (no space first), so genuine number-led titles like "01 Naruto" or
+    # "01 - Naruto" are left alone.
+    working_stem = _LEADING_IMPORT_INDEX_RE.sub("", stem, count=1)
     patterns = [
+        # "(S1, E1)" / "(S01,E12)" / "(S1 E1)" — what yt-dlp/TVmaze-style episode
+        # titles look like, e.g. titles pulled in via the import-from-URL feature.
+        re.compile(
+            r"^(?P<title>.*?)\s*\(\s*S(?P<season>\d{1,2})\s*,?\s*E(?P<episode>\d{1,3})\s*\)"
+            r"(?:[ ._:|-]+(?P<name>.*))?$",
+            re.I,
+        ),
         re.compile(r"^(?P<title>.*?)[ ._-]+S(?P<season>\d{1,2})E(?P<episode>\d{1,3})(?:[ ._-]+(?P<name>.*))?$", re.I),
         re.compile(r"^(?P<title>.*?)[ ._-]+(?P<season>\d{1,2})x(?P<episode>\d{1,3})(?:[ ._-]+(?P<name>.*))?$", re.I),
     ]
     for pattern in patterns:
-        match = pattern.match(stem)
+        match = pattern.match(working_stem)
         if match:
             return RenameFileInfo(
                 path=path,
@@ -862,7 +879,9 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
                 episode=int(match.group("episode")),
                 existing_episode_title=clean_filename_words(match.group("name") or ""),
             )
-    absolute = re.match(r"^(?P<title>.*?)[ ._-]+(?:EP?|Episode)[ ._-]*(?P<episode>\d{1,4})(?:[ ._-]+(?P<name>.*))?$", stem, re.I)
+    absolute = re.match(
+        r"^(?P<title>.*?)[ ._-]+(?:EP?|Episode)[ ._-]*(?P<episode>\d{1,4})(?:[ ._-]+(?P<name>.*))?$", working_stem, re.I
+    )
     if absolute:
         return RenameFileInfo(
             path=path,
@@ -873,7 +892,7 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
         )
     anime_release = re.match(
         r"^(?P<title>.*?)[ ._-]+(?P<episode>\d{1,4})(?:v\d+)?(?:[ ._-]+(?P<name>.*))?$",
-        stem,
+        working_stem,
         re.I,
     )
     if anime_release:
@@ -884,7 +903,7 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
             episode=int(anime_release.group("episode")),
             existing_episode_title=clean_filename_words(anime_release.group("name") or ""),
         )
-    return RenameFileInfo(path, clean_filename_words(stem), None, None, "")
+    return RenameFileInfo(path, clean_filename_words(working_stem), None, None, "")
 
 
 def parse_movie_file(path: Path) -> RenameFileInfo:
