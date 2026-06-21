@@ -306,21 +306,18 @@ IMPORT_PRESETS = {
     "Import Only": {
         "description": "Downloads the original media as-is, with no extra conversion step.",
         "format_args": ["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"],
-        "convert_after_default": False,
-        "lock_convert": False,
+        "convert_after": False,
     },
     "Import + MediaWave-Ready MP4": {
         "description": "Downloads the source, then runs it through the converter for a clean, compatible MP4.",
         "format_args": ["-f", "bestvideo+bestaudio/best", "--merge-output-format", "mp4"],
-        "convert_after_default": True,
-        "lock_convert": False,
+        "convert_after": True,
         "output_format_override": "MP4 (Recommended)",
     },
     "Import + Audio Only": {
         "description": "Downloads and extracts just the audio track as an MP3 file. No video conversion step needed.",
         "format_args": ["-f", "bestaudio", "-x", "--audio-format", "mp3"],
-        "convert_after_default": False,
-        "lock_convert": True,
+        "convert_after": False,
     },
     "Import + 720p TV-Friendly": {
         "description": "Downloads the source, then runs it through the converter capped near 720p for TV playback.",
@@ -330,8 +327,7 @@ IMPORT_PRESETS = {
             "--merge-output-format",
             "mp4",
         ],
-        "convert_after_default": True,
-        "lock_convert": False,
+        "convert_after": True,
         "aspect_override": "Widescreen",
         "size_override": (1280, 720),
     },
@@ -2577,7 +2573,6 @@ class MediaWaveConverterWindow(QMainWindow):
         self.primary_font_family, self.secondary_font_family = load_brand_fonts()
         self.worker: BatchWorker | None = None
         self.import_worker: ImportWorker | None = None
-        self.import_convert_worker: BatchWorker | None = None
         self._import_cancel_in_progress = False
         self._close_after_import_cancel = False
         self._active_import_staging_root: Path | None = None
@@ -3252,13 +3247,6 @@ class MediaWaveConverterWindow(QMainWindow):
         self.import_preset_help.setObjectName("fieldHelp")
         self.import_preset_help.setWordWrap(True)
         source_layout.addWidget(self.import_preset_help)
-
-        self.import_convert_checkbox = QCheckBox("Convert after import")
-        self.import_convert_checkbox.setToolTip(
-            "Runs downloaded media through the converter (quality preset, aspect handling, audio leveling, "
-            "and output naming from the Converter tab) before placing it in the destination folder."
-        )
-        source_layout.addWidget(self.import_convert_checkbox)
         self.import_preset_combo.currentTextChanged.connect(self.update_import_preset_help)
         layout.addWidget(source_panel)
 
@@ -3835,10 +3823,6 @@ class MediaWaveConverterWindow(QMainWindow):
             import_preset = DEFAULT_IMPORT_PRESET
         self.import_preset_combo.setCurrentText(import_preset)
         self.update_import_preset_help(import_preset)
-        if self.import_convert_checkbox.isEnabled():
-            self.import_convert_checkbox.setChecked(
-                bool(settings.get("import_convert_after", self.import_convert_checkbox.isChecked()))
-            )
         self.refresh_main_summary()
 
     def connect_settings_autosave(self) -> None:
@@ -3867,7 +3851,6 @@ class MediaWaveConverterWindow(QMainWindow):
             self.recursive_checkbox,
             self.skip_checkbox,
             self.audio_leveling_checkbox,
-            self.import_convert_checkbox,
         ):
             checkbox.toggled.connect(lambda _checked: self.save_settings())
 
@@ -3891,7 +3874,6 @@ class MediaWaveConverterWindow(QMainWindow):
             "subtitle_preference": self.subtitle_pref_combo.currentText(),
             "import_dest_root": self.import_dest_edit.text().strip(),
             "import_preset_label": self.import_preset_combo.currentText(),
-            "import_convert_after": self.import_convert_checkbox.isChecked(),
         }
         save_json(SETTINGS_FILE, payload)
 
@@ -3912,16 +3894,14 @@ class MediaWaveConverterWindow(QMainWindow):
             self.cancel_batch()
             event.ignore()
             return
-        if (self.import_worker and self.import_worker.isRunning()) or (
-            self.import_convert_worker and self.import_convert_worker.isRunning()
-        ):
+        if self.import_worker and self.import_worker.isRunning():
             if self._close_after_import_cancel:
                 event.ignore()
                 return
             answer = QMessageBox.question(
                 self,
                 "Import In Progress",
-                "An import or conversion is still running. Stop it and close the app?",
+                "An import is still running. Stop it and close the app?",
             )
             if answer != QMessageBox.Yes:
                 event.ignore()
@@ -3978,8 +3958,6 @@ class MediaWaveConverterWindow(QMainWindow):
         if not preset:
             return
         self.import_preset_help.setText(preset["description"])
-        self.import_convert_checkbox.setChecked(bool(preset.get("convert_after_default")))
-        self.import_convert_checkbox.setEnabled(not preset.get("lock_convert", False))
 
     def set_import_stage(self, stage: str) -> None:
         self.import_stage_label.setText(f"Stage: {stage}")
@@ -3995,7 +3973,13 @@ class MediaWaveConverterWindow(QMainWindow):
     def start_import(self) -> None:
         if self.import_worker and self.import_worker.isRunning():
             return
-        if self.import_convert_worker and self.import_convert_worker.isRunning():
+        if self.worker and self.worker.isRunning():
+            QMessageBox.warning(
+                self,
+                "Converter Busy",
+                "A conversion batch is already running on the Queue tab. Wait for it to finish before "
+                "starting an import that converts.",
+            )
             return
         if not YTDLP_PATH:
             QMessageBox.warning(
@@ -4019,13 +4003,14 @@ class MediaWaveConverterWindow(QMainWindow):
             QMessageBox.warning(self, "Destination Problem", f"Could not use that folder: {exc}")
             return
 
-        convert_after = self.import_convert_checkbox.isChecked()
+        preset = IMPORT_PRESETS.get(self.import_preset_combo.currentText(), IMPORT_PRESETS[DEFAULT_IMPORT_PRESET])
+        convert_after = bool(preset.get("convert_after"))
         if convert_after and (not FFMPEG_PATH or not FFPROBE_PATH):
             QMessageBox.warning(
                 self,
                 "FFmpeg Missing",
-                "Converting after import needs FFmpeg and FFprobe. Install FFmpeg, or turn off "
-                "\"Convert after import\" to just download the original media.",
+                "This preset converts after import, which needs FFmpeg and FFprobe. Install FFmpeg, or "
+                "pick \"Import Only\" to just download the original media.",
             )
             return
 
@@ -4055,31 +4040,17 @@ class MediaWaveConverterWindow(QMainWindow):
             self.import_worker.request_cancel()
             self.import_phase_label.setText("Stopping import...")
             QTimer.singleShot(2500, self.force_stop_import_worker_if_needed)
-        elif self.import_convert_worker and self.import_convert_worker.isRunning():
-            self.import_convert_worker.request_cancel()
-            self.import_phase_label.setText("Stopping conversion...")
-            QTimer.singleShot(2500, self.force_stop_import_worker_if_needed)
         self.import_cancel_button.setEnabled(False)
 
     def force_stop_import_worker_if_needed(self) -> None:
-        if not self._import_cancel_in_progress:
-            return
-        if self.import_worker and self.import_worker.isRunning():
+        if self.import_worker and self.import_worker.isRunning() and self._import_cancel_in_progress:
             self.import_phase_label.setText("Finishing shutdown...")
             self.import_worker.force_kill_active_process()
-        elif self.import_convert_worker and self.import_convert_worker.isRunning():
-            self.import_phase_label.setText("Finishing shutdown...")
-            self.import_convert_worker.force_kill_active_process()
 
     def finish_close_after_import_worker(self) -> None:
-        if not self._close_after_import_cancel:
-            return
-        if (self.import_worker and self.import_worker.isRunning()) or (
-            self.import_convert_worker and self.import_convert_worker.isRunning()
-        ):
-            return
-        self._close_after_import_cancel = False
-        self.close()
+        if self._close_after_import_cancel:
+            self._close_after_import_cancel = False
+            self.close()
 
     def append_import_log(self, message: str) -> None:
         stamp = time.strftime("%H:%M:%S")
@@ -4093,12 +4064,6 @@ class MediaWaveConverterWindow(QMainWindow):
     def show_ytdlp_warning(self, message: str) -> None:
         QMessageBox.warning(self, "Import Tools Missing", message)
         self.set_import_stage("Idle")
-        self.finalize_import_ui()
-
-    def show_import_ffmpeg_warning(self, message: str) -> None:
-        QMessageBox.warning(self, "FFmpeg Missing", message)
-        self.set_import_stage("Failed")
-        self.import_phase_label.setText("Conversion could not start because FFmpeg is missing.")
         self.finalize_import_ui()
 
     def handle_import_download_finished(self, summary: dict[str, Any]) -> None:
@@ -4165,61 +4130,66 @@ class MediaWaveConverterWindow(QMainWindow):
             explicit_files=files,
         )
 
+        # Hand off to the real Queue tab/worker rather than tracking conversion
+        # progress inside the Import tab — the import's job (downloading) is
+        # done, so its UI resets here while the Queue tab takes over.
         self._active_import_staging_root = staging_root
         self._active_import_partial_note = summary.get("partial_note")
-        self.set_import_stage("Converting")
-        self.import_phase_label.setText("Starting conversion...")
-        self.import_progress.setValue(0)
-        self.append_import_log(f"Import complete. Converting {len(files)} file(s)...")
+        self.set_import_stage("Converting (see Queue tab)")
+        self.import_phase_label.setText("Import complete — converting on the Queue tab.")
+        self.append_import_log(f"Import complete. Handing {len(files)} file(s) to the Queue tab to convert...")
+        self.finalize_import_ui()
 
-        self.import_convert_worker = BatchWorker(options)
-        self.import_convert_worker.log_message.connect(self.append_import_log)
-        self.import_convert_worker.phase_changed.connect(self.import_phase_label.setText)
-        self.import_convert_worker.overall_progress.connect(self.import_progress.setValue)
-        self.import_convert_worker.ffmpeg_missing.connect(self.show_import_ffmpeg_warning)
-        self.import_convert_worker.finished_summary.connect(self.handle_import_convert_finished)
-        self.import_convert_worker.finished.connect(self.finish_close_after_import_worker)
-        self.import_cancel_button.setEnabled(True)
-        self.import_convert_worker.start()
+        self.reset_queue()
+        self.log_output.clear()
+        self.update_overall_progress(0)
+        self.update_file_progress(0)
+        self.update_phase_status("Starting conversion of imported files...")
+        self.start_finish_timer()
+        self.worker = BatchWorker(options)
+        self.worker.queue_initialized.connect(self.initialize_queue)
+        self.worker.row_update.connect(self.update_row)
+        self.worker.overall_progress.connect(self.update_overall_progress)
+        self.worker.file_progress.connect(self.update_file_progress)
+        self.worker.phase_changed.connect(self.update_phase_status)
+        self.worker.counters_changed.connect(self.update_counters)
+        self.worker.log_message.connect(self.append_log)
+        self.worker.ffmpeg_missing.connect(self.handle_import_convert_ffmpeg_missing)
+        self.worker.finished_summary.connect(self.handle_import_convert_finished)
+        self.worker.finished.connect(self.finish_close_after_worker)
+        self._cancel_in_progress = False
+        self._close_after_cancel = False
+        self.start_button.setEnabled(False)
+        self.pause_button.setEnabled(False)
+        self.resume_button.setEnabled(False)
+        self.cancel_button.setEnabled(True)
+        self.switch_page("queue")
+        self.worker.start()
 
-    def handle_import_convert_finished(self, summary: dict[str, Any]) -> None:
+    def _cleanup_import_staging(self, keep: bool) -> None:
         staging_root = self._active_import_staging_root
         self._active_import_staging_root = None
+        if not staging_root:
+            return
+        if keep:
+            self.append_log(f"Imported files were kept for troubleshooting at {staging_root}.")
+        else:
+            shutil.rmtree(staging_root, ignore_errors=True)
+
+    def handle_import_convert_ffmpeg_missing(self, message: str) -> None:
+        self._cleanup_import_staging(keep=True)
+        self._active_import_partial_note = None
+        self.show_ffmpeg_warning(message)
+
+    def handle_import_convert_finished(self, summary: dict[str, Any]) -> None:
         partial_note = self._active_import_partial_note
         self._active_import_partial_note = None
-        if summary.get("canceled"):
-            if staging_root:
-                shutil.rmtree(staging_root, ignore_errors=True)
-            self.set_import_stage("Idle")
-            self.import_phase_label.setText("Conversion stopped.")
-            self.append_import_log("Conversion stopped by user.")
-            self.finalize_import_ui()
-            return
-
-        processed = summary.get("processed", 0)
         failed = summary.get("failed", 0)
-        if failed:
-            self.set_import_stage("Complete (with errors)" if processed else "Failed")
-            note = (
-                f"Conversion finished with {failed} failed file(s) out of {processed + failed}. "
-                f"Imported files were kept for troubleshooting at {staging_root}."
-            )
-            self.import_phase_label.setText(note)
-            self.append_import_log(note)
-            self.finalize_import_ui()
-            return
-
-        if staging_root:
-            shutil.rmtree(staging_root, ignore_errors=True)
-        self.set_import_stage("Complete (with errors)" if partial_note else "Complete")
-        self.import_phase_label.setText(partial_note or "Import finished.")
-        self.append_import_log(
-            f"Import + convert finished. {processed} file{'s' if processed != 1 else ''} converted into "
-            f"{self.import_dest_edit.text().strip()}."
-        )
-        if partial_note:
-            self.append_import_log(partial_note)
-        self.finalize_import_ui()
+        canceled = bool(summary.get("canceled"))
+        self._cleanup_import_staging(keep=canceled or bool(failed))
+        if partial_note and not canceled:
+            self.append_log(partial_note)
+        self.handle_finished_summary(summary)
 
     def sync_advanced_size_options(self) -> None:
         if not hasattr(self, "size_combo"):
