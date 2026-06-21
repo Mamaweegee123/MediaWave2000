@@ -165,7 +165,7 @@ Yes. Free to download, no account required, no subscription.
 
 ## Developing MediaWave2000
 
-MediaWave2000 came to be after I realized how cool **FieldStation42** was but wanted something that can automatically convert your entire catalog just by the click of a button and it kind of ballooned out to what it is now (with more features coming soon!). I really want this to be something completely customizeable by you and build a community where we can share our setups, custom themes (when implemented), and bring back the golden age of television! This is still a very early beta so feel free to reach out and let me know of naything you found that needs fixing or features youd personally like to see! 
+MediaWave2000 came to be after I realized how cool **FieldStation42** was but wanted something that can automatically convert your entire catalog just by the click of a button and it kind of ballooned out to what it is now (with more features coming soon!). I really want this to be something completely customizeable by you and build a community where we can share our setups, custom themes (when implemented), and bring back the golden age of television! This is still a very early beta so feel free to reach out and let me know of anything you found that needs fixing or features you'd personally like to see! 
 
 ---
 
