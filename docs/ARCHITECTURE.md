@@ -12,9 +12,17 @@ Holds the Airing Rules data model: constants, defaults, normalization, validatio
 
 Holds small shared filesystem helpers: safe path normalization, JSON load/save, conservative directory checks, macOS `/Volumes` detection, and standard user-content folder creation. Runtime path decisions that depend on the app bundle or main script remain in `channelsurfer2000.py`.
 
+`mediawave/themes.py`
+
+Holds built-in theme names, palette definitions, token-building helpers, theme lookup helpers, and the framework-only custom theme schema. Rendering and widget-specific theme application remain in `channelsurfer2000.py`.
+
 `tools/test_airing_rules.py`
 
 Runs the Airing Rules smoke test against the extracted model module without importing the full application.
+
+`tools/test_themes.py`
+
+Runs the theme framework smoke test against `mediawave/themes.py` without launching the full application.
 
 ## Refactor Rules
 
