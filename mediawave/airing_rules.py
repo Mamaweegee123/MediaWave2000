@@ -5,6 +5,8 @@ import json
 import os
 import re
 
+from mediawave.core_io import load_json_file, save_json_file
+
 
 AIRING_RULES_VERSION = 1
 AIRING_RULES_FILE = os.path.join(os.getcwd(), "airing_rules.json")
@@ -47,23 +49,6 @@ def configure_airing_rules_file(path):
     """Point load/save helpers at the app's writable airing_rules.json path."""
     global AIRING_RULES_FILE
     AIRING_RULES_FILE = path
-
-
-def load_json_file(path, default):
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return default
-
-
-def save_json_file(path, data):
-    try:
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2)
-    except OSError:
-        pass
 
 
 def merge_dict_defaults(data, defaults):

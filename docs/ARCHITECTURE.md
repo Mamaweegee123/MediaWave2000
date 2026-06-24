@@ -6,7 +6,11 @@ MediaWave is still centered around `channelsurfer2000.py` during this safe refac
 
 `mediawave/airing_rules.py`
 
-Holds the Airing Rules data model: constants, defaults, normalization, JSON load/save helpers, validation, diagnostics, and summary text for Airing Rules and Channel Takeovers. It is intentionally headless and does not import Qt or launch the app.
+Holds the Airing Rules data model: constants, defaults, normalization, validation, diagnostics, and summary text for Airing Rules and Channel Takeovers. It is intentionally headless and does not import Qt or launch the app.
+
+`mediawave/core_io.py`
+
+Holds small shared filesystem helpers: safe path normalization, JSON load/save, conservative directory checks, macOS `/Volumes` detection, and standard user-content folder creation. Runtime path decisions that depend on the app bundle or main script remain in `channelsurfer2000.py`.
 
 `tools/test_airing_rules.py`
 

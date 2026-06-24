@@ -21,6 +21,14 @@ from difflib import SequenceMatcher
 from collections import defaultdict
 import shutil
 
+from mediawave.core_io import (
+    _safe_realpath,
+    ensure_user_content_structure,
+    is_macos_volumes_path,
+    load_json_file,
+    safe_isdir,
+    save_json_file,
+)
 from mediawave.airing_rules import (
     AIRING_DAYS_OF_WEEK,
     AIRING_RULE_BASIC_TYPES,
@@ -183,15 +191,6 @@ _ORIGINAL_SUBPROCESS_RUN = subprocess.run
 _ORIGINAL_SUBPROCESS_POPEN = subprocess.Popen
 
 
-def _safe_realpath(path):
-    if not path:
-        return ""
-    try:
-        return os.path.realpath(os.path.abspath(str(path)))
-    except OSError:
-        return os.path.abspath(str(path))
-
-
 def app_bundle_path():
     if sys.platform != "darwin" or not getattr(sys, "frozen", False):
         return ""
@@ -342,15 +341,6 @@ def default_mediawave_user_dir():
                 return portable
         return os.path.join(os.path.expanduser("~"), "Documents", "MediaWave")
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "User Content")
-
-
-def ensure_user_content_structure(base_dir):
-    """Create standard user-content subdirectories inside base_dir if missing."""
-    for sub in ("Channels", "Commercials", "Music", "Fonts", "Themes", "Converted", "Settings", "Cache"):
-        try:
-            os.makedirs(os.path.join(base_dir, sub), exist_ok=True)
-        except OSError:
-            pass
 
 
 def default_user_content_subdir(name):
@@ -995,43 +985,6 @@ def build_guide_metrics(profile_name, ui_scale, skin_style):
         "footer_height": scaled_metric(28, ui_scale, 22),
         "footer_y_offset": scaled_metric(42, ui_scale, 32),
     }
-
-
-def safe_isdir(path):
-    """Best-effort directory check that avoids waking/stalling macOS volumes."""
-    if not path:
-        return False
-    try:
-        parts = path.replace("\\", "/").split("/")
-        if is_macos_volumes_path(path):
-            return True
-        return os.path.isdir(path)
-    except OSError:
-        return False
-
-
-def is_macos_volumes_path(path):
-    if sys.platform != "darwin" or not path:
-        return False
-    parts = os.path.abspath(os.path.expanduser(path)).replace("\\", "/").split("/")
-    return len(parts) >= 3 and parts[1] == "Volumes" and bool(parts[2])
-
-
-def load_json_file(path, default):
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
-    except (FileNotFoundError, json.JSONDecodeError, OSError):
-        return default
-
-
-def save_json_file(path, data):
-    try:
-        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as handle:
-            json.dump(data, handle, indent=2)
-    except OSError:
-        pass
 
 
 COMMERCIALS_SCHEMA_VERSION = 2
