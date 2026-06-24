@@ -76,6 +76,17 @@ That's it! No metadata files. No renaming. As simple as I could make it :)
 
 Hit **Choose Catalog**, point it at your folder, press **Watch TV**.
 
+### 4. Controls
+
+**+ & -** - Channel Up and Channel Down
+**< & >** - Rewind and Fast Forward in Vault
+**Space** - Play/Pause in Vault
+**[G]** - Guide
+**[M]** - Menu
+**[V]** - Vault
+**[I]** - Info
+**Arrow Keys** - Move Cursor in Menus
+
 ---
 
 ## Optional Setup
