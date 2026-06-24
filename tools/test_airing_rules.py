@@ -3,21 +3,19 @@ Smoke tests for the Phase 1 Airing Rules data model.
 Run from the repo root:  venv/bin/python3 tools/test_airing_rules.py
 No GUI required.
 """
-import importlib.util
 import json
 import os
 import sys
 import tempfile
 
 # ---------------------------------------------------------------------------
-# Load the module without launching the Qt app
+# Load the model module without launching the Qt app
 # ---------------------------------------------------------------------------
-spec = importlib.util.spec_from_file_location("cs2000", os.path.join(os.path.dirname(__file__), "..", "channelsurfer2000.py"))
-mod = importlib.util.module_from_spec(spec)
-try:
-    spec.loader.exec_module(mod)
-except SystemExit:
-    pass
+REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
+if REPO_ROOT not in sys.path:
+    sys.path.insert(0, REPO_ROOT)
+
+from mediawave import airing_rules as mod
 
 PASS = []
 FAIL = []
