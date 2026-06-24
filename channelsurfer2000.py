@@ -38,11 +38,20 @@ from mediawave.themes import (
     with_alpha,
 )
 from mediawave.core_io import (
+    PATH_ACCESS_DISCONNECTED_VOLUME,
+    PATH_ACCESS_EMPTY,
+    PATH_ACCESS_MISSING,
+    PATH_ACCESS_NOT_DIRECTORY,
+    PATH_ACCESS_OK,
+    PATH_ACCESS_PERMISSION_DENIED,
+    PATH_ACCESS_SLOW_OR_TIMEOUT,
+    PATH_ACCESS_UNREADABLE,
     _safe_realpath,
+    classify_path_access,
+    describe_path_access_issue,
     ensure_user_content_structure,
-    is_macos_volumes_path,
     load_json_file,
-    safe_isdir,
+    safe_iter_media_folder,
     save_json_file,
 )
 from mediawave.airing_rules import (
@@ -87,7 +96,7 @@ except ImportError:
     AppKit = None
     Foundation = None
 
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QLabel, QHBoxLayout, QComboBox, QFormLayout, QSizePolicy, QProgressBar, QDialog, QLineEdit, QCheckBox, QSpinBox, QListWidget, QAbstractItemView, QScrollArea, QTabWidget, QTextEdit, QGridLayout, QButtonGroup, QStackedWidget
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QLabel, QHBoxLayout, QComboBox, QFormLayout, QSizePolicy, QProgressBar, QDialog, QLineEdit, QCheckBox, QSpinBox, QListWidget, QAbstractItemView, QScrollArea, QTabWidget, QTextEdit, QGridLayout, QButtonGroup, QStackedWidget, QMessageBox
 from PySide6.QtCore import Qt, QTimer, Slot, QUrl, Signal, QRect, QRectF, QPoint, QPointF, QSize, QEvent
 from PySide6.QtGui import QPainter, QColor, QIcon, QKeySequence, QShortcut, QPixmap, QFont, QFontDatabase, QLinearGradient, QRadialGradient, QPen, QPolygon, QImage, QFontMetrics, QPainterPath
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink, QSoundEffect, QAudioBufferOutput, QAudioFormat
@@ -5327,6 +5336,7 @@ def build_in_app_menu_rows(settings_values=None):
     if diagnostics_enabled_from_settings(settings_values):
         rows.append(("Diagnostic Readout", "Open", "diagnostics"))
     rows.append(("Close", "Close", "close"))
+    rows.append(("Shut Down", "⏻", "shutdown"))
     return rows
 
 
@@ -5383,10 +5393,15 @@ def _settings_assign_rects(widget, setting_rows, rect, row_tops, row_h,
         widget.catalog_action_rect = QRect()
     if hasattr(widget, "diagnostic_action_rect"):
         widget.diagnostic_action_rect = QRect()
+    if hasattr(widget, "shutdown_action_rect"):
+        widget.shutdown_action_rect = QRect()
     widget.close_action_rect = val_rect("close")
     diag_idx = row_index_by_kind.get("diagnostics")
     if diag_idx is not None and hasattr(widget, "diagnostic_action_rect"):
         widget.diagnostic_action_rect = val_rect("diagnostics")
+    shutdown_idx = row_index_by_kind.get("shutdown")
+    if shutdown_idx is not None and hasattr(widget, "shutdown_action_rect"):
+        widget.shutdown_action_rect = val_rect("shutdown")
 
 
 def _draw_pf_settings_panel(widget, painter, panel, theme, setting_rows, focus_index):
@@ -5638,6 +5653,16 @@ def _draw_pf_settings_panel(widget, painter, panel, theme, setting_rows, focus_i
             painter.setPen(pf_control_text(focused))
             painter.drawText(ctrl_rect, Qt.AlignCenter, "Open")
 
+        elif kind == "shutdown":
+            btn_sz = scaled_metric(30, _scale, 22, 44)
+            btn_rect = QRect(ctrl_rect.right() - btn_sz, ctrl_rect.top() + (ctrl_rect.height() - btn_sz) // 2, btn_sz, btn_sz)
+            if hasattr(widget, "shutdown_action_rect"):
+                widget.shutdown_action_rect = btn_rect
+            pf_pill(btn_rect, focused)
+            painter.setFont(QFont(mplus_rounded_family(), scaled_metric(14, _scale, 11, 20), QFont.Bold))
+            painter.setPen(pf_control_text(focused))
+            painter.drawText(btn_rect, Qt.AlignCenter, value or "⏻")
+
 
 def _draw_sf_settings_panel(widget, painter, panel, theme, setting_rows, focus_index):
     """Sleek Freak: modern dark floating overlay with refined controls."""
@@ -5839,6 +5864,16 @@ def _draw_sf_settings_panel(widget, painter, panel, theme, setting_rows, focus_i
             painter.setPen(blend_color(theme.get("settings_value_text", QColor(180, 185, 195)), theme.get("settings_value_selected_text", QColor(255, 255, 255)), amount))
             painter.drawText(ctrl_rect, Qt.AlignCenter, "Open")
 
+        elif kind == "shutdown":
+            btn_sz = 32
+            btn_rect = QRect(ctrl_rect.right() - btn_sz, ctrl_rect.top(), btn_sz, ctrl_rect.height())
+            if hasattr(widget, "shutdown_action_rect"):
+                widget.shutdown_action_rect = btn_rect
+            sf_pill(btn_rect, amount)
+            painter.setFont(QFont(guide_font_family("primary"), 14, QFont.DemiBold))
+            painter.setPen(blend_color(_sf_val_unfocused, _sf_val_focused, amount))
+            painter.drawText(btn_rect, Qt.AlignCenter, value or "⏻")
+
 
 def _draw_stb_settings_panel(widget, painter, panel, theme, setting_rows, focus_index):
     """Set Top Box: retro CRT TV on-screen display style menu."""
@@ -5974,6 +6009,14 @@ def _draw_stb_settings_panel(widget, painter, panel, theme, setting_rows, focus_
         elif kind == "diagnostics":
             draw_classic_cable_slot_box(painter, ctrl_rect, theme, active=focused, border_width=1, border_alpha=140 if focused else 70)
             widget.draw_cable_text(painter, ctrl_rect, "OPEN", ctrl_txt, value_font, Qt.AlignCenter)
+
+        elif kind == "shutdown":
+            btn_w = scaled_metric(34, _scale, 26, 48)
+            btn_rect = QRect(inner.right() - pad_h - btn_w, row_y + (row_h - _ctrl_h) // 2, btn_w, _ctrl_h)
+            if hasattr(widget, "shutdown_action_rect"):
+                widget.shutdown_action_rect = btn_rect
+            draw_classic_cable_slot_box(painter, btn_rect, theme, active=focused, border_width=1, border_alpha=140 if focused else 70)
+            widget.draw_cable_text(painter, btn_rect, value or "⏻", ctrl_txt, value_font, Qt.AlignCenter)
 
 
 def draw_shared_mediawave_settings_panel(widget, painter, panel, body_font, small_font, theme):
@@ -7003,6 +7046,7 @@ class GuideOverlay(QWidget):
     settingsToggleRequested = Signal()
     footerNavRequested = Signal(int)
     diagnosticReadoutRequested = Signal()
+    shutdownRequested = Signal()
     channelClickRequested = Signal(int)      # channel index clicked by mouse (row level)
     cellClickRequested = Signal(int, int)    # (channel_index, slot_index) clicked by mouse
     rowScrollRequested = Signal(int)         # +1=down, -1=up (wheel/drag in row area)
@@ -7038,6 +7082,7 @@ class GuideOverlay(QWidget):
         self.catalog_action_rect = QRect()
         self.diagnostic_action_rect = QRect()
         self.close_action_rect = QRect()
+        self.shutdown_action_rect = QRect()
         self.nav_focus = False
         self.nav_index = 1
         self.back_rect = QRect()
@@ -9317,6 +9362,10 @@ class GuideOverlay(QWidget):
                 self.diagnosticReadoutRequested.emit()
                 event.accept()
                 return
+            if self.shutdown_action_rect.contains(pos):
+                self.shutdownRequested.emit()
+                event.accept()
+                return
             if self.close_action_rect.contains(pos):
                 self.settings_open = False
                 self.update()
@@ -9422,6 +9471,7 @@ class OnDemandOverlay(QWidget):
     backRequested = Signal()
     settingsToggleRequested = Signal()
     diagnosticReadoutRequested = Signal()
+    shutdownRequested = Signal()
     guideShortcutRequested = Signal()
     vaultShortcutRequested = Signal()
 
@@ -9473,6 +9523,7 @@ class OnDemandOverlay(QWidget):
         self.scale_next_rect = QRect()
         self.diagnostic_action_rect = QRect()
         self.close_action_rect = QRect()
+        self.shutdown_action_rect = QRect()
         self.stream_anim_timer = QTimer(self)
         self.stream_anim_timer.setInterval(25)
         self.stream_anim_timer.timeout.connect(self.advance_stream_animation)
@@ -13456,6 +13507,10 @@ class OnDemandOverlay(QWidget):
                 self.diagnosticReadoutRequested.emit()
                 event.accept()
                 return
+            if self.shutdown_action_rect.contains(pos):
+                self.shutdownRequested.emit()
+                event.accept()
+                return
             if self.close_action_rect.contains(pos):
                 self.settingsCloseRequested.emit()
                 event.accept()
@@ -15286,6 +15341,7 @@ class StandaloneMenuOverlay(QWidget):
     uiScaleStepRequested = Signal(int)
     diagnosticReadoutRequested = Signal()
     closeRequested = Signal()
+    shutdownRequested = Signal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -15308,6 +15364,7 @@ class StandaloneMenuOverlay(QWidget):
         self.scale_next_rect = QRect()
         self.diagnostic_action_rect = QRect()
         self.close_action_rect = QRect()
+        self.shutdown_action_rect = QRect()
         self.setMouseTracking(True)
         self.hide()
 
@@ -15392,6 +15449,8 @@ class StandaloneMenuOverlay(QWidget):
             self.profileStepRequested.emit(1)
         elif self.diagnostic_action_rect.contains(pos):
             self.diagnosticReadoutRequested.emit()
+        elif self.shutdown_action_rect.contains(pos):
+            self.shutdownRequested.emit()
         elif self.close_action_rect.contains(pos):
             self.hide()
         elif not self._panel_rect().contains(pos):
@@ -22509,12 +22568,14 @@ class ChannelSurfer(QWidget):
         self.video_window.menu_overlay.uiScaleStepRequested.connect(self.step_guide_scale)
         self.video_window.menu_overlay.diagnosticReadoutRequested.connect(self.show_diagnostic_readout)
         self.video_window.menu_overlay.closeRequested.connect(self.close_standalone_menu)
+        self.video_window.menu_overlay.shutdownRequested.connect(self.shutdown_from_menu)
         self.video_window.guide_overlay.themeStepRequested.connect(self.step_theme)
         self.video_window.guide_overlay.skinStepRequested.connect(self.step_skin)
         self.video_window.guide_overlay.profileStepRequested.connect(self.step_profile)
         self.video_window.guide_overlay.uiScaleStepRequested.connect(self.step_guide_scale)
         self.video_window.guide_overlay.catalogRequested.connect(self.select_catalog_from_menu)
         self.video_window.guide_overlay.diagnosticReadoutRequested.connect(self.show_diagnostic_readout)
+        self.video_window.guide_overlay.shutdownRequested.connect(self.shutdown_from_menu)
         self.video_window.guide_overlay.footerNavRequested.connect(lambda index: self.activate_universal_nav("guide", index))
         self.video_window.guide_overlay.channelClickRequested.connect(self._guide_mouse_select_channel)
         self.video_window.guide_overlay.cellClickRequested.connect(self._guide_mouse_select_cell)
@@ -22525,6 +22586,7 @@ class ChannelSurfer(QWidget):
         self.video_window.on_demand_overlay.profileStepRequested.connect(self.step_profile)
         self.video_window.on_demand_overlay.uiScaleStepRequested.connect(self.step_guide_scale)
         self.video_window.on_demand_overlay.diagnosticReadoutRequested.connect(self.show_diagnostic_readout)
+        self.video_window.on_demand_overlay.shutdownRequested.connect(self.shutdown_from_menu)
         self.video_window.on_demand_overlay.footerNavRequested.connect(lambda index: self.activate_universal_nav("vault", index))
         self.video_window.on_demand_overlay.settingsCloseRequested.connect(self.close_on_demand_settings)
         self.video_window.on_demand_overlay.homeCardRequested.connect(self.open_on_demand_home_card)
@@ -22744,6 +22806,98 @@ class ChannelSurfer(QWidget):
 
     # ---------------- LOAD ---------------- #
 
+    def _path_access_blocks_scan(self, access):
+        return (access or {}).get("status") in {
+            PATH_ACCESS_MISSING,
+            PATH_ACCESS_NOT_DIRECTORY,
+            PATH_ACCESS_PERMISSION_DENIED,
+            PATH_ACCESS_UNREADABLE,
+            PATH_ACCESS_DISCONNECTED_VOLUME,
+        }
+
+    def _classify_catalog_path(self, path, context="", force=False):
+        normalized = os.path.abspath(os.path.expanduser(str(path or ""))) if path else ""
+        cache = getattr(self, "_path_access_cache", {})
+        now = time.monotonic()
+        cached_at, cached_access = cache.get(normalized, (0.0, None))
+        if not force and cached_access is not None and now - cached_at < 5.0:
+            access = dict(cached_access)
+        else:
+            access = classify_path_access(path)
+            cache[normalized] = (now, dict(access))
+            self._path_access_cache = cache
+        if context:
+            self._log_path_access(context, access)
+        return access
+
+    def _log_path_access(self, context, access):
+        if not isinstance(access, dict):
+            return
+        print(
+            "[PathAccess] "
+            f"context={context} status={access.get('status')} "
+            f"network_like={access.get('network_like')} "
+            f"elapsed_ms={float(access.get('elapsed_ms') or 0.0):.1f} "
+            f"path={access.get('path')}",
+            flush=True,
+        )
+        message = access.get("message") or ""
+        if message:
+            print(f"[PathAccess] {message}", flush=True)
+
+    def _catalog_access_message(self, folder, access):
+        message = (access or {}).get("message") or describe_path_access_issue(folder, (access or {}).get("status"))
+        if (access or {}).get("network_like"):
+            message += "\n\nThis looks like a NAS, mapped drive, SMB share, external drive, or mounted network folder. Make sure it is mounted and readable before scanning."
+        return f"{message}\n\nFolder:\n{folder}"
+
+    def _no_playable_media_message(self, folder):
+        return (
+            f"No playable videos were found inside:\n{folder}\n\n"
+            "Common causes: the wrong folder was selected, the NAS/share is not mounted, "
+            "MediaWave does not have permission, or the folder only contains unsupported file types."
+        )
+
+    def _show_catalog_access_warning(self, folder, access):
+        self._log_path_access("catalog.choose", access)
+        status = (access or {}).get("status")
+        if status in {
+            PATH_ACCESS_MISSING,
+            PATH_ACCESS_NOT_DIRECTORY,
+            PATH_ACCESS_PERMISSION_DENIED,
+            PATH_ACCESS_UNREADABLE,
+            PATH_ACCESS_DISCONNECTED_VOLUME,
+        }:
+            QMessageBox.warning(self, "Folder unavailable", self._catalog_access_message(folder, access))
+            return False
+        if status == PATH_ACCESS_EMPTY:
+            self.status.setText(f"The selected folder is empty:\n{folder}")
+        elif status == PATH_ACCESS_SLOW_OR_TIMEOUT:
+            self.status.setText(f"The selected folder responded slowly. Network scans can take a little while:\n{folder}")
+        return True
+
+    def _should_quarantine_media_failure(self, path, reason):
+        if not FFPROBE_PATH:
+            print(f"[PathAccess][warn] Not moving media to Broken because ffprobe is unavailable: {path}", flush=True)
+            return False
+        try:
+            if not os.path.exists(path) or not os.access(path, os.R_OK):
+                print(f"[PathAccess][warn] Not moving inaccessible media to Broken: {path}", flush=True)
+                return False
+        except OSError:
+            print(f"[PathAccess][warn] Not moving media to Broken after path access error: {path}", flush=True)
+            return False
+        parent_access = classify_path_access(os.path.dirname(path))
+        if self._path_access_blocks_scan(parent_access):
+            self._log_path_access("catalog.media_validation", parent_access)
+            print(f"[PathAccess][warn] Not moving media to Broken because its folder is unavailable: {path}", flush=True)
+            return False
+        reason_text = (reason or "").lower()
+        if "permission" in reason_text or "access" in reason_text:
+            print(f"[PathAccess][warn] Not moving media to Broken after access-related validation failure: {path}", flush=True)
+            return False
+        return True
+
     @Slot()
     def browse_catalog(self):
         folder = self.choose_catalog_folder()
@@ -22770,8 +22924,15 @@ class ChannelSurfer(QWidget):
         self.ensure_nettv_playlist_cache_with_progress(force=False)
         if not self.channels:
             saved = (self.app_settings.get("catalog_path") or "").strip()
-            if saved and safe_isdir(saved):
-                self.load_catalog(saved, autoplay=False)
+            if saved:
+                access = self._classify_catalog_path(saved, "catalog.watch_tv.saved", force=True)
+                if self._path_access_blocks_scan(access):
+                    self.status.setText(
+                        self._catalog_access_message(saved, access)
+                        + "\n\nChoose Catalog to pick another folder."
+                    )
+                elif access.get("status") != PATH_ACCESS_EMPTY:
+                    self.load_catalog(saved, autoplay=False)
             if not self.channels and self.app_settings.get("allow_empty_catalog_tv"):
                 self.channels = []
                 self.loaded_media_channels = []
@@ -22804,7 +22965,10 @@ class ChannelSurfer(QWidget):
         )
         if not folder:
             return None
-        return os.path.abspath(os.path.expanduser(folder))
+        folder = os.path.abspath(os.path.expanduser(folder))
+        access = self._classify_catalog_path(folder, force=True)
+        self._show_catalog_access_warning(folder, access)
+        return folder
 
     def choose_catalog_folder_macos(self):
         start_dir = existing_picker_start(
@@ -22826,7 +22990,10 @@ class ChannelSurfer(QWidget):
         url = panel.URL()
         if not url:
             return None
-        return os.path.abspath(str(url.path()))
+        folder = os.path.abspath(str(url.path()))
+        access = self._classify_catalog_path(folder, force=True)
+        self._show_catalog_access_warning(folder, access)
+        return folder
 
     def load_catalog(self, folder=None, autoplay=False):
         started_at = time.perf_counter()
@@ -22834,12 +23001,14 @@ class ChannelSurfer(QWidget):
             folder = self.choose_catalog_folder()
         if not folder:
             return False
-        if not os.path.isdir(folder):
+        access = self._classify_catalog_path(folder, "catalog.load", force=True)
+        if self._path_access_blocks_scan(access):
             self.status.setText(
-                f"Catalog folder not found:\n{folder}\n"
-                f"Press Choose Catalog… to select a new location."
+                self._catalog_access_message(folder, access)
+                + "\n\nPress Choose Catalog… to select a new location."
             )
             return False
+        folder = access.get("path") or os.path.abspath(os.path.expanduser(folder))
 
         self.catalog_root = folder
         clear_catalog_lookup_caches()
@@ -22853,20 +23022,38 @@ class ChannelSurfer(QWidget):
         self.current_channel = 0
         validation_entries = self.catalog_validation_cache.setdefault("videos", {})
         quarantined_files = []
-        channel_names = [
-            item for item in sorted(os.listdir(folder), key=str.casefold)
-            if os.path.isdir(os.path.join(folder, item))
-            and not is_catalog_auxiliary_folder_name(item)
-        ]
+        channel_names = []
+        folder_iter = safe_iter_media_folder(folder)
+        try:
+            for entry in folder_iter:
+                try:
+                    if not entry.is_dir():
+                        continue
+                except OSError as exc:
+                    print(f"[PathAccess][warn] Could not inspect catalog entry: {entry.path} ({exc})", flush=True)
+                    continue
+                if not is_catalog_auxiliary_folder_name(entry.name):
+                    channel_names.append(entry.name)
+        finally:
+            close_iter = getattr(folder_iter, "close", None)
+            if callable(close_iter):
+                close_iter()
+        channel_names.sort(key=str.casefold)
         self.begin_catalog_progress(folder, len(channel_names))
         try:
             for index, item in enumerate(channel_names, start=1):
                 path = os.path.join(folder, item)
+                channel_access = self._classify_catalog_path(path, "catalog.channel", force=True)
+                if self._path_access_blocks_scan(channel_access):
+                    continue
                 ch = Channel(item, self.duration_cache)
                 ch.root_path = path
                 self.update_catalog_progress(index - 1, len(channel_names), f"Scanning channel {index} of {len(channel_names)}", item)
 
-                for root, dirnames, files in os.walk(path):
+                def _walk_error(exc):
+                    print(f"[PathAccess][warn] Folder became unavailable during scan: {getattr(exc, 'filename', path)} ({exc})", flush=True)
+
+                for root, dirnames, files in os.walk(path, onerror=_walk_error):
                     dirnames.sort(key=str.casefold)
                     for f in sorted(files, key=str.casefold):
                         if f.startswith("._"):
@@ -22891,6 +23078,8 @@ class ChannelSurfer(QWidget):
                                 }
                                 validation_entries[full] = validation
                                 if not ok:
+                                    if not self._should_quarantine_media_failure(full, validation["reason"]):
+                                        continue
                                     try:
                                         moved_to = quarantine_broken_media(full, folder)
                                         validation_entries[moved_to] = {
@@ -22966,7 +23155,7 @@ class ChannelSurfer(QWidget):
             if self.loaded_media_channels:
                 self.status.setText("All catalog channels are disabled in My Catalog. Open Advanced Configuration to enable at least one channel.")
             else:
-                self.status.setText(f"No playable videos were found inside:\n{folder}")
+                self.status.setText(self._no_playable_media_message(folder))
             return False
 
         radiowave_channel = next((channel for channel in self.channels if getattr(channel, "channel_type", "media") == "radiowave"), None)
@@ -22995,11 +23184,22 @@ class ChannelSurfer(QWidget):
             self._show_first_run_guidance()
             return
         self.catalog_path_label.setText(saved_catalog)
-        if is_macos_volumes_path(saved_catalog) and not safe_isdir(saved_catalog):
-            self.status.setText("Saved catalog is on an external volume. Press Watch TV after the drive is awake.")
+        access = self._classify_catalog_path(saved_catalog, "catalog.startup.saved", force=True)
+        if self._path_access_blocks_scan(access):
+            self.status.setText(
+                self._catalog_access_message(saved_catalog, access)
+                + "\n\nChoose Catalog to pick another folder."
+            )
             self.refresh_controls()
             return
-        if safe_isdir(saved_catalog):
+        if access.get("status") == PATH_ACCESS_EMPTY:
+            self.status.setText(
+                f"Saved catalog folder is available but empty:\n{saved_catalog}\n\n"
+                "Choose Catalog to pick another folder, or add channel folders and try again."
+            )
+            self.refresh_controls()
+            return
+        if access.get("status") in {PATH_ACCESS_OK, PATH_ACCESS_SLOW_OR_TIMEOUT}:
             self.catalog_root = saved_catalog
             self.status.setText("Saved catalog ready. Press Watch TV to load it, or Choose Catalog to switch libraries.")
             if self.app_settings.get("auto_launch", False):
@@ -23314,8 +23514,15 @@ class ChannelSurfer(QWidget):
     def in_app_menu_row_count(self):
         return len(build_in_app_menu_rows(self.overlay_settings_values()))
 
+    def in_app_menu_last_index(self):
+        return max(0, self.in_app_menu_row_count() - 1)
+
     def in_app_menu_close_index(self):
-        return self.in_app_menu_row_count() - 1
+        rows = build_in_app_menu_rows(self.overlay_settings_values())
+        for index, row in enumerate(rows):
+            if row[2] == "close":
+                return index
+        return self.in_app_menu_last_index()
 
     def in_app_menu_row_kind(self, focus_index):
         rows = build_in_app_menu_rows(self.overlay_settings_values())
@@ -23354,6 +23561,9 @@ class ChannelSurfer(QWidget):
             return True
         if kind == "diagnostics":
             self.show_diagnostic_readout()
+            return True
+        if kind == "shutdown":
+            self.shutdown_from_menu()
             return True
         return False
 
@@ -27189,7 +27399,13 @@ class ChannelSurfer(QWidget):
 
     def refresh_controls(self):
         has_channels = bool(self.channels)
-        saved_catalog_ready = bool((self.app_settings.get("catalog_path") or "").strip()) and safe_isdir((self.app_settings.get("catalog_path") or "").strip())
+        saved_catalog = (self.app_settings.get("catalog_path") or "").strip()
+        saved_access = self._classify_catalog_path(saved_catalog) if saved_catalog else None
+        saved_catalog_ready = bool(saved_access) and saved_access.get("status") in {
+            PATH_ACCESS_OK,
+            PATH_ACCESS_EMPTY,
+            PATH_ACCESS_SLOW_OR_TIMEOUT,
+        }
         weather_ready = (
             bool(self.app_settings.get("weatherstar_enabled"))
             and bool((self.app_settings.get("weatherstar_location") or "").strip())
@@ -27207,9 +27423,17 @@ class ChannelSurfer(QWidget):
             self.catalog_path_label.setText(self.catalog_root)
 
         if not has_channels:
-            if self.app_settings.get("catalog_path"):
-                if is_macos_volumes_path(self.app_settings.get("catalog_path", "")):
-                    self.status.setText("Saved catalog is on an external volume. Press Watch TV after the drive is awake.")
+            if saved_catalog:
+                if self._path_access_blocks_scan(saved_access):
+                    self.status.setText(
+                        self._catalog_access_message(saved_catalog, saved_access)
+                        + "\n\nChoose Catalog to pick another folder."
+                    )
+                elif saved_access.get("status") == PATH_ACCESS_EMPTY:
+                    self.status.setText(
+                        f"Saved catalog folder is available but empty:\n{saved_catalog}\n\n"
+                        "Choose Catalog to pick another folder, or add channel folders and try again."
+                    )
                 else:
                     self.status.setText("Saved catalog ready. Press Watch TV to load it, or Choose Catalog to switch libraries.")
             elif special_only_ready:
@@ -28026,7 +28250,7 @@ class ChannelSurfer(QWidget):
         self.live_info_settings_open = not self.live_info_settings_open
         self.live_info_nav_focused = False
         if self.live_info_settings_open:
-            self.live_info_settings_focus_index = max(0, min(self.live_info_settings_focus_index, self.in_app_menu_close_index()))
+            self.live_info_settings_focus_index = max(0, min(self.live_info_settings_focus_index, self.in_app_menu_last_index()))
         self.refresh_info_banner()
 
     @Slot()
@@ -28053,6 +28277,11 @@ class ChannelSurfer(QWidget):
     @Slot()
     def close_standalone_menu(self):
         self.video_window.menu_overlay.hide()
+
+    @Slot()
+    def shutdown_from_menu(self):
+        self.close_standalone_menu()
+        self.close()
 
     @Slot()
     def standalone_menu_up(self):
@@ -28102,7 +28331,7 @@ class ChannelSurfer(QWidget):
         self.on_demand_settings_open = not self.on_demand_settings_open
         self.on_demand_nav_focused = False
         if self.on_demand_settings_open:
-            self.on_demand_settings_focus_index = max(0, min(self.on_demand_settings_focus_index, self.in_app_menu_close_index()))
+            self.on_demand_settings_focus_index = max(0, min(self.on_demand_settings_focus_index, self.in_app_menu_last_index()))
         self.refresh_on_demand()
 
     @Slot()
@@ -28271,7 +28500,7 @@ class ChannelSurfer(QWidget):
 
     def ensure_on_demand_focus_state(self):
         self.on_demand_nav_index = max(0, min(int(self.on_demand_nav_index), self.on_demand_nav_button_count() - 1))
-        self.on_demand_settings_focus_index = max(0, min(int(self.on_demand_settings_focus_index), self.in_app_menu_close_index()))
+        self.on_demand_settings_focus_index = max(0, min(int(self.on_demand_settings_focus_index), self.in_app_menu_last_index()))
         options = self.on_demand_filter_options()
         self.on_demand_filter_index = max(0, min(int(self.on_demand_filter_index), len(options) - 1))
         if self.on_demand_home_focus not in {"hero", "filters", "rows"}:
