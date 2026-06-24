@@ -48,8 +48,10 @@ from mediawave.core_io import (
     PATH_ACCESS_UNREADABLE,
     _safe_realpath,
     classify_path_access,
-    describe_path_access_issue,
     ensure_user_content_structure,
+    format_library_path_status,
+    format_no_playable_media_message,
+    no_catalog_selected_status,
     load_json_file,
     safe_iter_media_folder,
     save_json_file,
@@ -22443,7 +22445,7 @@ class ChannelSurfer(QWidget):
         status_col.setSpacing(5)
         status_col.setContentsMargins(0, 0, 0, 0)
 
-        self.status = QLabel("Choose a catalog, then press Watch TV.")
+        self.status = QLabel("Choose a folder containing your shows and movies to get started.")
         self.status.setObjectName("statusLabel")
         self.status.setWordWrap(True)
         status_col.addWidget(self.status)
@@ -22845,18 +22847,34 @@ class ChannelSurfer(QWidget):
         if message:
             print(f"[PathAccess] {message}", flush=True)
 
-    def _catalog_access_message(self, folder, access):
-        message = (access or {}).get("message") or describe_path_access_issue(folder, (access or {}).get("status"))
-        if (access or {}).get("network_like"):
-            message += "\n\nThis looks like a NAS, mapped drive, SMB share, external drive, or mounted network folder. Make sure it is mounted and readable before scanning."
-        return f"{message}\n\nFolder:\n{folder}"
+    def _apply_library_status(self, status_info):
+        status_info = status_info or no_catalog_selected_status()
+        title = status_info.get("title") or "Library Status"
+        message = status_info.get("message") or ""
+        detail = status_info.get("detail") or ""
+        self.catalog_path_label.setText(title)
+        summary_lines = [line for line in (message, detail) if line]
+        self.library_summary.setText("\n".join(summary_lines) if summary_lines else title)
+        if title == "Library Status":
+            self.status.setText(message)
+        else:
+            self.status.setText(detail or title)
+
+    def _library_status_for_path(self, folder, access):
+        return format_library_path_status(folder, access)
+
+    def _library_dialog_text(self, folder, access):
+        status_info = self._library_status_for_path(folder, access)
+        path = status_info.get("path") or folder or ""
+        lines = [status_info.get("message") or ""]
+        if path:
+            prefix = "Folder: " if status_info.get("title") == "Network library unavailable" else ""
+            lines.append(f"{prefix}{path}")
+        return status_info.get("title") or "Folder unavailable", "\n\n".join(line for line in lines if line)
 
     def _no_playable_media_message(self, folder):
-        return (
-            f"No playable videos were found inside:\n{folder}\n\n"
-            "Common causes: the wrong folder was selected, the NAS/share is not mounted, "
-            "MediaWave does not have permission, or the folder only contains unsupported file types."
-        )
+        access = self._classify_catalog_path(folder)
+        return format_no_playable_media_message(folder, network_like=bool(access.get("network_like")))
 
     def _show_catalog_access_warning(self, folder, access):
         self._log_path_access("catalog.choose", access)
@@ -22868,12 +22886,13 @@ class ChannelSurfer(QWidget):
             PATH_ACCESS_UNREADABLE,
             PATH_ACCESS_DISCONNECTED_VOLUME,
         }:
-            QMessageBox.warning(self, "Folder unavailable", self._catalog_access_message(folder, access))
+            title, message = self._library_dialog_text(folder, access)
+            QMessageBox.warning(self, title, message)
             return False
         if status == PATH_ACCESS_EMPTY:
-            self.status.setText(f"The selected folder is empty:\n{folder}")
+            self._apply_library_status(self._library_status_for_path(folder, access))
         elif status == PATH_ACCESS_SLOW_OR_TIMEOUT:
-            self.status.setText(f"The selected folder responded slowly. Network scans can take a little while:\n{folder}")
+            self._apply_library_status(self._library_status_for_path(folder, access))
         return True
 
     def _should_quarantine_media_failure(self, path, reason):
@@ -22909,15 +22928,7 @@ class ChannelSurfer(QWidget):
     def _show_first_run_guidance(self):
         user_dir = default_mediawave_user_dir()
         ensure_user_content_structure(user_dir)
-        self.catalog_path_label.setText(
-            f"Welcome to MediaWave!\n"
-            f"Your media folder is ready at:\n{user_dir}\n\n"
-            f"Put channel folders inside the Channels subfolder, then press Choose Catalog…\n"
-            f"The first scan can take a few minutes for large libraries."
-        )
-        self.status.setText(
-            "First run — press Choose Catalog… to point MediaWave at your library. The first scan can take a little while."
-        )
+        self._apply_library_status(no_catalog_selected_status())
 
     @Slot()
     def watch_tv(self):
@@ -22927,10 +22938,7 @@ class ChannelSurfer(QWidget):
             if saved:
                 access = self._classify_catalog_path(saved, "catalog.watch_tv.saved", force=True)
                 if self._path_access_blocks_scan(access):
-                    self.status.setText(
-                        self._catalog_access_message(saved, access)
-                        + "\n\nChoose Catalog to pick another folder."
-                    )
+                    self._apply_library_status(self._library_status_for_path(saved, access))
                 elif access.get("status") != PATH_ACCESS_EMPTY:
                     self.load_catalog(saved, autoplay=False)
             if not self.channels and self.app_settings.get("allow_empty_catalog_tv"):
@@ -23003,10 +23011,7 @@ class ChannelSurfer(QWidget):
             return False
         access = self._classify_catalog_path(folder, "catalog.load", force=True)
         if self._path_access_blocks_scan(access):
-            self.status.setText(
-                self._catalog_access_message(folder, access)
-                + "\n\nPress Choose Catalog… to select a new location."
-            )
+            self._apply_library_status(self._library_status_for_path(folder, access))
             return False
         folder = access.get("path") or os.path.abspath(os.path.expanduser(folder))
 
@@ -23186,22 +23191,16 @@ class ChannelSurfer(QWidget):
         self.catalog_path_label.setText(saved_catalog)
         access = self._classify_catalog_path(saved_catalog, "catalog.startup.saved", force=True)
         if self._path_access_blocks_scan(access):
-            self.status.setText(
-                self._catalog_access_message(saved_catalog, access)
-                + "\n\nChoose Catalog to pick another folder."
-            )
+            self._apply_library_status(self._library_status_for_path(saved_catalog, access))
             self.refresh_controls()
             return
         if access.get("status") == PATH_ACCESS_EMPTY:
-            self.status.setText(
-                f"Saved catalog folder is available but empty:\n{saved_catalog}\n\n"
-                "Choose Catalog to pick another folder, or add channel folders and try again."
-            )
+            self._apply_library_status(self._library_status_for_path(saved_catalog, access))
             self.refresh_controls()
             return
         if access.get("status") in {PATH_ACCESS_OK, PATH_ACCESS_SLOW_OR_TIMEOUT}:
             self.catalog_root = saved_catalog
-            self.status.setText("Saved catalog ready. Press Watch TV to load it, or Choose Catalog to switch libraries.")
+            self._apply_library_status(self._library_status_for_path(saved_catalog, access))
             if self.app_settings.get("auto_launch", False):
                 # Hide setup screen immediately so the user never sees it flash.
                 self.hide()
@@ -27425,23 +27424,15 @@ class ChannelSurfer(QWidget):
         if not has_channels:
             if saved_catalog:
                 if self._path_access_blocks_scan(saved_access):
-                    self.status.setText(
-                        self._catalog_access_message(saved_catalog, saved_access)
-                        + "\n\nChoose Catalog to pick another folder."
-                    )
+                    self._apply_library_status(self._library_status_for_path(saved_catalog, saved_access))
                 elif saved_access.get("status") == PATH_ACCESS_EMPTY:
-                    self.status.setText(
-                        f"Saved catalog folder is available but empty:\n{saved_catalog}\n\n"
-                        "Choose Catalog to pick another folder, or add channel folders and try again."
-                    )
+                    self._apply_library_status(self._library_status_for_path(saved_catalog, saved_access))
                 else:
-                    self.status.setText("Saved catalog ready. Press Watch TV to load it, or Choose Catalog to switch libraries.")
+                    self._apply_library_status(self._library_status_for_path(saved_catalog, saved_access))
             elif special_only_ready:
                 self.status.setText("Companion-only TV is ready. Press Watch TV to test the cable system without local content.")
             else:
-                self.status.setText(
-                    "Choose a catalog, add optional local artwork/descriptions, then press Watch TV when you’re ready to go live."
-                )
+                self._apply_library_status(no_catalog_selected_status())
         self.refresh_diagnostics_summary()
 
     @Slot()

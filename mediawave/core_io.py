@@ -16,6 +16,10 @@ PATH_ACCESS_EMPTY = "empty"
 PATH_ACCESS_NO_MEDIA_FOUND = "no_media_found"
 PATH_ACCESS_SLOW_OR_TIMEOUT = "slow_or_timeout"
 
+PATH_LOCATION_LOCAL = "local"
+PATH_LOCATION_EXTERNAL = "external"
+PATH_LOCATION_NETWORK = "network"
+
 
 def _safe_realpath(path):
     if not path:
@@ -46,6 +50,10 @@ def is_macos_volumes_path(path):
     return len(parts) >= 3 and parts[1] == "Volumes" and bool(parts[2])
 
 
+def is_external_volume_path(path):
+    return is_macos_volumes_path(path)
+
+
 def is_network_like_path(path):
     if not path:
         return False
@@ -55,14 +63,10 @@ def is_network_like_path(path):
         return True
     if normalized.startswith("//"):
         return True
-    if is_macos_volumes_path(text):
-        return True
     lowered = normalized.lower()
     network_markers = (
         "/net/",
         "/network/",
-        "/mnt/",
-        "/media/",
         "/run/user/",
         "smb:",
         "afp:",
@@ -70,17 +74,26 @@ def is_network_like_path(path):
     )
     if any(marker in lowered for marker in network_markers):
         return True
-    if sys.platform == "win32" and len(text) >= 2 and text[1] == ":":
-        return True
     return False
 
 
+def path_location_kind(path):
+    if is_network_like_path(path):
+        return PATH_LOCATION_NETWORK
+    if is_external_volume_path(path):
+        return PATH_LOCATION_EXTERNAL
+    return PATH_LOCATION_LOCAL
+
+
 def _path_result(status, path, message="", elapsed_ms=0.0, entries=None):
+    location = path_location_kind(path)
     return {
         "status": status,
         "path": path,
         "ok": status in {PATH_ACCESS_OK, PATH_ACCESS_EMPTY},
-        "network_like": is_network_like_path(path),
+        "location": location,
+        "network_like": location == PATH_LOCATION_NETWORK,
+        "external_like": location == PATH_LOCATION_EXTERNAL,
         "message": message or describe_path_access_issue(path, status),
         "elapsed_ms": elapsed_ms,
         "entries": entries,
@@ -88,9 +101,13 @@ def _path_result(status, path, message="", elapsed_ms=0.0, entries=None):
 
 
 def classify_path_access(path, slow_threshold_seconds=2.0):
-    normalized = os.path.abspath(os.path.expanduser(str(path or ""))) if path else ""
-    if not normalized:
+    raw = str(path or "")
+    if not raw:
         return _path_result(PATH_ACCESS_MISSING, path, "No folder was selected.")
+    if is_network_like_path(raw) and (raw.startswith("\\\\") or raw.startswith("//") or "://" in raw):
+        normalized = raw
+    else:
+        normalized = os.path.abspath(os.path.expanduser(raw))
     if is_macos_volumes_path(normalized):
         parts = normalized.replace("\\", "/").split("/")
         volume_root = "/" + "/".join(parts[1:3]) if len(parts) >= 3 else normalized
@@ -122,18 +139,97 @@ def describe_path_access_issue(path, status=None):
     if status == PATH_ACCESS_EMPTY:
         return "The selected folder is empty."
     if status == PATH_ACCESS_MISSING:
-        return "The folder could not be found. If it is on a NAS, mapped drive, SMB share, or external drive, make sure it is mounted and try again."
+        if path_location_kind(path) == PATH_LOCATION_NETWORK:
+            return "MediaWave can't reach this network library folder."
+        if path_location_kind(path) == PATH_LOCATION_EXTERNAL:
+            return "The saved library folder is not available right now."
+        return "The folder could not be found."
     if status == PATH_ACCESS_NOT_DIRECTORY:
         return "The selected path is a file, not a folder."
     if status == PATH_ACCESS_PERMISSION_DENIED:
-        return "MediaWave does not have permission to read this folder."
+        return "MediaWave can't read this folder."
     if status == PATH_ACCESS_DISCONNECTED_VOLUME:
-        return "This macOS /Volumes path looks disconnected. Reconnect or remount the drive/share, then choose the folder again."
+        return "The saved library folder is not available right now."
     if status == PATH_ACCESS_SLOW_OR_TIMEOUT:
-        return "This folder responded slowly. It may be on a NAS or network share; scans can take longer there."
+        return "This folder responded slowly."
     if status == PATH_ACCESS_UNREADABLE:
-        return "MediaWave could not read this folder. It may be disconnected, unavailable, or blocked by permissions."
+        return "MediaWave can't read this folder."
     return "MediaWave could not access this folder."
+
+
+def no_catalog_selected_status():
+    return {
+        "title": "Library Status",
+        "message": "Choose a folder containing your shows and movies to get started.",
+        "path": "",
+        "detail": "",
+        "severity": "info",
+    }
+
+
+def format_library_path_status(path, access=None):
+    access = access or classify_path_access(path)
+    status = access.get("status")
+    folder = access.get("path") or path or ""
+    location = access.get("location") or path_location_kind(folder)
+    is_network = location == PATH_LOCATION_NETWORK
+    is_external = location == PATH_LOCATION_EXTERNAL
+
+    if status in {PATH_ACCESS_OK, PATH_ACCESS_EMPTY, PATH_ACCESS_SLOW_OR_TIMEOUT}:
+        detail = "Network library detected — make sure it stays connected while watching." if is_network else ""
+        return {
+            "title": "Library ready",
+            "message": f"Using: {folder}" if folder else "Library ready",
+            "path": folder,
+            "detail": detail,
+            "severity": "info",
+        }
+    if status == PATH_ACCESS_DISCONNECTED_VOLUME or (status == PATH_ACCESS_MISSING and is_external):
+        return {
+            "title": "Drive not found",
+            "message": "Your saved library folder is not available right now. Connect the drive, then choose the folder again.",
+            "path": folder,
+            "detail": "",
+            "severity": "warning",
+        }
+    if status == PATH_ACCESS_MISSING and is_network:
+        return {
+            "title": "Network library unavailable",
+            "message": "MediaWave can't reach your saved library folder. Make sure the NAS, mapped drive, or shared folder is connected, then choose the folder again.",
+            "path": folder,
+            "detail": "",
+            "severity": "warning",
+        }
+    if status in {PATH_ACCESS_PERMISSION_DENIED, PATH_ACCESS_UNREADABLE}:
+        return {
+            "title": "Folder unavailable",
+            "message": "MediaWave can't read this folder. Check permissions or choose a different folder.",
+            "path": folder,
+            "detail": "",
+            "severity": "warning",
+        }
+    if status == PATH_ACCESS_NOT_DIRECTORY:
+        return {
+            "title": "Choose a folder",
+            "message": "The selected item is not a folder. Choose the folder that contains your shows and movies.",
+            "path": folder,
+            "detail": "",
+            "severity": "warning",
+        }
+    return {
+        "title": "Folder unavailable",
+        "message": "MediaWave can't open this library folder. Choose a different folder and try again.",
+        "path": folder,
+        "detail": "",
+        "severity": "warning",
+    }
+
+
+def format_no_playable_media_message(path, network_like=False):
+    message = "No playable media found in this folder. Try choosing the folder that contains your show or movie files."
+    if network_like:
+        message += "\nIf this is a network library, make sure it is mounted and readable."
+    return message
 
 
 def safe_iter_media_folder(path):
