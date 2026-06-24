@@ -78,14 +78,14 @@ Hit **Choose Catalog**, point it at your folder, press **Watch TV**.
 
 ### 4. Controls
 
-- **+ & -** - Channel Up and Channel Down
-- **< & >** - Rewind and Fast Forward in Vault
-- **Space** - Play/Pause in Vault
+- **[+ & -]** - Channel Up and Channel Down
+- **[< & >]** - Rewind and Fast Forward in Vault
+- **[Space]** - Play/Pause in Vault
 - **[G]** - Guide
 - **[M]** - Menu
 - **[V]** - Vault
 - **[I]** - Info
-- **Arrow Keys** - Move Cursor in Menus
+- **[Arrow Keys]** - Move Cursor in Menus
 
 ---
 
