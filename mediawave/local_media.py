@@ -176,3 +176,21 @@ def metadata_lookup_key(path, local):
     if local.get("media_type") == "tv":
         return f"tv::{local.get('match_key', normalize_title(local.get('show_name', '')))}"
     return f"movie::{stable_hash(path)}"
+
+
+def media_lineup_sort_key(path):
+    local = parse_local_media(path)
+    show = normalize_title(local.get("show_name") or "")
+    title = normalize_title(local.get("episode_title") or local.get("detail_title") or format_program_title(path))
+    season = local.get("season_number")
+    episode = local.get("episode_number")
+    try:
+        season_number = int(season)
+    except (TypeError, ValueError):
+        season_number = 9999
+    try:
+        episode_number = int(episode)
+    except (TypeError, ValueError):
+        episode_number = 9999
+    media_rank = 0 if local.get("media_type") == "tv" else 1
+    return (media_rank, show, season_number, episode_number, title, normalize_title(os.path.basename(path)))

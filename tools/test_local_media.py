@@ -10,7 +10,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from mediawave.local_media import parse_local_media
+from mediawave.local_media import media_lineup_sort_key, parse_local_media
 
 PASS = []
 FAIL = []
@@ -54,6 +54,16 @@ section("movie fallback")
 movie = parsed("/Media/Movies/Action/The Big Movie.mkv")
 check("plain file remains movie", movie["media_type"] == "movie", movie)
 check("genre folder does not become title", movie["show_name"] == "The Big Movie", movie)
+
+
+section("lineup ordering")
+lineup = [
+    "/Media/Cartoons/Example Show/Season 1/Example.Show.S01E03.Third.mkv",
+    "/Media/Cartoons/Example Show/Season 1/Example.Show.S01E01.First.mkv",
+    "/Media/Cartoons/Example Show/Season 1/Example.Show.S01E02.Second.mkv",
+]
+ordered = sorted(lineup, key=media_lineup_sort_key)
+check("episodes sort by season and episode", [parsed(path)["episode_title"] for path in ordered] == ["First", "Second", "Third"], ordered)
 
 
 print(f"\n{'='*50}")

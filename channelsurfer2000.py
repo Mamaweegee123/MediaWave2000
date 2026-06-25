@@ -95,6 +95,7 @@ from mediawave.local_media import (
     clean_local_title_piece,
     format_program_title,
     infer_on_demand_structure,
+    media_lineup_sort_key,
     metadata_lookup_key,
     normalize_title,
     parse_local_media,
@@ -1027,6 +1028,12 @@ COMMERCIAL_MODE_LABELS = {
 COMMERCIAL_MODE_VALUES_BY_LABEL = {label: key for key, label in COMMERCIAL_MODE_LABELS.items()}
 CATALOG_CATEGORY_USE_CHANNEL = "Use Channel Name"
 CATALOG_CATEGORY_CUSTOM = "Custom..."
+CATALOG_PLAYBACK_ORDER_RANDOM = "random"
+CATALOG_PLAYBACK_ORDER_SEQUENTIAL = "sequential"
+CATALOG_PLAYBACK_ORDER_LABELS = {
+    CATALOG_PLAYBACK_ORDER_RANDOM: "Random",
+    CATALOG_PLAYBACK_ORDER_SEQUENTIAL: "Sequential episodes",
+}
 CATALOG_BUILTIN_CATEGORIES = [
     CATALOG_CATEGORY_USE_CHANNEL,
     "Comedy",
@@ -1282,6 +1289,7 @@ def catalog_channel_settings_defaults():
         "enabled": True,
         "channel_number": 0,
         "display_name": "",
+        "playback_order": CATALOG_PLAYBACK_ORDER_RANDOM,
         "vault_category_mode": "channel_name",
         "vault_category": "",
         "custom_vault_category": "",
@@ -1300,6 +1308,9 @@ def normalize_catalog_channel_settings(settings):
         mode = str(merged.get("vault_category_mode", "channel_name") or "channel_name").lower()
         if mode not in {"channel_name", "builtin", "custom"}:
             mode = "channel_name"
+        playback_order = str(merged.get("playback_order", CATALOG_PLAYBACK_ORDER_RANDOM) or CATALOG_PLAYBACK_ORDER_RANDOM).lower()
+        if playback_order not in {CATALOG_PLAYBACK_ORDER_RANDOM, CATALOG_PLAYBACK_ORDER_SEQUENTIAL}:
+            playback_order = CATALOG_PLAYBACK_ORDER_RANDOM
         try:
             number = int(merged.get("channel_number", 0) or 0)
         except (TypeError, ValueError):
@@ -1308,6 +1319,7 @@ def normalize_catalog_channel_settings(settings):
             "enabled": bool(merged.get("enabled", True)),
             "channel_number": max(0, min(9999, number)),
             "display_name": str(merged.get("display_name", "") or "").strip(),
+            "playback_order": playback_order,
             "vault_category_mode": mode,
             "vault_category": sanitize_catalog_category(merged.get("vault_category", "")),
             "custom_vault_category": sanitize_catalog_category(merged.get("custom_vault_category", "")),
@@ -3230,13 +3242,22 @@ def _nettv_log(msg):
         print(f"[NetTV] {msg}", flush=True)
 
 
-def generate_auto_schedule(root_path, channel_name, file_paths):
-    seeded = random.Random(stable_hash(f"{root_path}|{channel_name}"))
+def ordered_channel_lineup(root_path, channel_name, file_paths, playback_order=CATALOG_PLAYBACK_ORDER_RANDOM):
     ordered = list(file_paths)
+    if playback_order == CATALOG_PLAYBACK_ORDER_SEQUENTIAL:
+        ordered.sort(key=media_lineup_sort_key)
+        return ordered
+    seeded = random.Random(stable_hash(f"{root_path}|{channel_name}"))
     seeded.shuffle(ordered)
+    return ordered
+
+
+def generate_auto_schedule(root_path, channel_name, file_paths, playback_order=CATALOG_PLAYBACK_ORDER_RANDOM):
+    ordered = ordered_channel_lineup(root_path, channel_name, file_paths, playback_order)
     return {
         "mode": "auto",
         "anchor_time": auto_schedule_anchor(),
+        "playback_order": playback_order if playback_order in {CATALOG_PLAYBACK_ORDER_RANDOM, CATALOG_PLAYBACK_ORDER_SEQUENTIAL} else CATALOG_PLAYBACK_ORDER_RANDOM,
         "lineup": ordered,
     }
 
@@ -5936,6 +5957,7 @@ class Channel:
         self.schedule_durations = []
         self.schedule_anchor = GLOBAL_START
         self.schedule_entries = []
+        self.playback_order = CATALOG_PLAYBACK_ORDER_RANDOM
 
     def get_duration(self, file):
         cached = self.duration_cache.get(file)
@@ -20778,6 +20800,21 @@ class AdvancedConfigDialog(QDialog):
         tags_row.addWidget(tags_input, 1)
         exp_layout.addLayout(tags_row)
 
+        playback_row = QHBoxLayout()
+        playback_row.setSpacing(12)
+        playback_label = QLabel("Playback Order")
+        playback_label.setObjectName("configLabel")
+        playback_label.setFixedWidth(100)
+        playback_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        playback_combo = QComboBox()
+        for key, label in CATALOG_PLAYBACK_ORDER_LABELS.items():
+            playback_combo.addItem(label, key)
+        playback_index = playback_combo.findData(settings.get("playback_order", CATALOG_PLAYBACK_ORDER_RANDOM))
+        playback_combo.setCurrentIndex(playback_index if playback_index >= 0 else 0)
+        playback_row.addWidget(playback_label)
+        playback_row.addWidget(playback_combo, 1)
+        exp_layout.addLayout(playback_row)
+
         # Panel footer: Airing Rules button + Reset button
         # Note: addWidget on exp_layout produces invisible widgets on macOS/Qt6;
         # wrapping in QHBoxLayout and using addLayout is the workaround.
@@ -20813,6 +20850,7 @@ class AdvancedConfigDialog(QDialog):
             "custom": custom_input,
             "description": desc_edit,
             "tags": tags_input,
+            "playback_order": playback_combo,
             "expand_panel": expand_panel,
             "config_btn": config_btn,
         }
@@ -20849,6 +20887,9 @@ class AdvancedConfigDialog(QDialog):
             row["description"].clear()
         if "tags" in row:
             row["tags"].clear()
+        if "playback_order" in row:
+            index = row["playback_order"].findData(CATALOG_PLAYBACK_ORDER_RANDOM)
+            row["playback_order"].setCurrentIndex(index if index >= 0 else 0)
         self.sync_catalog_custom_field(row)
 
     def reset_all_catalog_rows(self):
@@ -20889,6 +20930,7 @@ class AdvancedConfigDialog(QDialog):
                 "enabled": row["enabled"].isChecked(),
                 "channel_number": row["number"].value(),
                 "display_name": row["name"],
+                "playback_order": row["playback_order"].currentData() if "playback_order" in row else CATALOG_PLAYBACK_ORDER_RANDOM,
                 "vault_category_mode": mode,
                 "vault_category": vault_category,
                 "custom_vault_category": custom_category,
@@ -23308,6 +23350,7 @@ class ChannelSurfer(QWidget):
             category = self.catalog_category_for_channel(channel)
             setattr(channel, "catalog_channel_id", channel_id)
             setattr(channel, "display_number", display_number)
+            setattr(channel, "playback_order", row.get("playback_order", CATALOG_PLAYBACK_ORDER_RANDOM))
             setattr(channel, "vault_category", category)
             setattr(channel, "vault_category_key", catalog_category_key(category))
             if row.get("enabled", True):
@@ -24255,7 +24298,8 @@ class ChannelSurfer(QWidget):
         defer_midroll_if_no_cached_breaks=False,
     ):
         started_at = time.perf_counter()
-        base_schedule = generate_auto_schedule(root_path, channel.name, channel.shows)
+        playback_order = getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM)
+        base_schedule = generate_auto_schedule(root_path, channel.name, channel.shows, playback_order)
         lineup = list(base_schedule.get("lineup", channel.shows))
         anchor = base_schedule.get("anchor_time", GLOBAL_START)
         profile = self.resolve_channel_commercial_profile(channel.name)
@@ -24263,6 +24307,7 @@ class ChannelSurfer(QWidget):
             return {
                 "mode": "auto",
                 "anchor_time": anchor,
+                "playback_order": playback_order,
                 "entries": list(lineup),
             }
 
@@ -24375,6 +24420,7 @@ class ChannelSurfer(QWidget):
         result = {
             "mode": "auto-commercials",
             "anchor_time": anchor,
+            "playback_order": playback_order,
             "entries": entries,
         }
         perf_log(
@@ -24423,6 +24469,7 @@ class ChannelSurfer(QWidget):
                     {
                         "channel": channel.name,
                         "files": sorted(channel.shows),
+                        "playback_order": getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM),
                         "commercials": commercial_signature,
                         "commercial_root": commercial_root_signature,
                     },
@@ -24484,6 +24531,7 @@ class ChannelSurfer(QWidget):
                     "signature": signature,
                     "mode": schedule["mode"],
                     "anchor_time": schedule["anchor_time"],
+                    "playback_order": schedule.get("playback_order", getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM)),
                     "entries": schedule["entries"],
                 }
                 channels_state[channel.name] = state
