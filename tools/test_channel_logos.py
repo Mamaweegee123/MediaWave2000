@@ -11,6 +11,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 import channelsurfer2000 as app
+from mediawave import channel_logos as logo_mod
 
 PASS = []
 FAIL = []
@@ -34,6 +35,7 @@ defaults = app.normalize_channel_bug_settings({})
 check("horizontal offset default", defaults["horizontal_offset"] == 0, defaults)
 check("vertical offset default", defaults["vertical_offset"] == 0, defaults)
 check("placement area default", defaults["placement_area"] == "overlay", defaults)
+check("module defaults match app import", logo_mod.channel_bug_settings_defaults()["placement_area"] == defaults["placement_area"])
 
 
 section("normalization")
@@ -72,6 +74,7 @@ check("global channel inherits placement", global_effective["placement_area"] ==
 check("custom channel overrides horizontal offset", custom_effective["horizontal_offset"] == -24, custom_effective)
 check("custom channel overrides vertical offset", custom_effective["vertical_offset"] == 16, custom_effective)
 check("custom channel overrides placement", custom_effective["placement_area"] == "overlay", custom_effective)
+check("module effective settings match app import", logo_mod.get_effective_channel_logo_settings("Ch 1", settings) == custom_effective)
 
 
 print(f"\n{'='*50}")
