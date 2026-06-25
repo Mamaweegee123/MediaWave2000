@@ -3271,8 +3271,9 @@ def load_local_description_file(path):
 
 def discover_local_media_assets(path, local):
     cached = _LOCAL_MEDIA_ASSET_CACHE.get(path)
-    if cached is not None:
-        return dict(cached)
+    now = time.monotonic()
+    if isinstance(cached, tuple) and len(cached) == 2 and now - float(cached[0]) < 5.0:
+        return dict(cached[1])
     directories = local_asset_directories(path, local)
     poster_path = find_named_asset(directories, LOCAL_POSTER_NAMES)
     fanart_path = find_named_asset(directories, LOCAL_FANART_NAMES)
@@ -3288,14 +3289,15 @@ def discover_local_media_assets(path, local):
     }
     if len(_LOCAL_MEDIA_ASSET_CACHE) > 12000:
         _LOCAL_MEDIA_ASSET_CACHE.clear()
-    _LOCAL_MEDIA_ASSET_CACHE[path] = dict(assets)
+    _LOCAL_MEDIA_ASSET_CACHE[path] = (now, dict(assets))
     return assets
 
 
 def local_asset_signature(path, local):
     cached = _LOCAL_ASSET_SIGNATURE_CACHE.get(path)
-    if cached is not None:
-        return cached
+    now = time.monotonic()
+    if isinstance(cached, tuple) and len(cached) == 2 and now - float(cached[0]) < 5.0:
+        return cached[1]
     assets = discover_local_media_assets(path, local)
     parts = [file_cache_signature(path)]
     for directory in assets.get("directories", []):
@@ -3311,7 +3313,7 @@ def local_asset_signature(path, local):
     signature = stable_hash("|".join(parts))
     if len(_LOCAL_ASSET_SIGNATURE_CACHE) > 12000:
         _LOCAL_ASSET_SIGNATURE_CACHE.clear()
-    _LOCAL_ASSET_SIGNATURE_CACHE[path] = signature
+    _LOCAL_ASSET_SIGNATURE_CACHE[path] = (now, signature)
     return signature
 
 
@@ -3424,13 +3426,20 @@ def load_ui_pixmap(path):
     resolved = (path or "").strip()
     if not resolved or not os.path.isfile(resolved):
         return QPixmap()
-    cached = _UI_PIXMAP_CACHE.get(resolved)
+    try:
+        stat = os.stat(resolved)
+        cache_key = (resolved, int(stat.st_mtime), int(stat.st_size))
+    except OSError:
+        cache_key = (resolved, 0, 0)
+    cached = _UI_PIXMAP_CACHE.get(cache_key)
     if cached is not None and not cached.isNull():
         return cached
     pixmap = QPixmap(resolved)
     if pixmap.isNull():
         return QPixmap()
-    _UI_PIXMAP_CACHE[resolved] = pixmap
+    if len(_UI_PIXMAP_CACHE) > 320:
+        _UI_PIXMAP_CACHE.clear()
+    _UI_PIXMAP_CACHE[cache_key] = pixmap
     return pixmap
 
 
@@ -3438,7 +3447,12 @@ def load_scaled_ui_pixmap(path, size, aspect_mode=Qt.KeepAspectRatioByExpanding)
     resolved = (path or "").strip()
     if not resolved or not size or size.isEmpty():
         return QPixmap()
-    key = (resolved, int(size.width()), int(size.height()), str(aspect_mode))
+    try:
+        stat = os.stat(resolved)
+        file_sig = (int(stat.st_mtime), int(stat.st_size))
+    except OSError:
+        file_sig = (0, 0)
+    key = (resolved, file_sig, int(size.width()), int(size.height()), str(aspect_mode))
     cached = _SCALED_UI_PIXMAP_CACHE.get(key)
     if cached is not None and not cached.isNull():
         if _VAULT_PERF_ACTIVE_COUNTERS is not None:
@@ -23089,6 +23103,8 @@ class ChannelSurfer(QWidget):
         self.guide_rows_cache = {}
         self.program_metadata_memory_cache = {}
         self.media_thumbnail_cache = {}
+        _UI_PIXMAP_CACHE.clear()
+        _SCALED_UI_PIXMAP_CACHE.clear()
         self.on_demand_group_cards_cache = None
         self.on_demand_home_sections_cache = {}
         self.on_demand_detail_sections_cache = {}
@@ -27439,11 +27455,15 @@ class ChannelSurfer(QWidget):
                 "tmdb_matched": False,
             }
         mode = self.metadata_cache_mode()
-        memory_cached = self.program_metadata_memory_cache.get(path)
-        if memory_cached and memory_cached.get("cache_mode") == mode:
-            return memory_cached
         local = parse_local_media(path)
         signature = local_asset_signature(path, local)
+        memory_cached = self.program_metadata_memory_cache.get(path)
+        if (
+            memory_cached
+            and memory_cached.get("cache_mode") == mode
+            and memory_cached.get("signature") == signature
+        ):
+            return memory_cached
         cached = self.tmdb_cache.get(path)
         if (
             cached
@@ -27460,11 +27480,15 @@ class ChannelSurfer(QWidget):
 
     def get_program_metadata_local(self, path):
         mode = self.metadata_cache_mode()
-        memory_cached = self.program_metadata_memory_cache.get(path)
-        if memory_cached and memory_cached.get("cache_mode") == mode:
-            return memory_cached
         local = parse_local_media(path)
         signature = local_asset_signature(path, local)
+        memory_cached = self.program_metadata_memory_cache.get(path)
+        if (
+            memory_cached
+            and memory_cached.get("cache_mode") == mode
+            and memory_cached.get("signature") == signature
+        ):
+            return memory_cached
         cached = self.tmdb_cache.get(path)
         if cached and cached.get("signature") == signature and cached.get("cache_mode") == mode:
             self.program_metadata_memory_cache[path] = cached
