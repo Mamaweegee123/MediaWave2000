@@ -20,6 +20,18 @@ Holds built-in theme names, palette definitions, token-building helpers, theme l
 
 Holds local filename/folder parsing helpers, title normalization, metadata lookup keys, and media lineup sort keys. It is used by Vault grouping, local metadata lookup, and opt-in sequential channel playback without importing Qt.
 
+`mediawave/local_artwork.py`
+
+Holds local artwork and description discovery, local asset-directory selection, and short-lived local artwork signature caches. It is intentionally separate from the broader file signature cache so changed posters/backgrounds can refresh quickly.
+
+`mediawave/scheduling.py`
+
+Holds pure lineup helpers for random and sequential channel playback, playback-order constants, and the shared half-hour live-channel schedule anchor.
+
+`mediawave/channel_logos.py`
+
+Holds channel logo setting defaults, timing migration/normalization, placement option constants, and per-channel effective-setting resolution. Qt overlay drawing and logo image rendering remain in `channelsurfer2000.py`.
+
 `tools/test_airing_rules.py`
 
 Runs the Airing Rules smoke test against the extracted model module without importing the full application.
@@ -39,6 +51,10 @@ Runs smoke tests for channel lineup ordering and catalog playback-order settings
 `tools/test_channel_logos.py`
 
 Runs smoke tests for channel logo placement settings and per-channel override normalization.
+
+`tools/test_local_artwork.py`
+
+Runs local artwork discovery and signature-refresh smoke tests against `mediawave/local_artwork.py`.
 
 ## Refactor Rules
 
