@@ -56,6 +56,11 @@ from mediawave.core_io import (
     safe_iter_media_folder,
     save_json_file,
 )
+from mediawave.local_artwork import (
+    clear_local_artwork_caches,
+    discover_local_media_assets,
+    local_asset_signature,
+)
 from mediawave.airing_rules import (
     AIRING_DAYS_OF_WEEK,
     AIRING_RULE_BASIC_TYPES,
@@ -500,10 +505,6 @@ for _svg_path, _svg_data in (
         _ARROW_UP_SVG = ""
         break
 
-LOCAL_POSTER_NAMES = ("poster.jpg", "poster.jpeg", "poster.png", "folder.jpg", "folder.jpeg", "folder.png", "cover.jpg", "cover.jpeg", "cover.png")
-LOCAL_FANART_NAMES = ("fanart.jpg", "fanart.jpeg", "fanart.png", "background.jpg", "background.jpeg", "background.png", "backdrop.jpg", "backdrop.jpeg", "backdrop.png")
-LOCAL_CLEARLOGO_NAMES = ("clearlogo.png", "clearlogo.jpg", "clearlogo.jpeg", "logo.png", "logo.jpg", "logo.jpeg", "clearlogo-white.png")
-LOCAL_DESCRIPTION_NAMES = ("show.txt", "description.txt", "plot.txt", "summary.txt", "desc.txt", "about.txt")
 CATALOG_AUXILIARY_FOLDER_NAMES = {
     "commercials",
     "commercial",
@@ -647,8 +648,6 @@ _RADIOWAVE_DEFAULT_ART = None
 _UI_PIXMAP_CACHE = {}
 _SCALED_UI_PIXMAP_CACHE = {}
 _FILE_SIGNATURE_CACHE = {}
-_LOCAL_MEDIA_ASSET_CACHE = {}
-_LOCAL_ASSET_SIGNATURE_CACHE = {}
 _PERF_STATS = {}
 _CHANNEL_BUG_CACHE = {}  # keyed by (root_path, channel_name) -> QPixmap or None
 _VAULT_PLACEHOLDER_PIXMAP_CACHE = {}
@@ -3262,112 +3261,6 @@ def generate_auto_schedule(root_path, channel_name, file_paths, playback_order=C
     }
 
 
-def unique_existing_dirs(paths):
-    seen = set()
-    results = []
-    for path in paths:
-        resolved = os.path.abspath(path or "")
-        if not resolved or resolved in seen or not os.path.isdir(resolved):
-            continue
-        seen.add(resolved)
-        results.append(resolved)
-    return results
-
-
-def local_asset_directories(path, local):
-    parent_dir = os.path.dirname(path)
-    grandparent_dir = os.path.dirname(parent_dir)
-    parent_name = os.path.basename(parent_dir)
-    if local.get("media_type") == "tv":
-        if (
-            re.search(r"\bseason\s*\d{1,2}\b", parent_name, re.IGNORECASE)
-            or re.search(r"\b(specials?|extras?|bonus|ova|movies?)\b", parent_name, re.IGNORECASE)
-        ):
-            return unique_existing_dirs([grandparent_dir, parent_dir])
-        return unique_existing_dirs([parent_dir, grandparent_dir])
-    return unique_existing_dirs([parent_dir])
-
-
-def find_named_asset(directories, names):
-    wanted = {name.casefold(): name for name in names}
-    for directory in directories:
-        for name in names:
-            candidate = os.path.join(directory, name)
-            if os.path.isfile(candidate):
-                return candidate
-        try:
-            entries = os.listdir(directory)
-        except OSError:
-            continue
-        by_name = {entry.casefold(): entry for entry in entries}
-        for wanted_name in wanted:
-            entry = by_name.get(wanted_name)
-            if not entry:
-                continue
-            candidate = os.path.join(directory, entry)
-            if os.path.isfile(candidate):
-                return candidate
-    return ""
-
-
-def load_local_description_file(path):
-    if not path or not os.path.isfile(path):
-        return ""
-    try:
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read().strip()
-    except OSError:
-        return ""
-
-
-def discover_local_media_assets(path, local):
-    cached = _LOCAL_MEDIA_ASSET_CACHE.get(path)
-    now = time.monotonic()
-    if isinstance(cached, tuple) and len(cached) == 2 and now - float(cached[0]) < 5.0:
-        return dict(cached[1])
-    directories = local_asset_directories(path, local)
-    poster_path = find_named_asset(directories, LOCAL_POSTER_NAMES)
-    fanart_path = find_named_asset(directories, LOCAL_FANART_NAMES)
-    clearlogo_path = find_named_asset(directories, LOCAL_CLEARLOGO_NAMES)
-    description_path = find_named_asset(directories, LOCAL_DESCRIPTION_NAMES)
-    assets = {
-        "directories": directories,
-        "poster_path": poster_path,
-        "fanart_path": fanart_path,
-        "clearlogo_path": clearlogo_path,
-        "description_path": description_path,
-        "description": load_local_description_file(description_path),
-    }
-    if len(_LOCAL_MEDIA_ASSET_CACHE) > 12000:
-        _LOCAL_MEDIA_ASSET_CACHE.clear()
-    _LOCAL_MEDIA_ASSET_CACHE[path] = (now, dict(assets))
-    return assets
-
-
-def local_asset_signature(path, local):
-    cached = _LOCAL_ASSET_SIGNATURE_CACHE.get(path)
-    now = time.monotonic()
-    if isinstance(cached, tuple) and len(cached) == 2 and now - float(cached[0]) < 5.0:
-        return cached[1]
-    assets = discover_local_media_assets(path, local)
-    parts = [file_cache_signature(path)]
-    for directory in assets.get("directories", []):
-        try:
-            stat = os.stat(directory)
-            parts.append(f"dir:{directory}:{int(stat.st_mtime)}")
-        except OSError:
-            continue
-    for key in ("poster_path", "fanart_path", "clearlogo_path", "description_path"):
-        candidate = assets.get(key, "")
-        if candidate:
-            parts.append(file_cache_signature(candidate))
-    signature = stable_hash("|".join(parts))
-    if len(_LOCAL_ASSET_SIGNATURE_CACHE) > 12000:
-        _LOCAL_ASSET_SIGNATURE_CACHE.clear()
-    _LOCAL_ASSET_SIGNATURE_CACHE[path] = (now, signature)
-    return signature
-
-
 def build_local_media_metadata(path, duration=None):
     local = parse_local_media(path)
     assets = discover_local_media_assets(path, local)
@@ -3540,8 +3433,7 @@ def file_cache_signature(path):
 
 def clear_catalog_lookup_caches():
     _FILE_SIGNATURE_CACHE.clear()
-    _LOCAL_MEDIA_ASSET_CACHE.clear()
-    _LOCAL_ASSET_SIGNATURE_CACHE.clear()
+    clear_local_artwork_caches()
 
 
 def resolve_ffprobe_path():
