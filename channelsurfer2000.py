@@ -25281,7 +25281,6 @@ class ChannelSurfer(QWidget):
             self.on_demand_home_sections_cache = {}
             self.on_demand_detail_sections_cache = {}
             self.on_demand_category_sections_cache = {}
-            self.on_demand_category_sections_cache = {}
             perf_log("catalog.on_demand_cache.load", (time.perf_counter() - started_at) * 1000.0, groups=sum(len(channel.get("groups", [])) for channel in cached_catalog))
             return True
         perf_log("catalog.on_demand_cache.miss", (time.perf_counter() - started_at) * 1000.0, cached=bool(cached_catalog))
@@ -25293,7 +25292,6 @@ class ChannelSurfer(QWidget):
         self.on_demand_group_cards_cache = None
         self.on_demand_home_sections_cache = {}
         self.on_demand_detail_sections_cache = {}
-        self.on_demand_category_sections_cache = {}
         self.on_demand_category_sections_cache = {}
         if clear_catalog:
             self.on_demand_catalog = []

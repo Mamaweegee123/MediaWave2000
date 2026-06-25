@@ -16,6 +16,10 @@ Holds small shared filesystem helpers: safe path normalization, JSON load/save, 
 
 Holds built-in theme names, palette definitions, token-building helpers, theme lookup helpers, and the framework-only custom theme schema. Rendering and widget-specific theme application remain in `channelsurfer2000.py`.
 
+`mediawave/local_media.py`
+
+Holds local filename/folder parsing helpers, title normalization, metadata lookup keys, and media lineup sort keys. It is used by Vault grouping, local metadata lookup, and opt-in sequential channel playback without importing Qt.
+
 `tools/test_airing_rules.py`
 
 Runs the Airing Rules smoke test against the extracted model module without importing the full application.
@@ -23,6 +27,18 @@ Runs the Airing Rules smoke test against the extracted model module without impo
 `tools/test_themes.py`
 
 Runs the theme framework smoke test against `mediawave/themes.py` without launching the full application.
+
+`tools/test_local_media.py`
+
+Runs local media parsing and episode-order smoke tests against `mediawave/local_media.py`.
+
+`tools/test_scheduling.py`
+
+Runs smoke tests for channel lineup ordering and catalog playback-order settings.
+
+`tools/test_channel_logos.py`
+
+Runs smoke tests for channel logo placement settings and per-channel override normalization.
 
 ## Refactor Rules
 
