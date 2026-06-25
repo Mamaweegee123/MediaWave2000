@@ -89,7 +89,7 @@ HBO/
     logo.png
 ```
 
-**Commercials** — put short video clips in any folder and point MediaWave at it in Advanced Config. Real VHS-ripped ads work great.
+**Commercials** — put short video clips in one shared folder and point MediaWave at it in Advanced Config. Per-channel overrides adjust behavior while using that shared library.
 
 **Custom music** — drop audio files in `User Content/Music/` for the RadioWave TV companion channel, or keep them wherever you have them and just simply point MediaWave to the folder in "Advanced Config".
 

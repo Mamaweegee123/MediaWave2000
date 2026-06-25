@@ -31,8 +31,8 @@
 - **Commercial breaks** — plays short video clips between episodes or at timed intervals during playback
 - **Two timing modes** — between episodes, or mid-roll on a timer
 - **Density settings** — Light (1–2 ads), Normal (2–4 ads), Heavy (4–6 ads) per break
-- **Custom commercial folder** — point it at any folder of clips; real VHS-ripped ads, bumpers, station IDs all work
-- **Per-channel overrides** — different commercial settings per channel in Advanced Config
+- **Shared commercial folder** — point MediaWave at one folder of clips; real VHS-ripped ads, bumpers, station IDs all work
+- **Per-channel behavior overrides** — different timing/preferences per channel in Advanced Config while using the shared folder
 - **Graceful fallback** — if no commercials are found, playback continues silently without errors
 
 ---

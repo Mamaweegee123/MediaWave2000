@@ -18814,7 +18814,10 @@ class CommercialOverridesDialog(QDialog):
         title = QLabel("Channel Commercial Overrides")
         title.setObjectName("dialogTitle")
         outer.addWidget(title)
-        note = QLabel("Fine-tune how each channel behaves. Leave a channel on Inherit to use the global commercial settings.")
+        note = QLabel(
+            "Fine-tune how each channel behaves. Overrides change break timing and preferences; "
+            "commercial clips still come from the shared global Commercials folder."
+        )
         note.setObjectName("dialogNote")
         note.setWordWrap(True)
         outer.addWidget(note)
@@ -19109,7 +19112,10 @@ class AdvancedCommercialSettingsDialog(QDialog):
         self.allow_fallback = QCheckBox("Allow fallback through era/type/general/all commercials")
         self.allow_fallback.setChecked(bool(self.settings.get("allow_fallback", True)))
 
-        global_card, global_layout = self.build_section_card("Global Commercial Rules")
+        global_card, global_layout = self.build_section_card(
+            "Global Commercial Rules",
+            "These defaults use the shared Commercials folder selected in the main Commercials tab.",
+        )
         global_form = QFormLayout()
         global_form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         global_form.setHorizontalSpacing(16)
@@ -19158,7 +19164,10 @@ class AdvancedCommercialSettingsDialog(QDialog):
             extras_layout.addWidget(checkbox)
         layout.addWidget(extras_card)
 
-        channel_card, channel_layout = self.build_section_card("Per-Channel Overrides")
+        channel_card, channel_layout = self.build_section_card(
+            "Per-Channel Overrides",
+            "Overrides adjust behavior only. They do not select a different commercials folder yet.",
+        )
         channel_button = QPushButton("Edit Channel Commercial Overrides")
         channel_button.clicked.connect(self.open_channel_overrides_dialog)
         channel_layout.addWidget(channel_button)
@@ -20484,7 +20493,11 @@ class AdvancedConfigDialog(QDialog):
         layout.setContentsMargins(12, 12, 12, 12)
         layout.setSpacing(14)
 
-        card, card_layout = self.build_section_card("Commercials", badge_text="In development")
+        card, card_layout = self.build_section_card(
+            "Commercials",
+            "Choose one shared commercials folder. Per-channel overrides can change timing and preferences, but they use this same folder.",
+            badge_text="In development",
+        )
         form = QFormLayout()
         form.setFieldGrowthPolicy(QFormLayout.ExpandingFieldsGrow)
         form.setHorizontalSpacing(16)
