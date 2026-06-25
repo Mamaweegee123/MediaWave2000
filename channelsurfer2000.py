@@ -838,6 +838,15 @@ def overlay_target_rect(widget):
     return widget.rect() if widget is not None else QRect()
 
 
+def channel_bug_target_rect(widget, placement_area):
+    parent = widget.parentWidget() if widget is not None else None
+    if placement_area == "video_content" and parent is not None and hasattr(parent, "video_rect"):
+        rect = parent.video_rect()
+        if rect is not None and not rect.isEmpty():
+            return rect
+    return overlay_target_rect(widget)
+
+
 
 
 def draw_text_with_stroke(
@@ -1385,6 +1394,11 @@ CHANNEL_BUG_INTERVAL_OPTIONS = [
     ("15 minutes", 15),
     ("30 minutes", 30),
 ]
+CHANNEL_BUG_PLACEMENT_AREAS = ("overlay", "video_content")
+CHANNEL_BUG_PLACEMENT_LABELS = {
+    "overlay": "Screen area",
+    "video_content": "Video content area",
+}
 
 
 def _normalize_timing(t):
@@ -1458,6 +1472,9 @@ def channel_bug_settings_defaults():
         "opacity": 0.75,
         "size": 80,
         "margin": 18,
+        "horizontal_offset": 0,
+        "vertical_offset": 0,
+        "placement_area": "overlay",
         "grayscale_on_video": False,
         "fade": True,
         "timing": dict(_TIMING_DEFAULTS),
@@ -1491,6 +1508,11 @@ def _normalize_channel_bug_override(override, global_settings):
         result["opacity"] = max(0.1, min(1.0, float(override.get("opacity") or gs.get("opacity", 0.75))))
         result["size"] = max(32, min(256, int(override.get("size") or gs.get("size", 80))))
         result["margin"] = max(0, min(120, int(override.get("margin") if override.get("margin") is not None else gs.get("margin", 18))))
+        result["horizontal_offset"] = max(-240, min(240, int(override.get("horizontal_offset") if override.get("horizontal_offset") is not None else gs.get("horizontal_offset", 0))))
+        result["vertical_offset"] = max(-240, min(240, int(override.get("vertical_offset") if override.get("vertical_offset") is not None else gs.get("vertical_offset", 0))))
+        result["placement_area"] = str(override.get("placement_area") or gs.get("placement_area", "overlay"))
+        if result["placement_area"] not in CHANNEL_BUG_PLACEMENT_AREAS:
+            result["placement_area"] = gs.get("placement_area", "overlay")
         result["grayscale_on_video"] = bool(override.get("grayscale_on_video") if "grayscale_on_video" in override else gs.get("grayscale_on_video", False))
         result["fade"] = bool(override.get("fade") if override.get("fade") is not None else gs.get("fade", True))
         # Timing: migrate and normalize
@@ -1503,7 +1525,7 @@ def normalize_channel_bug_settings(settings):
     defaults = channel_bug_settings_defaults()
     source = settings if isinstance(settings, dict) else {}
     merged = dict(defaults)
-    for k in ("enabled", "corner", "opacity", "size", "margin", "grayscale_on_video", "fade"):
+    for k in ("enabled", "corner", "opacity", "size", "margin", "horizontal_offset", "vertical_offset", "placement_area", "grayscale_on_video", "fade"):
         if k in source:
             merged[k] = source[k]
     merged["enabled"] = bool(merged.get("enabled", False))
@@ -1513,6 +1535,11 @@ def normalize_channel_bug_settings(settings):
     merged["opacity"] = max(0.1, min(1.0, float(merged.get("opacity", 0.75) or 0.75)))
     merged["size"] = max(32, min(256, int(merged.get("size", 80) or 80)))
     merged["margin"] = max(0, min(120, int(merged.get("margin", 18) or 18)))
+    merged["horizontal_offset"] = max(-240, min(240, int(merged.get("horizontal_offset", 0) or 0)))
+    merged["vertical_offset"] = max(-240, min(240, int(merged.get("vertical_offset", 0) or 0)))
+    merged["placement_area"] = str(merged.get("placement_area", "overlay") or "overlay")
+    if merged["placement_area"] not in CHANNEL_BUG_PLACEMENT_AREAS:
+        merged["placement_area"] = "overlay"
     merged["grayscale_on_video"] = bool(merged.get("grayscale_on_video", False))
     merged["fade"] = bool(merged.get("fade", True))
     # Timing: migrate flat fields or normalize existing sub-dict
@@ -1556,6 +1583,9 @@ def get_effective_channel_logo_settings(channel_name, global_settings):
         result["opacity"] = ch_override.get("opacity", gs.get("opacity", 0.75))
         result["size"] = ch_override.get("size", gs.get("size", 80))
         result["margin"] = ch_override.get("margin", gs.get("margin", 18))
+        result["horizontal_offset"] = ch_override.get("horizontal_offset", gs.get("horizontal_offset", 0))
+        result["vertical_offset"] = ch_override.get("vertical_offset", gs.get("vertical_offset", 0))
+        result["placement_area"] = ch_override.get("placement_area", gs.get("placement_area", "overlay"))
         result["grayscale_on_video"] = ch_override.get("grayscale_on_video", gs.get("grayscale_on_video", False))
         result["fade"] = ch_override.get("fade", gs.get("fade", True))
         result["timing"] = _normalize_timing(ch_override.get("timing") or gs.get("timing") or {})
@@ -6859,12 +6889,14 @@ class ChannelBugOverlay(QWidget):
         if self._bug_pixmap.isNull() or self._opacity_anim <= 0.0:
             return
 
-        target = overlay_target_rect(self)
+        target = channel_bug_target_rect(self, self._eff.get("placement_area", "overlay"))
         if target.isEmpty():
             target = self.rect()
 
         corner = self._eff.get("corner", "bottom-right")
         margin = int(self._eff.get("margin", 18) or 18)
+        horizontal_offset = int(self._eff.get("horizontal_offset", 0) or 0)
+        vertical_offset = int(self._eff.get("vertical_offset", 0) or 0)
         bug_opacity = float(self._eff.get("opacity", 0.75) or 0.75)
         effective_opacity = bug_opacity * self._opacity_anim
 
@@ -6883,6 +6915,10 @@ class ChannelBugOverlay(QWidget):
             y = target.bottom() - ph - margin
         else:
             y = target.top() + margin
+        x += horizontal_offset
+        y += vertical_offset
+        x = max(target.left(), min(x, target.right() - pw))
+        y = max(target.top(), min(y, target.bottom() - ph))
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
@@ -18450,6 +18486,21 @@ class ChannelLogoOverridesDialog(QDialog):
         self._margin_spin.setSuffix(" px")
         custom_layout.addRow("Margin:", self._margin_spin)
 
+        self._horizontal_offset_spin = QSpinBox()
+        self._horizontal_offset_spin.setRange(-240, 240)
+        self._horizontal_offset_spin.setSuffix(" px")
+        custom_layout.addRow("Horizontal offset:", self._horizontal_offset_spin)
+
+        self._vertical_offset_spin = QSpinBox()
+        self._vertical_offset_spin.setRange(-240, 240)
+        self._vertical_offset_spin.setSuffix(" px")
+        custom_layout.addRow("Vertical offset:", self._vertical_offset_spin)
+
+        self._placement_area_combo = QComboBox()
+        for key in CHANNEL_BUG_PLACEMENT_AREAS:
+            self._placement_area_combo.addItem(CHANNEL_BUG_PLACEMENT_LABELS.get(key, key), key)
+        custom_layout.addRow("Placement:", self._placement_area_combo)
+
         self._fade_check = QCheckBox("Fade in / Fade out")
         custom_layout.addRow("", self._fade_check)
 
@@ -18589,6 +18640,9 @@ class ChannelLogoOverridesDialog(QDialog):
             "opacity": round(self._opacity_spin.value() / 100.0, 2),
             "size": self._size_spin.value(),
             "margin": self._margin_spin.value(),
+            "horizontal_offset": self._horizontal_offset_spin.value(),
+            "vertical_offset": self._vertical_offset_spin.value(),
+            "placement_area": self._placement_area_combo.currentData() or "overlay",
             "fade": self._fade_check.isChecked(),
             "grayscale_on_video": self._grayscale_check.isChecked(),
             "timing": {
@@ -18636,6 +18690,11 @@ class ChannelLogoOverridesDialog(QDialog):
         self._opacity_spin.setValue(int(round(float(override.get("opacity") or g.get("opacity", 0.75)) * 100)))
         self._size_spin.setValue(int(override.get("size") or g.get("size", 80)))
         self._margin_spin.setValue(int(override.get("margin") if override.get("margin") is not None else g.get("margin", 18)))
+        self._horizontal_offset_spin.setValue(int(override.get("horizontal_offset") if override.get("horizontal_offset") is not None else g.get("horizontal_offset", 0)))
+        self._vertical_offset_spin.setValue(int(override.get("vertical_offset") if override.get("vertical_offset") is not None else g.get("vertical_offset", 0)))
+        placement = str(override.get("placement_area") or g.get("placement_area", "overlay"))
+        placement_idx = self._placement_area_combo.findData(placement if placement in CHANNEL_BUG_PLACEMENT_AREAS else "overlay")
+        self._placement_area_combo.setCurrentIndex(placement_idx if placement_idx >= 0 else 0)
         fade_val = override.get("fade")
         self._fade_check.setChecked(bool(fade_val if fade_val is not None else g.get("fade", True)))
         gray_val = override.get("grayscale_on_video")
@@ -18685,6 +18744,10 @@ class ChannelLogoOverridesDialog(QDialog):
         self._opacity_spin.setValue(int(round(float(g.get("opacity", 0.75)) * 100)))
         self._size_spin.setValue(int(g.get("size", 80)))
         self._margin_spin.setValue(int(g.get("margin", 18)))
+        self._horizontal_offset_spin.setValue(int(g.get("horizontal_offset", 0)))
+        self._vertical_offset_spin.setValue(int(g.get("vertical_offset", 0)))
+        placement_idx = self._placement_area_combo.findData(str(g.get("placement_area", "overlay")))
+        self._placement_area_combo.setCurrentIndex(placement_idx if placement_idx >= 0 else 0)
         self._fade_check.setChecked(bool(g.get("fade", True)))
         self._grayscale_check.setChecked(bool(g.get("grayscale_on_video", False)))
         self._t_always.setChecked(bool(g_timing.get("always_visible", False)))
@@ -20916,6 +20979,41 @@ class AdvancedConfigDialog(QDialog):
         margin_row.addWidget(self._bug_margin_spin)
         global_layout.addLayout(margin_row)
 
+        # Horizontal offset
+        horizontal_offset_row = QHBoxLayout()
+        horizontal_offset_row.setSpacing(8)
+        horizontal_offset_row.addWidget(self._label("Horizontal offset (px):"))
+        self._bug_horizontal_offset_spin = QSpinBox()
+        self._bug_horizontal_offset_spin.setRange(-240, 240)
+        self._bug_horizontal_offset_spin.setSuffix(" px")
+        self._bug_horizontal_offset_spin.setValue(int(self.channel_bug_settings.get("horizontal_offset", 0) or 0))
+        horizontal_offset_row.addWidget(self._bug_horizontal_offset_spin)
+        global_layout.addLayout(horizontal_offset_row)
+
+        # Vertical offset
+        vertical_offset_row = QHBoxLayout()
+        vertical_offset_row.setSpacing(8)
+        vertical_offset_row.addWidget(self._label("Vertical offset (px):"))
+        self._bug_vertical_offset_spin = QSpinBox()
+        self._bug_vertical_offset_spin.setRange(-240, 240)
+        self._bug_vertical_offset_spin.setSuffix(" px")
+        self._bug_vertical_offset_spin.setValue(int(self.channel_bug_settings.get("vertical_offset", 0) or 0))
+        vertical_offset_row.addWidget(self._bug_vertical_offset_spin)
+        global_layout.addLayout(vertical_offset_row)
+
+        # Placement area
+        placement_row = QHBoxLayout()
+        placement_row.setSpacing(8)
+        placement_row.addWidget(self._label("Placement:"))
+        self._bug_placement_area_combo = QComboBox()
+        for key in CHANNEL_BUG_PLACEMENT_AREAS:
+            self._bug_placement_area_combo.addItem(CHANNEL_BUG_PLACEMENT_LABELS.get(key, key), key)
+        placement = str(self.channel_bug_settings.get("placement_area", "overlay") or "overlay")
+        placement_idx = self._bug_placement_area_combo.findData(placement if placement in CHANNEL_BUG_PLACEMENT_AREAS else "overlay")
+        self._bug_placement_area_combo.setCurrentIndex(placement_idx if placement_idx >= 0 else 0)
+        placement_row.addWidget(self._bug_placement_area_combo, 1)
+        global_layout.addLayout(placement_row)
+
         # Fade
         self._bug_fade_check = QCheckBox("Fade in / Fade out")
         self._bug_fade_check.setChecked(bool(self.channel_bug_settings.get("fade", True)))
@@ -21031,6 +21129,10 @@ class AdvancedConfigDialog(QDialog):
         self._bug_opacity_spin.setValue(int(round(float(defaults.get("opacity", 0.75)) * 100)))
         self._bug_size_spin.setValue(int(defaults.get("size", 80)))
         self._bug_margin_spin.setValue(int(defaults.get("margin", 18)))
+        self._bug_horizontal_offset_spin.setValue(int(defaults.get("horizontal_offset", 0)))
+        self._bug_vertical_offset_spin.setValue(int(defaults.get("vertical_offset", 0)))
+        placement_idx = self._bug_placement_area_combo.findData(str(defaults.get("placement_area", "overlay")))
+        self._bug_placement_area_combo.setCurrentIndex(placement_idx if placement_idx >= 0 else 0)
         self._bug_fade_check.setChecked(bool(defaults.get("fade", True)))
         self._bug_grayscale_check.setChecked(bool(defaults.get("grayscale_on_video", False)))
         self._bug_t_always.setChecked(bool(dt.get("always_visible", False)))
@@ -21085,6 +21187,9 @@ class AdvancedConfigDialog(QDialog):
             "opacity": round(self._bug_opacity_spin.value() / 100.0, 2),
             "size": self._bug_size_spin.value(),
             "margin": self._bug_margin_spin.value(),
+            "horizontal_offset": self._bug_horizontal_offset_spin.value(),
+            "vertical_offset": self._bug_vertical_offset_spin.value(),
+            "placement_area": self._bug_placement_area_combo.currentData() or "overlay",
             "fade": self._bug_fade_check.isChecked(),
             "grayscale_on_video": self._bug_grayscale_check.isChecked(),
             "timing": {
