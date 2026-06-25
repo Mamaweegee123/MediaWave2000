@@ -61,6 +61,15 @@ from mediawave.local_artwork import (
     discover_local_media_assets,
     local_asset_signature,
 )
+from mediawave.scheduling import (
+    CATALOG_PLAYBACK_ORDER_LABELS,
+    CATALOG_PLAYBACK_ORDER_RANDOM,
+    CATALOG_PLAYBACK_ORDER_SEQUENTIAL,
+    auto_schedule_anchor,
+    generate_auto_schedule,
+    normalize_playback_order,
+    ordered_channel_lineup,
+)
 from mediawave.airing_rules import (
     AIRING_DAYS_OF_WEEK,
     AIRING_RULE_BASIC_TYPES,
@@ -100,7 +109,6 @@ from mediawave.local_media import (
     clean_local_title_piece,
     format_program_title,
     infer_on_demand_structure,
-    media_lineup_sort_key,
     metadata_lookup_key,
     normalize_title,
     parse_local_media,
@@ -1027,12 +1035,6 @@ COMMERCIAL_MODE_LABELS = {
 COMMERCIAL_MODE_VALUES_BY_LABEL = {label: key for key, label in COMMERCIAL_MODE_LABELS.items()}
 CATALOG_CATEGORY_USE_CHANNEL = "Use Channel Name"
 CATALOG_CATEGORY_CUSTOM = "Custom..."
-CATALOG_PLAYBACK_ORDER_RANDOM = "random"
-CATALOG_PLAYBACK_ORDER_SEQUENTIAL = "sequential"
-CATALOG_PLAYBACK_ORDER_LABELS = {
-    CATALOG_PLAYBACK_ORDER_RANDOM: "Random",
-    CATALOG_PLAYBACK_ORDER_SEQUENTIAL: "Sequential episodes",
-}
 CATALOG_BUILTIN_CATEGORIES = [
     CATALOG_CATEGORY_USE_CHANNEL,
     "Comedy",
@@ -1307,9 +1309,7 @@ def normalize_catalog_channel_settings(settings):
         mode = str(merged.get("vault_category_mode", "channel_name") or "channel_name").lower()
         if mode not in {"channel_name", "builtin", "custom"}:
             mode = "channel_name"
-        playback_order = str(merged.get("playback_order", CATALOG_PLAYBACK_ORDER_RANDOM) or CATALOG_PLAYBACK_ORDER_RANDOM).lower()
-        if playback_order not in {CATALOG_PLAYBACK_ORDER_RANDOM, CATALOG_PLAYBACK_ORDER_SEQUENTIAL}:
-            playback_order = CATALOG_PLAYBACK_ORDER_RANDOM
+        playback_order = normalize_playback_order(merged.get("playback_order", CATALOG_PLAYBACK_ORDER_RANDOM))
         try:
             number = int(merged.get("channel_number", 0) or 0)
         except (TypeError, ValueError):
@@ -3191,25 +3191,6 @@ def compact_status_detail(text, max_length=90):
     return f"{value[:keep]}...{value[-keep:]}"
 
 
-def build_channel_signature(channel_name, file_paths):
-    payload = json.dumps(
-        {
-            "channel": channel_name,
-            "files": sorted(file_paths),
-        },
-        sort_keys=True,
-    )
-    return stable_hash(payload)
-
-
-def auto_schedule_anchor():
-    # Lock the synthetic "broadcast day" to a stable boundary so schedules
-    # keep their place even after the app is closed and reopened later.
-    now = int(time.time())
-    half_hour = 30 * 60
-    return now - (now % half_hour)
-
-
 _NETTV_WEEK_SECONDS = 7 * 86400
 
 
@@ -3239,26 +3220,6 @@ def nettv_schedule_anchor(playlist_key):
 def _nettv_log(msg):
     if NETTV_DEBUG:
         print(f"[NetTV] {msg}", flush=True)
-
-
-def ordered_channel_lineup(root_path, channel_name, file_paths, playback_order=CATALOG_PLAYBACK_ORDER_RANDOM):
-    ordered = list(file_paths)
-    if playback_order == CATALOG_PLAYBACK_ORDER_SEQUENTIAL:
-        ordered.sort(key=media_lineup_sort_key)
-        return ordered
-    seeded = random.Random(stable_hash(f"{root_path}|{channel_name}"))
-    seeded.shuffle(ordered)
-    return ordered
-
-
-def generate_auto_schedule(root_path, channel_name, file_paths, playback_order=CATALOG_PLAYBACK_ORDER_RANDOM):
-    ordered = ordered_channel_lineup(root_path, channel_name, file_paths, playback_order)
-    return {
-        "mode": "auto",
-        "anchor_time": auto_schedule_anchor(),
-        "playback_order": playback_order if playback_order in {CATALOG_PLAYBACK_ORDER_RANDOM, CATALOG_PLAYBACK_ORDER_SEQUENTIAL} else CATALOG_PLAYBACK_ORDER_RANDOM,
-        "lineup": ordered,
-    }
 
 
 def build_local_media_metadata(path, duration=None):

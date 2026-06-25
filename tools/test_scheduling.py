@@ -11,6 +11,7 @@ if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
 import channelsurfer2000 as app
+from mediawave import scheduling as scheduling_mod
 
 PASS = []
 FAIL = []
@@ -53,6 +54,7 @@ random_a = app.ordered_channel_lineup("/Media/Toons", "Example", lineup, app.CAT
 random_b = app.ordered_channel_lineup("/Media/Toons", "Example", lineup, app.CATALOG_PLAYBACK_ORDER_RANDOM)
 check("random lineup is deterministic", random_a == random_b, (random_a, random_b))
 check("random lineup keeps all paths", sorted(random_a) == sorted(lineup), random_a)
+check("module helper matches app import", scheduling_mod.ordered_channel_lineup("/Media/Toons", "Example", lineup, app.CATALOG_PLAYBACK_ORDER_SEQUENTIAL) == sequential)
 
 
 section("catalog settings")
@@ -62,6 +64,7 @@ settings = app.normalize_catalog_channel_settings({
 })
 check("sequential setting persists", settings["media:/Media/Toons"]["playback_order"] == app.CATALOG_PLAYBACK_ORDER_SEQUENTIAL, settings)
 check("invalid setting falls back to random", settings["media:/Media/Movies"]["playback_order"] == app.CATALOG_PLAYBACK_ORDER_RANDOM, settings)
+check("module normalizes invalid setting", scheduling_mod.normalize_playback_order("surprise") == app.CATALOG_PLAYBACK_ORDER_RANDOM)
 
 
 print(f"\n{'='*50}")
