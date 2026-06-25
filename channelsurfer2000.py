@@ -90,6 +90,16 @@ from mediawave.airing_rules import (
     save_airing_rules_config,
     validate_airing_rules_config,
 )
+from mediawave.local_media import (
+    _folder_is_genre_category,
+    clean_local_title_piece,
+    format_program_title,
+    infer_on_demand_structure,
+    metadata_lookup_key,
+    normalize_title,
+    parse_local_media,
+    stable_hash,
+)
 
 try:
     import AppKit
@@ -3140,10 +3150,6 @@ def compact_status_detail(text, max_length=90):
     return f"{value[:keep]}...{value[-keep:]}"
 
 
-def stable_hash(value):
-    return hashlib.sha1(value.encode("utf-8")).hexdigest()
-
-
 def build_channel_signature(channel_name, file_paths):
     payload = json.dumps(
         {
@@ -3203,29 +3209,6 @@ def generate_auto_schedule(root_path, channel_name, file_paths):
         "anchor_time": auto_schedule_anchor(),
         "lineup": ordered,
     }
-
-
-def normalize_title(value):
-    cleaned = re.sub(r"[^a-z0-9]+", " ", value.lower()).strip()
-    return re.sub(r"\s+", " ", cleaned)
-
-
-_TITLE_STOPWORDS = frozenset({"the", "a", "an", "of", "in", "at", "to", "and", "or", "is", "it"})
-
-
-def _folder_is_genre_category(folder_norm, file_norm):
-    """Return True if a folder name has no significant word overlap with a file title.
-
-    When there's no overlap, the folder is likely an organizer (Action, Comedy,
-    Documentaries) rather than a title container (The Matrix 1999, Die Hard Collection).
-    """
-    folder_words = set(folder_norm.split()) - _TITLE_STOPWORDS
-    file_words = set(file_norm.split()) - _TITLE_STOPWORDS
-    return not folder_words or not bool(folder_words & file_words)
-
-
-def clean_local_title_piece(value):
-    return re.sub(r"\s+", " ", str(value or "").strip().strip("-_–—:| ")).strip()
 
 
 def unique_existing_dirs(paths):
@@ -3386,144 +3369,6 @@ def build_local_media_metadata(path, duration=None):
         "enrichment_source": "local-assets" if has_local_assets else "fallback-names",
     }
     return metadata
-
-
-def parse_local_media(path):
-    base = format_program_title(path)
-    patterns = [
-        r"^(?P<show>.+?)\s*-\s*(?P<season>\d{1,2})[xX](?P<episode>\d{1,3})\s*-\s*(?P<title>.+)$",
-        r"^(?P<show>.+?)\s+[Ss](?P<season>\d{1,2})[Ee](?P<episode>\d{1,3})\s*[- ]\s*(?P<title>.+)$",
-        r"^(?P<show>.+?)\s*-\s*[Ss](?P<season>\d{1,2})[Ee](?P<episode>\d{1,3})\s*-\s*(?P<title>.+)$",
-        r"^(?P<show>.+?)\s*-\s*(?:episode|ep)\s*(?P<episode>\d{1,3})\s*[-: ]+\s*(?P<title>.+)$",
-        r"^(?P<show>.+?)\s*-\s*(?P<episode>\d{1,3})\s*-\s*(?P<title>.+)$",
-    ]
-    for pattern in patterns:
-        match = re.match(pattern, base)
-        if match:
-            show = clean_local_title_piece(match.group("show"))
-            title = clean_local_title_piece(match.group("title"))
-            season = int(match.group("season")) if match.groupdict().get("season") else 1
-            episode = int(match.group("episode"))
-            return {
-                "media_type": "tv",
-                "show_name": show,
-                "timeline_title": show,
-                "detail_title": f"{show} - S{season:02d}E{episode:02d} - {title}",
-                "detail_summary": "",
-                "season_number": season,
-                "season_label": f"Season {season}",
-                "episode_number": episode,
-                "episode_title": title,
-                "match_key": normalize_title(show),
-            }
-
-    parent = os.path.basename(os.path.dirname(path))
-    grandparent = os.path.basename(os.path.dirname(os.path.dirname(path)))
-    parent_title = format_program_title(parent) if parent else ""
-    grandparent_title = format_program_title(grandparent) if grandparent else ""
-    fallback_title = clean_local_title_piece(base)
-    season_number = None
-    season_source = parent_title
-    season_match = re.search(r"\bseason\s*(\d{1,2})\b", parent_title, re.IGNORECASE)
-    if not season_match and grandparent_title:
-        season_match = re.search(r"\bseason\s*(\d{1,2})\b", grandparent_title, re.IGNORECASE)
-        season_source = grandparent_title
-    if season_match:
-        season_number = int(season_match.group(1))
-
-    if grandparent_title and re.search(r"\b(specials?|extras?|bonus|ova)\b", parent_title, re.IGNORECASE):
-        special_match = re.match(
-            r"^(?:(?:special|episode|ep)\s*)?(?P<episode>\d{1,3})\s*[-._ ]+\s*(?P<title>.+)$",
-            fallback_title,
-            re.IGNORECASE,
-        )
-        episode_number = int(special_match.group("episode")) if special_match else None
-        episode_title = clean_local_title_piece((special_match.groupdict().get("title") if special_match else "") or fallback_title)
-        return {
-            "media_type": "tv",
-            "show_name": grandparent_title,
-            "timeline_title": grandparent_title,
-            "detail_title": f"{grandparent_title} - Specials - {episode_title}",
-            "detail_summary": "",
-            "season_number": 0,
-            "season_label": "Specials",
-            "episode_number": episode_number,
-            "episode_title": episode_title,
-            "match_key": normalize_title(grandparent_title),
-        }
-
-    inferred_show = grandparent_title if season_number is not None and season_source == parent_title and grandparent_title else parent_title
-    if season_number is not None and season_source == grandparent_title and parent_title:
-        inferred_show = parent_title
-
-    inferred_patterns = [
-        r"^(?P<episode>\d{1,3})\s*[-._ ]+\s*(?P<title>.+)$",
-        r"^(?:episode|ep)\s*(?P<episode>\d{1,3})\s*[-._ ]+\s*(?P<title>.+)$",
-        r"^(?P<episode>\d{1,3})$",
-    ]
-    if inferred_show:
-        for pattern in inferred_patterns:
-            match = re.match(pattern, fallback_title, re.IGNORECASE)
-            if not match:
-                continue
-            episode = int(match.group("episode"))
-            title = clean_local_title_piece(match.groupdict().get("title") or f"Episode {episode}")
-            season = season_number if season_number is not None else 1
-            return {
-                "media_type": "tv",
-                "show_name": inferred_show,
-                "timeline_title": inferred_show,
-                "detail_title": f"{inferred_show} - S{season:02d}E{episode:02d} - {title}",
-                "detail_summary": "",
-                "season_number": season,
-                "season_label": f"Season {season}",
-                "episode_number": episode,
-                "episode_title": title,
-                "match_key": normalize_title(inferred_show),
-            }
-
-    if parent_title and parent_title.lower() not in fallback_title.lower():
-        norm_parent = normalize_title(parent_title)
-        norm_fallback = normalize_title(fallback_title)
-        show_name = fallback_title if _folder_is_genre_category(norm_parent, norm_fallback) else parent_title
-    else:
-        show_name = fallback_title
-    return {
-        "media_type": "movie",
-        "show_name": show_name,
-        "timeline_title": fallback_title,
-        "detail_title": fallback_title,
-        "detail_summary": "",
-        "match_key": normalize_title(show_name or fallback_title),
-    }
-
-
-def infer_on_demand_structure(path, channel_root):
-    root = os.path.realpath(channel_root or "")
-    full_path = os.path.realpath(path or "")
-    if not root or not full_path:
-        return {}
-    try:
-        relative = os.path.relpath(full_path, root)
-    except ValueError:
-        return {}
-    if relative.startswith(".."):
-        return {}
-    parts = [part for part in relative.split(os.sep) if part and part != "."]
-    if len(parts) < 2:
-        return {}
-    show_folder = format_program_title(parts[0])
-    subsection_folder = format_program_title(parts[1]) if len(parts) >= 3 else ""
-    return {
-        "group_label": show_folder,
-        "section_label": subsection_folder,
-    }
-
-
-def metadata_lookup_key(path, local):
-    if local.get("media_type") == "tv":
-        return f"tv::{local.get('match_key', normalize_title(local.get('show_name', '')))}"
-    return f"movie::{stable_hash(path)}"
 
 
 def strip_html_summary(value):
@@ -6604,11 +6449,6 @@ class RadioWaveChannel(Channel):
                 }
             ]
         return super().get_programs_for_window(window_start, count)
-
-
-def format_program_title(path):
-    name = os.path.splitext(os.path.basename(path))[0]
-    return name.replace("_", " ").replace("`", "'")
 
 
 # ---------------- STATIC ---------------- #
