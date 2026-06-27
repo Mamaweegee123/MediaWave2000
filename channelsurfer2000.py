@@ -69,6 +69,7 @@ from mediawave.scheduling import (
     generate_auto_schedule,
     normalize_playback_order,
     ordered_channel_lineup,
+    remove_path_from_schedule,
 )
 from mediawave.channel_logos import (
     CHANNEL_BUG_CORNER_OPTIONS,
@@ -1862,7 +1863,7 @@ def probe_media_json(path):
                 "-show_entries",
                 "format=duration:format_tags=title,artist,album,album_artist,date,year,genre",
                 "-show_entries",
-                "stream=index,codec_type:stream_tags=title,artist,album,album_artist,date,year,genre",
+                "stream=index,codec_name,codec_type:stream_tags=title,artist,album,album_artist,date,year,genre",
                 "-of",
                 "json",
                 path,
@@ -21870,6 +21871,7 @@ class ChannelSurfer(QWidget):
     youtubeStreamResolved = Signal(int, dict, str, str, float)
     youtubePlaylistLoaded = Signal(int, str, list, str)
     episodeThumbnailReady = Signal(str)
+    artworkWarmupReady = Signal(str, bytes)
 
     def __init__(self):
         super().__init__()
@@ -22371,6 +22373,7 @@ class ChannelSurfer(QWidget):
         self.live_stall_last_position_ms = -1
         self.live_stall_last_advance_at = 0.0
         self.live_stall_checks_started_at = 0.0
+        self.local_tune_started_at = 0.0
         self.live_stall_failures = {}
         self.radiowave_bands = [0.0] * 24
         self.radiowave_cached_art_path = ""
@@ -22438,6 +22441,7 @@ class ChannelSurfer(QWidget):
         self.youtubeStreamResolved.connect(self.on_youtube_stream_resolved)
         self.youtubePlaylistLoaded.connect(self.on_youtube_playlist_loaded_for_tune)
         self.episodeThumbnailReady.connect(self.on_episode_thumbnail_ready)
+        self.artworkWarmupReady.connect(self.on_artwork_warmup_ready)
         self.profile_combo.currentTextChanged.connect(self.apply_display_settings)
         self.theme_combo.currentTextChanged.connect(self.apply_display_settings)
         self.skin_combo.currentTextChanged.connect(self.on_skin_changed)
@@ -22789,7 +22793,25 @@ class ChannelSurfer(QWidget):
             if self.prepare_on_demand_catalog(clear_catalog=True):
                 self.update_catalog_progress(1, 1, "Loading cached on-demand library", "MediaWave Vault is ready from cache.")
             else:
-                self.update_catalog_progress(1, 1, "Deferring on-demand library build", "MediaWave Vault will finish organizing the first time you open it.")
+                self.build_on_demand_catalog(progress_callback=self.update_catalog_progress)
+                self.update_catalog_progress(1, 1, "Preparing navigation", "Warming Guide, Vault, and theme resources.")
+            self.all_on_demand_group_cards()
+            self.build_on_demand_home_sections()
+            self.cached_guide_rows(max_age_seconds=0)
+            for font_loader in (
+                clock_font_family,
+                crt_font_family,
+                vhs_osd_font_family,
+                mplus_rounded_family,
+                stb_title_font_family,
+                stb_label_font_family,
+                stb_mono_font_family,
+                stb_hud_font_family,
+                cutietop_font_family,
+                videophreak_font_family,
+                scifi2ki_font_family,
+            ):
+                font_loader()
             self.finish_catalog_progress()
             self.refresh_controls()
         except _ParseCancelled:
@@ -22864,6 +22886,71 @@ class ChannelSurfer(QWidget):
 
     def finish_catalog_background_setup(self):
         self.preload_weather_if_configured()
+        self.start_artwork_cache_warmup()
+
+    def navigation_artwork_paths(self, limit=280):
+        paths = []
+        seen = set()
+        for channel in self.on_demand_catalog:
+            for group in channel.get("groups", []):
+                candidates = [
+                    group.get("artwork_path"),
+                    group.get("hero_artwork_path"),
+                    group.get("clearlogo_path"),
+                ]
+                for item in group.get("items", [])[:1]:
+                    candidates.extend((item.get("artwork_path"), item.get("hero_artwork_path"), item.get("clearlogo_path")))
+                for path in candidates:
+                    path = str(path or "").strip()
+                    if path and path not in seen and os.path.isfile(path):
+                        seen.add(path)
+                        paths.append(path)
+                        if len(paths) >= limit:
+                            return paths
+        return paths
+
+    def start_artwork_cache_warmup(self):
+        paths = self.navigation_artwork_paths()
+        if not paths:
+            return
+
+        def worker():
+            warmed = 0
+            for path in paths:
+                if self._closing:
+                    break
+                try:
+                    with open(path, "rb") as handle:
+                        data = handle.read()
+                except OSError:
+                    continue
+                if data:
+                    self.artworkWarmupReady.emit(path, data)
+                    warmed += 1
+            print(f"[NavigationWarmup] queued {warmed} artwork file(s)", flush=True)
+
+        threading.Thread(target=worker, daemon=True, name="mediawave-artwork-warmup").start()
+
+    @Slot(str, bytes)
+    def on_artwork_warmup_ready(self, path, data):
+        if self._closing or not data:
+            return
+        try:
+            stat = os.stat(path)
+            cache_key = (path, int(stat.st_mtime), int(stat.st_size))
+        except OSError:
+            return
+        if cache_key in _UI_PIXMAP_CACHE:
+            return
+        image = QImage.fromData(data)
+        if image.isNull():
+            return
+        pixmap = QPixmap.fromImage(image)
+        if pixmap.isNull():
+            return
+        if len(_UI_PIXMAP_CACHE) >= 320:
+            _UI_PIXMAP_CACHE.pop(next(iter(_UI_PIXMAP_CACHE)))
+        _UI_PIXMAP_CACHE[cache_key] = pixmap
 
     def refresh_theme_combo_for_skin(self, initial_theme=None):
         skin_name = self.skin_combo.currentText() if hasattr(self, "skin_combo") else DEFAULT_SKIN_NAME
@@ -26340,10 +26427,13 @@ class ChannelSurfer(QWidget):
 
         self.pending_seek_ms = offset_ms
         self.pending_play_after_seek = True
+        self.local_tune_started_at = time.monotonic()
         self.reset_live_playback_health(video)
         self.media_player.setPlaybackRate(1.0)
         self.media_player.stop()
         self.suspend_nettv_visuals()
+        self.last_video_frame = QPixmap()
+        self.video_window.video_surface.set_frame(QPixmap())
         self.media_player.setSource(QUrl(video) if is_url else QUrl.fromLocalFile(video))
 
     def begin_youtube_playlist_load_for_tune(self, channel, force=False):
@@ -26608,6 +26698,13 @@ class ChannelSurfer(QWidget):
             if removed_here:
                 channel.shows = kept_shows
                 channel.durations = kept_durations
+                runtime_schedule = {
+                    "schedule_paths": channel.schedule_paths,
+                    "entries": channel.schedule_entries,
+                }
+                remove_path_from_schedule(runtime_schedule, path)
+                channel.schedule_paths = runtime_schedule["schedule_paths"]
+                channel.schedule_entries = runtime_schedule["entries"]
         if removed_any:
             self.channels = [
                 channel for channel in self.channels
@@ -26616,6 +26713,9 @@ class ChannelSurfer(QWidget):
             if self.channels:
                 self.current_channel %= len(self.channels)
         return removed_any
+
+    def playback_event_is_in_tune_grace(self, seconds=2.0):
+        return self.local_tune_started_at > 0 and time.monotonic() - self.local_tune_started_at < seconds
 
     def recover_live_playback_failure(self, reason):
         if self.playback_mode != "live":
@@ -26628,7 +26728,11 @@ class ChannelSurfer(QWidget):
         if failed_path:
             failure_count = self.live_stall_failures.get(failed_path, 0) + 1
             self.live_stall_failures[failed_path] = failure_count
-            if self.catalog_root and os.path.isfile(failed_path):
+            should_quarantine = self._should_quarantine_media_failure(failed_path, reason)
+            prior_validation = self.catalog_validation_cache.setdefault("videos", {}).get(failed_path, {})
+            if isinstance(prior_validation, dict) and prior_validation.get("ok") is True:
+                should_quarantine = False
+            if self.catalog_root and os.path.isfile(failed_path) and should_quarantine:
                 signature = file_cache_signature(failed_path)
                 validation_entries = self.catalog_validation_cache.setdefault("videos", {})
                 validation_entries[failed_path] = {
@@ -26654,8 +26758,9 @@ class ChannelSurfer(QWidget):
                         )
                     except OSError:
                         self.remove_media_from_channels(failed_path)
-                else:
-                    self.remove_media_from_channels(failed_path)
+            self.remove_media_from_channels(failed_path)
+            if not should_quarantine:
+                print(f"[Playback][warn] Skipping without quarantine: {failed_path} ({reason})", flush=True)
 
         self.media_player.stop()
         if not self.channels:
@@ -26773,6 +26878,9 @@ class ChannelSurfer(QWidget):
             return
 
         if status == QMediaPlayer.EndOfMedia:
+            if self.playback_mode == "live" and self.playback_event_is_in_tune_grace():
+                print("[Playback] Ignored stale EndOfMedia during channel tune", flush=True)
+                return
             self.live_stall_timer.stop()
             if self.playback_mode == "ondemand":
                 finished_path = self.current_on_demand_path
@@ -26803,6 +26911,8 @@ class ChannelSurfer(QWidget):
             QMediaPlayer.MediaStatus.InvalidMedia,
             QMediaPlayer.MediaStatus.StalledMedia,
         ):
+            if self.playback_event_is_in_tune_grace():
+                return
             if self.current_youtube_channel() is not None:
                 self.retry_nettv_with_compatible_format("Playback stalled or could not open this cached video.")
                 self.status.setText("NetTV playback stalled or could not open this cached video.")
@@ -26813,6 +26923,9 @@ class ChannelSurfer(QWidget):
     def on_media_error(self):
         error_text = self.media_player.errorString() or "Playback error"
         if self.playback_mode == "live":
+            if self.playback_event_is_in_tune_grace():
+                print(f"[Playback] Deferred player error during channel tune: {error_text}", flush=True)
+                return
             if self.current_youtube_channel() is not None:
                 self.retry_nettv_with_compatible_format(error_text)
                 self.status.setText(f"NetTV playback error:\n{error_text}")
@@ -26947,6 +27060,8 @@ class ChannelSurfer(QWidget):
     @Slot(object)
     def on_video_frame_changed(self, frame):
         if not frame or not frame.isValid():
+            return
+        if self.playback_mode == "live" and self.playback_event_is_in_tune_grace(0.35):
             return
 
         # Vault never shows a live preview, so skip all per-frame work while it
@@ -30621,6 +30736,7 @@ class ChannelSurfer(QWidget):
         self.live_stall_last_position_ms = -1
         self.live_stall_last_advance_at = 0.0
         self.live_stall_checks_started_at = 0.0
+        self.local_tune_started_at = 0.0
         self.resume_timer.stop()
         self.video_window.next_up_overlay.hide()
         self.video_window.transport_overlay.hide()

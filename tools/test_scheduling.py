@@ -67,6 +67,19 @@ check("invalid setting falls back to random", settings["media:/Media/Movies"]["p
 check("module normalizes invalid setting", scheduling_mod.normalize_playback_order("surprise") == app.CATALOG_PLAYBACK_ORDER_RANDOM)
 
 
+section("failed path cleanup")
+failed_path = lineup[1]
+schedule = {
+    "lineup": list(lineup),
+    "schedule_paths": list(lineup),
+    "entries": [{"path": path, "duration": 10} for path in lineup],
+}
+check("failed path is removed", scheduling_mod.remove_path_from_schedule(schedule, failed_path), schedule)
+check("failed path leaves lineup", failed_path not in schedule["lineup"], schedule)
+check("failed path leaves schedule paths", failed_path not in schedule["schedule_paths"], schedule)
+check("failed path leaves entries", all(entry["path"] != failed_path for entry in schedule["entries"]), schedule)
+
+
 print(f"\n{'='*50}")
 print(f"Results: {len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

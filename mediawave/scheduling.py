@@ -45,3 +45,22 @@ def generate_auto_schedule(root_path, channel_name, file_paths, playback_order=C
         "playback_order": normalized_order,
         "lineup": ordered_channel_lineup(root_path, channel_name, file_paths, normalized_order),
     }
+
+
+def remove_path_from_schedule(schedule, path):
+    """Remove one media path from every lineup collection in a schedule."""
+    if not isinstance(schedule, dict) or not path:
+        return False
+    removed = False
+    for key in ("lineup", "schedule_paths"):
+        values = schedule.get(key)
+        if isinstance(values, list):
+            kept = [value for value in values if value != path]
+            removed = removed or len(kept) != len(values)
+            schedule[key] = kept
+    entries = schedule.get("entries")
+    if isinstance(entries, list):
+        kept = [entry for entry in entries if not isinstance(entry, dict) or entry.get("path") != path]
+        removed = removed or len(kept) != len(entries)
+        schedule["entries"] = kept
+    return removed
