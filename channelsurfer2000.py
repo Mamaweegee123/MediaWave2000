@@ -743,9 +743,9 @@ GUIDE_SCALE_OPTIONS = (
 )
 GUIDE_SCALE_DEFAULT = "Teeny"
 GUIDE_UI_SCALE_DEFAULT = dict(GUIDE_SCALE_OPTIONS)[GUIDE_SCALE_DEFAULT]
-# Keep heavyweight overlay repaints away from video-frame callbacks.
-# The live Guide preview can look alive at ~5 FPS without constantly rebuilding the grid.
-GUIDE_PREVIEW_REFRESH_INTERVAL_SECONDS = 0.20
+# Guide video is painted by a lightweight child surface, so local playback can
+# update smoothly without rebuilding the full listings grid for every frame.
+GUIDE_PREVIEW_REFRESH_INTERVAL_SECONDS = 1.0 / 24.0
 GUIDE_FORWARD_HORIZON_SECONDS = 4 * 3600   # max lookahead in Guide timeline (4 h)
 # Widest single Guide grid view is 4 half-hour columns (2 h); pad a bit so a
 # row's slots always cover the full visible window with margin to spare.
@@ -6584,6 +6584,57 @@ class ChannelBugOverlay(QWidget):
 
 # Guide and Vault interactions prioritize responsiveness over decorative animation.
 # Avoid overlay-wide fades or full-scene animation unless performance is proven smooth.
+class GuidePreviewSurface(QWidget):
+    def __init__(self, guide, parent=None):
+        super().__init__(parent)
+        self.guide = guide
+        self.frame = QPixmap()
+        self.mode = "video"
+        self.setAttribute(Qt.WA_OpaquePaintEvent, True)
+        self.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        self.hide()
+
+    def set_frame(self, pixmap, mode="video"):
+        self.frame = pixmap if pixmap and not pixmap.isNull() else QPixmap()
+        self.mode = mode or "video"
+        if self.isVisible():
+            self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(0, 0, 0))
+        if self.frame.isNull():
+            return
+        source = self.frame
+        if "weatherstar" in self.mode:
+            skip = max(0, int(source.height() * 0.10))
+            source = source.copy(0, skip, source.width(), max(1, source.height() - skip))
+        source_rect = QRect(source.rect())
+        draw_rect = QRect(self.rect())
+        source_aspect = source_rect.width() / max(1, source_rect.height())
+        target_aspect = draw_rect.width() / max(1, draw_rect.height())
+        if "radiowave" in self.mode:
+            if source_aspect > target_aspect:
+                height = max(1, int(draw_rect.width() / source_aspect))
+                draw_rect.setTop((self.height() - height) // 2)
+                draw_rect.setHeight(height)
+            else:
+                width = max(1, int(draw_rect.height() * source_aspect))
+                draw_rect.setLeft((self.width() - width) // 2)
+                draw_rect.setWidth(width)
+        elif source_aspect > target_aspect:
+            width = max(1, int(source_rect.height() * target_aspect))
+            source_rect.setLeft(source_rect.left() + (source_rect.width() - width) // 2)
+            source_rect.setWidth(width)
+        elif source_aspect < target_aspect:
+            height = max(1, int(source_rect.width() / target_aspect))
+            source_rect.setTop(source_rect.top() + (source_rect.height() - height) // 2)
+            source_rect.setHeight(height)
+        painter.setClipRect(self.rect())
+        painter.setRenderHint(QPainter.SmoothPixmapTransform, True)
+        painter.drawPixmap(draw_rect, source, source_rect)
+
+
 class GuideOverlay(QWidget):
     skinStepRequested = Signal(int)
     themeStepRequested = Signal(int)
@@ -6608,6 +6659,7 @@ class GuideOverlay(QWidget):
         self.preview_mode = "video"
         self._preview_scaled_cache_key = None
         self._preview_scaled_pixmap = QPixmap()
+        self.live_preview_surface = GuidePreviewSurface(self, self)
         self.profile_name = "Auto"
         self.theme_name = DEFAULT_THEME_NAME
         self.skin_name = DEFAULT_SKIN_NAME
@@ -6698,13 +6750,22 @@ class GuideOverlay(QWidget):
         )
         self.preview_frame = pixmap
         self.preview_mode = mode
+        self.live_preview_surface.set_frame(pixmap, mode)
         if not same_frame:
             self._preview_scaled_cache_key = None
             self._preview_scaled_pixmap = QPixmap()
-        now = time.time()
-        if self.isVisible() and (now - self.last_preview_update) >= 0.18:
-            self.last_preview_update = now
+        if self.isVisible() and not self.live_preview_surface.isVisible():
             self.update()
+
+    def set_live_preview_rect(self, rect):
+        rect = QRect(rect)
+        if rect.isEmpty():
+            self.live_preview_surface.hide()
+            return
+        if self.live_preview_surface.geometry() != rect:
+            self.live_preview_surface.setGeometry(rect)
+        self.live_preview_surface.show()
+        self.live_preview_surface.raise_()
 
     def scaled_preview_frame(self, size, aspect_mode):
         if self.preview_frame.isNull() or size.width() <= 0 or size.height() <= 0:
@@ -6781,6 +6842,11 @@ class GuideOverlay(QWidget):
             if self.settings_open:
                 painter.fillRect(self.rect(), QColor(8, 10, 14, 150))
                 self.draw_settings_panel(painter, self.rect(), body_font, small_font, theme)
+        if self.settings_open:
+            self.live_preview_surface.hide()
+        elif not self.live_preview_surface.geometry().isEmpty():
+            self.live_preview_surface.show()
+            self.live_preview_surface.raise_()
 
     def cable_surface_size(self, panel):
         scale = CLASSIC_CABLE_TUNING["crt"]["surface_scale"]
@@ -7124,6 +7190,7 @@ class GuideOverlay(QWidget):
         painter.setBrush(theme["guide_preview_frame_bg"])
         painter.drawRoundedRect(preview_rect, theme.get("cell_radius", 8), theme.get("cell_radius", 8))
         preview_inner = preview_rect.adjusted(6, 6, -6, -6)
+        self.set_live_preview_rect(preview_inner)
         painter.fillRect(preview_inner, QColor(0, 0, 0, 230))
         if not self.preview_frame.isNull():
             keep_mode = Qt.KeepAspectRatio if self.preview_mode == "radiowave" else Qt.KeepAspectRatioByExpanding
@@ -7539,6 +7606,7 @@ class GuideOverlay(QWidget):
     def draw_pf_preview(self, painter, rect, theme, profile):
         self.pf_glossy_rect(painter, rect, theme["chrome_top"], theme["chrome_bottom"], theme["pf_grid_line"], radius=self.pf_metric(5, profile, 3, 8))
         inner = rect.adjusted(self.pf_metric(5, profile, 3, 8), self.pf_metric(5, profile, 3, 8), -self.pf_metric(5, profile, 3, 8), -self.pf_metric(5, profile, 3, 8))
+        self.set_live_preview_rect(inner)
         painter.fillRect(inner, QColor(0, 0, 0, 235))
         if not self.preview_frame.isNull():
             keep_mode = Qt.KeepAspectRatio if self.preview_mode == "radiowave" else Qt.KeepAspectRatioByExpanding
@@ -8566,6 +8634,7 @@ class GuideOverlay(QWidget):
                     max(0, theme["bg"].blue() - 18),
                 ),
             )
+        self.set_live_preview_rect(inner)
         if isinstance(item.get("detail_path"), str) and item["detail_path"].startswith("weatherstar://"):
             if not self.preview_frame.isNull():
                 scaled = self.scaled_preview_frame(inner.size(), Qt.KeepAspectRatioByExpanding)
@@ -22797,7 +22866,7 @@ class ChannelSurfer(QWidget):
                 self.update_catalog_progress(1, 1, "Preparing navigation", "Warming Guide, Vault, and theme resources.")
             self.all_on_demand_group_cards()
             self.build_on_demand_home_sections()
-            self.cached_guide_rows(max_age_seconds=0)
+            guide_rows = self.cached_guide_rows(max_age_seconds=0)
             for font_loader in (
                 clock_font_family,
                 crt_font_family,
@@ -22812,6 +22881,7 @@ class ChannelSurfer(QWidget):
                 scifi2ki_font_family,
             ):
                 font_loader()
+            self.warm_guide_rendering(guide_rows)
             self.finish_catalog_progress()
             self.refresh_controls()
         except _ParseCancelled:
@@ -22887,6 +22957,39 @@ class ChannelSurfer(QWidget):
     def finish_catalog_background_setup(self):
         self.preload_weather_if_configured()
         self.start_artwork_cache_warmup()
+
+    def warm_guide_rendering(self, rows):
+        if not rows:
+            return
+        screen = self.screen() or QApplication.primaryScreen()
+        size = screen.geometry().size() if screen is not None else QSize(1920, 1080)
+        if size.width() <= 0 or size.height() <= 0:
+            size = QSize(1920, 1080)
+        warm_overlay = GuideOverlay()
+        warm_overlay.resize(size)
+        warm_overlay.update_guide(rows, min(self.current_channel, len(rows) - 1))
+        target = QPixmap(size)
+        profile_name = self.profile_combo.currentText()
+        for skin_name in GUIDE_SKINS:
+            themes = theme_names_for_skin(skin_name)
+            if not themes:
+                continue
+            started_at = time.perf_counter()
+            warm_overlay.configure(
+                profile_name,
+                themes[0],
+                skin_name,
+                self.guide_ui_scale,
+                self.app_settings.get("sleek_freak_mode", "dark"),
+            )
+            warm_overlay.render(target)
+            perf_log(
+                "guide.render.warmup",
+                (time.perf_counter() - started_at) * 1000.0,
+                skin=skin_name,
+            )
+            QApplication.processEvents()
+        warm_overlay.deleteLater()
 
     def navigation_artwork_paths(self, limit=280):
         paths = []
@@ -26432,6 +26535,7 @@ class ChannelSurfer(QWidget):
         self.media_player.setPlaybackRate(1.0)
         self.media_player.stop()
         self.suspend_nettv_visuals()
+        self.ensure_video_sinks_attached()
         self.last_video_frame = QPixmap()
         self.video_window.video_surface.set_frame(QPixmap())
         self.media_player.setSource(QUrl(video) if is_url else QUrl.fromLocalFile(video))
@@ -27218,10 +27322,11 @@ class ChannelSurfer(QWidget):
         self.app_settings["guide_skin"] = skin_name
         self.app_settings["guide_scale"] = self.guide_scale
         self.app_settings["guide_ui_scale"] = self.guide_ui_scale
-        self.setStyleSheet(build_startup_stylesheet(theme_name, skin_name))
         save_json_file(APP_SETTINGS_FILE, self.app_settings)
-        self.refresh_diagnostics_summary()
-        self.preload_weather_if_configured()
+        if not self.video_window.isVisible():
+            self.setStyleSheet(build_startup_stylesheet(theme_name, skin_name))
+            self.refresh_diagnostics_summary()
+            self.preload_weather_if_configured()
 
     def toggle_sleek_freak_mode(self):
         current = normalize_sleek_mode(self.app_settings.get("sleek_freak_mode", "dark"))
@@ -27722,7 +27827,7 @@ class ChannelSurfer(QWidget):
         perf_log("guide.rows.build", (time.perf_counter() - started_at) * 1000.0, rows=len(rows), timeline=int(timeline_start))
         return rows
 
-    def cached_guide_rows(self, timeline_start=None, max_age_seconds=12.0):
+    def cached_guide_rows(self, timeline_start=None, max_age_seconds=300.0):
         timeline_start = timeline_start or self.video_window.guide_overlay.timeline_start or self.video_window.guide_overlay.floor_to_half_hour(time.time())
         channel_signature = (
             len(self.channels),
@@ -29968,30 +30073,28 @@ class ChannelSurfer(QWidget):
             self.schedule_radiowave_state_refresh(0)
 
     def suspend_video_decode_for_navigation_overlay(self):
-        """Detach active video sinks while Vault fully covers playback.
+        """Pause frame conversion while Vault covers playback.
 
-        Vault never shows a live video preview, so per-frame videoFrameChanged
-        work is wasted while the user is scrolling there. Detaching the sink
-        lets playback audio continue while NetTV/local video decode and frame
-        conversion stop competing with the UI thread. Guide does NOT use this —
-        Guide's preview window needs live frames, so its sinks stay attached
-        (see on_video_frame_changed / on_nettv_video_frame_changed, which
-        throttle and skip the heavy background-surface update instead).
+        The sinks remain attached so returning from Vault cannot leave a player
+        producing audio without delivering video frames.
         """
         if getattr(self, "_video_decode_suspended_for_navigation_overlay", False):
             return
         self._video_decode_suspended_for_navigation_overlay = True
-        self.media_player.setVideoSink(None)
-        self.nettv_player.setVideoSink(None)
+
+    def ensure_video_sinks_attached(self):
+        self._video_decode_suspended_for_navigation_overlay = False
+        if self.media_player.videoSink() is not self.video_sink:
+            self.media_player.setVideoSink(self.video_sink)
+        if self.nettv_player.videoSink() is not self.nettv_video_sink:
+            self.nettv_player.setVideoSink(self.nettv_video_sink)
 
     def resume_video_decode_after_navigation_overlay(self):
         if not getattr(self, "_video_decode_suspended_for_navigation_overlay", False):
             return
         if self.video_window.guide_overlay.isVisible() or self.video_window.on_demand_overlay.isVisible():
             return
-        self._video_decode_suspended_for_navigation_overlay = False
-        self.media_player.setVideoSink(self.video_sink)
-        self.nettv_player.setVideoSink(self.nettv_video_sink)
+        self.ensure_video_sinks_attached()
 
     def log_vault_select(self, message, **fields):
         write_vault_debug_log("VaultSelect", message, fields)
@@ -30562,6 +30665,7 @@ class ChannelSurfer(QWidget):
         self.current_on_demand_path = path
         self.pending_seek_ms = max(0, int(position_ms))
         self.pending_play_after_seek = True
+        self.ensure_video_sinks_attached()
         self.media_player.setPlaybackRate(1.0)
         self.media_player.setSource(QUrl.fromLocalFile(path))
         self.resume_timer.start()
