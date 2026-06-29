@@ -115,7 +115,7 @@ Beyond your own library, MediaWave includes three built-in channels:
 
 - **WeatherStar 4000+** — a local weather display channel in the style of the classic Weather Channel
 - **RadioWave TV** — plays your music library with a reactive audio visualizer
-- **NetTV** *(beta)* — paste a YouTube playlist URL and it generates a live channel schedule from the videos
+- **NetTV** *(experimental beta)* — paste a public YouTube playlist URL and it generates a live channel schedule through yt-dlp. YouTube changes, restrictions, rate limits, and very large playlists can affect availability.
 
 ---
 
@@ -144,6 +144,8 @@ Requires **ffmpeg** to be installed. See `docs/Converter Guide.txt` for setup.
 - [ ] Custom theme support
 - [ ] EAS-style scrolling message system (in progress)
 - [ ] NetTV stability improvements (in progress)
+- [ ] Optional random playback mode that avoids recently played episodes
+- [ ] Pluggable NetTV backends, with Invidious as a possible future option
 - [ ] Raspberry Pi lightweight build
 - [ ] Steam / Steam Deck release (long-term)
 

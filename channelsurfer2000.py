@@ -2208,6 +2208,8 @@ def resolve_ytdlp_command():
 
 YTDLP_COMMAND = resolve_ytdlp_command()
 YOUTUBE_CACHE_VERSION = "nettv-h264-v3"
+NETTV_PLAYLIST_MAX_ENTRIES = 1000
+NETTV_PLAYLIST_INDEX_TIMEOUT_SECONDS = 120
 
 # Browsers supported for --cookies-from-browser.
 # Safari is macOS-only; yt-dlp enforces this at runtime.
@@ -2248,15 +2250,44 @@ def nettv_is_bot_verification_error(text):
     return any(phrase in lower for phrase in _NETTV_BOT_PHRASES)
 
 
+def nettv_error_category(raw_error):
+    lower = str(raw_error or "").lower()
+    if nettv_is_bot_verification_error(lower):
+        return "bot_verification"
+    if any(phrase in lower for phrase in ("age-restricted", "age restricted", "login required", "sign in")):
+        return "authentication_required"
+    if any(phrase in lower for phrase in ("not available in your country", "not available in your region", "geo restriction")):
+        return "region_restricted"
+    if any(phrase in lower for phrase in ("private video", "video is private", "removed", "unavailable")):
+        return "private_or_unavailable"
+    if any(phrase in lower for phrase in ("too many requests", "http error 429", "rate limit")):
+        return "rate_limited"
+    if any(phrase in lower for phrase in ("timed out", "timeout", "read operation timed out")):
+        return "playlist_timeout"
+    return "extractor_error"
+
+
 def nettv_friendly_error(raw_error):
     """Return (friendly_message, is_bot_error) for a raw yt-dlp error string."""
-    if nettv_is_bot_verification_error(raw_error):
+    category = nettv_error_category(raw_error)
+    if category == "bot_verification":
         return (
             "NetTV could not play this YouTube entry because YouTube requested browser verification. "
             "Enable browser cookies in NetTV Advanced Settings to resolve this.",
             True,
         )
-    return raw_error, False
+    raw_error = str(raw_error or "").strip()
+    if category == "authentication_required":
+        return "YouTube requires a signed-in or age-verified session for this playlist or video.", False
+    if category == "region_restricted":
+        return "This playlist or video is not available in your region.", False
+    if category == "private_or_unavailable":
+        return "This playlist or video is private, removed, or unavailable to YouTube right now.", False
+    if category == "rate_limited":
+        return "YouTube is temporarily rate limiting NetTV. Wait a little while, then try again.", False
+    if category == "playlist_timeout":
+        return "NetTV took too long to read this playlist. Large playlists or a slow connection may need another try.", False
+    return raw_error or "yt-dlp could not read this NetTV source.", False
 YOUTUBE_DOWNLOAD_FORMAT = (
     "bestvideo[height<=1080][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
     "bestvideo[height<=720][ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a]/"
@@ -20018,7 +20049,9 @@ class AdvancedConfigDialog(QDialog):
         self.youtube_playlist_input = QLineEdit()
         self.youtube_playlist_input.setPlaceholderText("Paste a YouTube playlist URL")
         self.youtube_playlist_input.setText(settings.get("youtube_playlist_url", ""))
-        self.youtube_playlist_help = QLabel("Public playlists only — use a youtube.com/playlist?list= URL.")
+        self.youtube_playlist_help = QLabel(
+            "Experimental: public YouTube playlists work through yt-dlp. Large, private, restricted, or rate-limited playlists may not load."
+        )
         self.youtube_playlist_help.setObjectName("fieldHelp")
         self.youtube_playlist_help.setWordWrap(True)
 
@@ -25571,6 +25604,7 @@ class ChannelSurfer(QWidget):
             progress_callback(1, 3, "Reading NetTV playlist", "Asking yt-dlp for the playlist index...")
         info = {}
         last_error = ""
+        self.nettv_last_failure_category = ""
         _cookie_args = nettv_cookie_args(self.app_settings)
         for candidate_url in youtube_playlist_candidate_urls(playlist_url):
             detail = "Reading playlist URL..." if "/playlist" in candidate_url else "Reading watch-page playlist context..."
@@ -25584,17 +25618,29 @@ class ChannelSurfer(QWidget):
                 "--socket-timeout",
                 "15",
                 "--playlist-end",
-                "250",
+                str(NETTV_PLAYLIST_MAX_ENTRIES),
                 candidate_url,
             ]
+            _nettv_log(
+                f"load_playlist  candidate={candidate_url!r}  "
+                f"entry_limit={NETTV_PLAYLIST_MAX_ENTRIES}  timeout={NETTV_PLAYLIST_INDEX_TIMEOUT_SECONDS}s"
+            )
             try:
                 result = subprocess.run(
                     command,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
-                    timeout=45,
+                    timeout=NETTV_PLAYLIST_INDEX_TIMEOUT_SECONDS,
                     text=True,
                 )
+            except subprocess.TimeoutExpired:
+                self.nettv_last_failure_category = "playlist_timeout"
+                last_error = (
+                    "NetTV took too long to read this playlist. "
+                    "Large playlists or a slow connection may need another try."
+                )
+                _nettv_log(f"load_playlist  candidate={candidate_url!r}  error=timeout")
+                continue
             except Exception as exc:
                 last_error = f"yt-dlp timed out or could not run: {exc}"
                 continue
@@ -25603,8 +25649,7 @@ class ChannelSurfer(QWidget):
                 message_lines = raw_stderr.splitlines()
                 raw_last = message_lines[-1] if message_lines else "yt-dlp could not read the NetTV playlist."
                 friendly, _is_bot = nettv_friendly_error(raw_last)
-                if _is_bot:
-                    self.nettv_last_failure_category = "bot_verification"
+                self.nettv_last_failure_category = nettv_error_category(raw_last)
                 last_error = friendly
                 _nettv_log(f"load_playlist  candidate={candidate_url!r}  error={raw_last!r}")
                 continue
@@ -25614,6 +25659,12 @@ class ChannelSurfer(QWidget):
                 last_error = "yt-dlp returned unreadable playlist data."
                 continue
             candidate_entries = candidate_info.get("entries") or []
+            _nettv_log(f"load_playlist  candidate={candidate_url!r}  indexed_entries={len(candidate_entries)}")
+            if len(candidate_entries) >= NETTV_PLAYLIST_MAX_ENTRIES:
+                _nettv_log(
+                    f"load_playlist  candidate={candidate_url!r}  "
+                    f"reached_entry_limit={NETTV_PLAYLIST_MAX_ENTRIES}"
+                )
             # Prefer a full playlist when possible, but do not reject a single exposed
             # item. Rejecting it is what makes NetTV fall into the "no playable videos"
             # path for watch-page playlist links, YouTube Mixes, or partially private

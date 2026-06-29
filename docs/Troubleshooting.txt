@@ -67,6 +67,13 @@ no content, try opening the source URL in a regular browser first,
 then restart MediaWave. Cookie-related issues may require re-authentication
 in a browser session that MediaWave can read from.
 
+NetTV is experimental and uses yt-dlp to read public YouTube playlists.
+Private or removed videos, age or region restrictions, login requirements,
+rate limiting, YouTube changes, and very large playlists can prevent entries
+from loading. MediaWave logs a failure category in Diagnostics to help narrow
+down the cause. Invidious is only a possible future backend and is not used by
+this beta.
+
 -------------------------------------------------------------------------------
 CONVERTER SAYS "VIDEO TOOLS MISSING"
 --------------------------------------

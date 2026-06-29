@@ -7,8 +7,11 @@
   external/network volumes, or the Apple Music-managed library. MediaWave does
   not request Music or Photos library access directly; these prompts come from
   macOS based on the folder you select.
-- NetTV depends on third-party websites and may stop working when those sites
-  change behavior.
+- NetTV is experimental and depends on YouTube behavior and yt-dlp. YouTube
+  changes, private or removed videos, age/region restrictions, login or cookie
+  requirements, rate limiting, and very large playlists may prevent some or all
+  entries from loading. A future pluggable backend may provide alternatives such
+  as Invidious, but this beta does not use one yet.
 - NetTV cookies and authentication are local tester configuration and are never
   included in beta packages.
 - Very large media libraries may take time to scan and generate thumbnails on
