@@ -17,6 +17,7 @@ from mediawave.nettv import (
     merge_nettv_metadata,
     nettv_uploader,
     nettv_uploader_summary,
+    next_nettv_schedule_entry,
     stream_url_expiry,
 )
 
@@ -110,6 +111,14 @@ legacy_cache_app = SimpleNamespace(
     },
 )
 check("legacy capped playlist cache refreshes once", app.ChannelSurfer.nettv_playlist_cache_needs_refresh(legacy_cache_app))
+schedule_entries = [
+    {"path": "youtube://one", "youtube_entry": {"path": "youtube://one", "title": "One"}},
+    {"path": "youtube://two", "youtube_entry": {"path": "youtube://two", "title": "Two"}},
+]
+next_entry, next_index = next_nettv_schedule_entry(schedule_entries, "youtube://one")
+check("transition helper advances to next NetTV item", next_entry.get("path") == "youtube://two" and next_index == 1, (next_entry, next_index))
+wrap_entry, wrap_index = next_nettv_schedule_entry(schedule_entries, "youtube://two")
+check("transition helper wraps only when scheduled", wrap_entry.get("path") == "youtube://one" and wrap_index == 0, (wrap_entry, wrap_index))
 
 
 print("\n--- friendly failures ---")

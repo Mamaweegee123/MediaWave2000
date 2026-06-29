@@ -78,3 +78,27 @@ def build_session_record(entry, stream_url, expires_at, schedule_position=-1, no
         "schedule_position": int(schedule_position),
         "updated_at": float(time.time() if now is None else now),
     }
+
+
+def next_nettv_schedule_entry(entries, current_path=""):
+    if not entries:
+        return {}, -1
+    current_path = str(current_path or "")
+    current_index = -1
+    for index, entry in enumerate(entries):
+        youtube_entry = entry.get("youtube_entry") or {}
+        if youtube_entry.get("path") == current_path or entry.get("path") == current_path:
+            current_index = index
+            break
+    start_index = (current_index + 1) % len(entries) if current_index >= 0 else 0
+    for step in range(len(entries)):
+        index = (start_index + step) % len(entries)
+        candidate = entries[index]
+        youtube_entry = dict(candidate.get("youtube_entry") or {})
+        if youtube_entry.get("placeholder"):
+            continue
+        youtube_entry.setdefault("path", candidate.get("path", ""))
+        youtube_entry.setdefault("title", candidate.get("title", "NetTV Video"))
+        youtube_entry.setdefault("duration", float(candidate.get("duration", 900.0) or 900.0))
+        return youtube_entry, index
+    return {}, -1

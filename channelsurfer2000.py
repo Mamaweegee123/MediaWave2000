@@ -89,6 +89,7 @@ from mediawave.nettv import (
     merge_nettv_metadata,
     nettv_uploader,
     nettv_uploader_summary,
+    next_nettv_schedule_entry,
     stream_url_expiry,
 )
 from mediawave.channel_logos import (
@@ -22495,6 +22496,14 @@ class ChannelSurfer(QWidget):
         self.nettv_prefetch_active = False
         self.nettv_prefetch_generation = 0
         self.nettv_preresolved_streams = {}
+        self.nettv_transition_waiting = False
+        self.nettv_transition_generation = 0
+        self.nettv_transition_entry = {}
+        self.nettv_transition_offset = 0.0
+        self.nettv_transition_filler_active = False
+        self.nettv_transition_filler_count = 0
+        self.nettv_transition_finished_path = ""
+        self.nettv_transition_ready = {}
         self.pending_offset = 0
         self.pending_seek_ms = 0
         self.pending_play_after_seek = False
@@ -26076,6 +26085,7 @@ class ChannelSurfer(QWidget):
         self.video_window.hide_nettv_status()
 
     def suspend_nettv_visuals(self):
+        self.clear_nettv_transition_state(clear_ready=True)
         self.nettv_audio_output.setMuted(True)
         self.nettv_waiting_for_visible_frame = False
         self.nettv_black_frame_started_at = 0.0
@@ -26649,6 +26659,8 @@ class ChannelSurfer(QWidget):
             return
 
         if getattr(ch, "channel_type", "media") == "youtube":
+            if not is_program_advance:
+                self.clear_nettv_transition_state(clear_ready=True)
             display_number = self.channel_display_number(self.current_channel, ch)
             previous_frame = self.capture_current_frame()
             self.stop_player()
@@ -26961,17 +26973,44 @@ class ChannelSurfer(QWidget):
         title = (entry or {}).get("title", "NetTV Video")
         if not stream_url:
             _nettv_log(f"stream_resolved  FAILED  title={title!r}  error={error!r}")
+            if self.nettv_transition_waiting and generation == self.nettv_transition_generation:
+                self.nettv_transition_ready = {}
+                if not self.nettv_transition_filler_active:
+                    self.show_youtube_tuning_slate(title, "NetTV is still tuning the next video...")
+                return
             self.skip_to_next_nettv_entry(error or "This NetTV video could not be cached for playback.")
             return
         self.update_youtube_entry_cache(entry)
         channel = self.current_youtube_channel()
         self.save_nettv_session(channel, entry, stream_url)
+        if self.nettv_transition_waiting and generation == self.nettv_transition_generation:
+            self.nettv_transition_ready = {
+                "entry": dict(entry or {}),
+                "stream_url": stream_url,
+                "offset": float(offset or 0),
+            }
+            self.nettv_preresolved_streams[(entry or {}).get("path", "")] = {
+                "entry": dict(entry or {}),
+                "stream_url": stream_url,
+                "expires_at": time.time() + 86400 if os.path.isfile(stream_url) else stream_url_expiry(stream_url),
+            }
+            if self.nettv_transition_filler_active:
+                _nettv_log(f"next stream ready during filler  title={title!r}")
+                return
+            self.start_ready_nettv_transition()
+            return
         actual_duration = float((entry or {}).get("duration") or 0)
         selected_at = float((entry or {}).get("_nettv_selected_at") or time.time())
         effective_offset = max(0.0, float(offset or 0) + max(0.0, time.time() - selected_at))
         if actual_duration > 0 and effective_offset >= max(0.0, actual_duration - 2.0):
             self.play_channel(with_transition=False, show_channel_overlay=False)
             return
+        self.start_nettv_stream(entry, stream_url, effective_offset)
+
+    def start_nettv_stream(self, entry, stream_url, effective_offset=0.0):
+        title = (entry or {}).get("title", "NetTV Video")
+        self.nettv_transition_filler_active = False
+        self.current_youtube_user_path = (entry or {}).get("path", self.current_youtube_user_path)
         offset_ms = int(effective_offset * 1000)
         self.nettv_pending_seek_ms = offset_ms
         self.nettv_pending_play_after_seek = True
@@ -26996,6 +27035,154 @@ class ChannelSurfer(QWidget):
             self.nettv_player.setSource(QUrl(stream_url))
         self.status.setText(f"NetTV\n{title}")
         self.queue_nettv_prefetch(entry)
+
+    def clear_nettv_transition_state(self, clear_ready=True):
+        self.nettv_transition_waiting = False
+        self.nettv_transition_entry = {}
+        self.nettv_transition_offset = 0.0
+        self.nettv_transition_filler_active = False
+        self.nettv_transition_filler_count = 0
+        self.nettv_transition_finished_path = ""
+        if clear_ready:
+            self.nettv_transition_ready = {}
+
+    def start_ready_nettv_transition(self):
+        ready = dict(self.nettv_transition_ready or {})
+        entry = dict(ready.get("entry") or self.nettv_transition_entry or {})
+        stream_url = ready.get("stream_url", "")
+        offset = float(ready.get("offset", self.nettv_transition_offset) or 0)
+        if not entry or not stream_url:
+            return False
+        _nettv_log(f"transition start next  title={entry.get('title')!r}")
+        self.clear_nettv_transition_state(clear_ready=True)
+        self.start_nettv_stream(entry, stream_url, offset)
+        return True
+
+    def nettv_transition_filler_asset(self):
+        channel = self.current_youtube_channel()
+        if channel is None:
+            return None
+        profile = self.resolve_channel_commercial_profile(channel.name)
+        if not profile.get("enabled"):
+            return None
+        if not self.load_or_refresh_commercial_library(force_rescan=False):
+            return None
+        candidates = self.resolve_commercial_candidates(profile, desired_kind="commercial")
+        if not candidates:
+            return None
+        seed = stable_hash(
+            f"nettv-transition|{channel.name}|{self.nettv_transition_finished_path}|"
+            f"{(self.nettv_transition_entry or {}).get('path', '')}|{self.nettv_transition_filler_count}"
+        )
+        return random.Random(seed).choice(candidates)
+
+    def start_nettv_transition_filler(self):
+        if self.nettv_transition_filler_count >= 3:
+            _nettv_log("filler unavailable  reason='max filler clips reached'")
+            return False
+        asset = self.nettv_transition_filler_asset()
+        if not asset:
+            _nettv_log("filler unavailable  reason='no commercial asset available'")
+            return False
+        channel = self.current_youtube_channel()
+        self.nettv_transition_filler_count += 1
+        filler_entry = self.build_commercial_entry(
+            asset,
+            getattr(channel, "name", "NetTV"),
+            "NetTV Loading Break",
+            parent_context={
+                "title": (self.nettv_transition_entry or {}).get("title", "Next NetTV Video"),
+                "path": (self.nettv_transition_entry or {}).get("path", ""),
+                "slot_title": "NetTV Loading Break",
+            },
+        )
+        self.nettv_transition_filler_active = True
+        self.nettv_waiting_for_visible_frame = False
+        self.nettv_visible_frame_seen = False
+        self.nettv_black_frame_started_at = 0.0
+        self.nettv_playing_entry = dict(filler_entry)
+        self.nettv_current_title = filler_entry.get("title", "Commercial Break")
+        self.nettv_current_message = "NetTV is preparing the next video."
+        self.nettv_loaded_entry_path = filler_entry.get("path", "")
+        self.nettv_loaded_stream_url = filler_entry.get("path", "")
+        self.nettv_pending_seek_ms = 0
+        self.nettv_pending_play_after_seek = False
+        self.reset_live_playback_health(filler_entry.get("path", ""))
+        self.nettv_audio_output.setMuted(self.current_youtube_channel() is None)
+        self.nettv_player.setPlaybackRate(1.0)
+        self.nettv_player.stop()
+        self.nettv_player.setSource(QUrl.fromLocalFile(filler_entry.get("path", "")))
+        _nettv_log(
+            "filler break started  "
+            f"title={filler_entry.get('title')!r} duration={float(filler_entry.get('duration', 0) or 0):.1f}s"
+        )
+        self.status.setText(
+            f"NetTV Loading Break\n{filler_entry.get('title', 'Commercial Break')}\n"
+            "Preparing the next playlist video."
+        )
+        return True
+
+    def begin_nettv_transition_to_next(self, reason="ended"):
+        channel = self.current_youtube_channel()
+        if channel is None:
+            return
+        entries = channel.get_schedule_entries()
+        current_path = self.nettv_loaded_entry_path or (self.nettv_playing_entry or {}).get("path") or self.current_youtube_user_path
+        next_entry, next_index = next_nettv_schedule_entry(entries, current_path)
+        if not next_entry:
+            self.show_youtube_tuning_slate("NetTV", "No scheduled entries available.")
+            return
+        if next_entry.get("path") == current_path and len(entries) > 1:
+            _nettv_log(f"previous stream rejected as stale  path={current_path!r}")
+            self.show_youtube_tuning_slate("NetTV", "Tuning next available video...")
+            return
+
+        next_entry["_nettv_selected_at"] = time.time()
+        next_entry["_nettv_selected_offset"] = 0.0
+        next_entry["_nettv_cached_at_tune"] = bool(cached_youtube_video_path(next_entry) or self.cached_nettv_direct_stream(next_entry))
+        self.nettv_transition_waiting = True
+        self.nettv_transition_entry = dict(next_entry)
+        self.nettv_transition_offset = 0.0
+        self.nettv_transition_filler_active = False
+        self.nettv_transition_filler_count = 0
+        self.nettv_transition_finished_path = current_path
+        self.nettv_transition_ready = {}
+        self.youtube_stream_generation += 1
+        self.nettv_transition_generation = self.youtube_stream_generation
+        self.current_youtube_user_path = next_entry.get("path", "")
+        self.nettv_playing_entry = dict(next_entry)
+        self.nettv_current_title = next_entry.get("title", "NetTV Video")
+        _nettv_log(
+            "transition waiting  "
+            f"reason={reason!r} finished_path={current_path!r} next_index={next_index} "
+            f"next_title={next_entry.get('title')!r}"
+        )
+
+        prepared = dict(self.nettv_preresolved_streams.get(next_entry.get("path", "")) or {})
+        prepared_url = prepared.get("stream_url", "")
+        if prepared_url and (os.path.isfile(prepared_url) or cached_stream_url(prepared)):
+            prepared_entry = merge_nettv_metadata(next_entry, prepared.get("entry") or {})
+            _nettv_log(f"preload cache hit  title={prepared_entry.get('title')!r}")
+            self.nettv_transition_ready = {
+                "entry": prepared_entry,
+                "stream_url": prepared_url,
+                "offset": 0.0,
+            }
+            self.start_ready_nettv_transition()
+            return
+
+        generation = self.nettv_transition_generation
+
+        def worker():
+            stream_url, error = self.resolve_youtube_stream_url(next_entry)
+            self.youtubeStreamResolved.emit(generation, next_entry, stream_url, error, 0.0)
+
+        threading.Thread(target=worker, daemon=True).start()
+        if not self.start_nettv_transition_filler():
+            self.show_youtube_tuning_slate(
+                next_entry.get("title", "NetTV Video"),
+                "Tuning next playlist video...",
+            )
 
     def queue_nettv_prefetch(self, current_entry=None, count=2):
         channel = self.current_youtube_channel()
@@ -27471,11 +27658,25 @@ class ChannelSurfer(QWidget):
             return
 
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
+            if self.nettv_transition_filler_active:
+                self.nettv_transition_filler_active = False
+                self.nettv_loaded_entry_path = ""
+                self.nettv_loaded_stream_url = ""
+                self.nettv_last_frame = QPixmap()
+                if self.current_youtube_channel() is not None:
+                    if self.start_ready_nettv_transition():
+                        return
+                    if self.nettv_transition_waiting and self.start_nettv_transition_filler():
+                        return
+                    if self.nettv_transition_waiting:
+                        title = (self.nettv_transition_entry or {}).get("title", "NetTV Video")
+                        self.show_youtube_tuning_slate(title, "NetTV is still tuning the next video...")
+                return
             self.nettv_loaded_entry_path = ""
             self.nettv_loaded_stream_url = ""
             self.nettv_last_frame = QPixmap()
             if self.current_youtube_channel() is not None:
-                self.play_channel(with_transition=False, show_channel_overlay=False)
+                self.begin_nettv_transition_to_next(reason="end_of_media")
             return
 
         if status in (
