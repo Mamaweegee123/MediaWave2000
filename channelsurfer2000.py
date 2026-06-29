@@ -79,6 +79,14 @@ from mediawave.scheduling import (
     remove_path_from_schedule,
 )
 from mediawave.playback_state import active_playback_path, media_paths_match, tune_context_matches
+from mediawave.nettv import (
+    build_session_record,
+    cached_stream_url,
+    merge_nettv_metadata,
+    nettv_uploader,
+    nettv_uploader_summary,
+    stream_url_expiry,
+)
 from mediawave.channel_logos import (
     CHANNEL_BUG_CORNER_OPTIONS,
     CHANNEL_BUG_DURATION_OPTIONS,
@@ -2212,7 +2220,7 @@ def resolve_ytdlp_command():
 
 YTDLP_COMMAND = resolve_ytdlp_command()
 YOUTUBE_CACHE_VERSION = "nettv-h264-v3"
-NETTV_PLAYLIST_MAX_ENTRIES = 1000
+NETTV_PLAYLIST_MAX_ENTRIES = 10000
 NETTV_PLAYLIST_INDEX_TIMEOUT_SECONDS = 120
 
 # Browsers supported for --cookies-from-browser.
@@ -2377,6 +2385,7 @@ def normalize_youtube_playlist_entries(info, playlist_source):
                 "title": title,
                 "duration": max(30.0, duration),
                 "thumbnail": entry.get("thumbnail") or "",
+                "uploader": nettv_uploader(entry),
             }
         )
     return entries
@@ -5999,6 +6008,7 @@ class YouTubePlaylistChannel(Channel):
                     "title": title,
                     "duration": max(30.0, duration),
                     "thumbnail": entry.get("thumbnail") or "",
+                    "uploader": nettv_uploader(entry),
                 }
             )
         if not normalized:
@@ -6010,6 +6020,7 @@ class YouTubePlaylistChannel(Channel):
                     "title": "NetTV",
                     "duration": 900.0,
                     "thumbnail": "",
+                    "uploader": "",
                     "placeholder": True,
                 }
             ]
@@ -22060,8 +22071,9 @@ class ChannelSurfer(QWidget):
         airing_rules_diagnostics(self.airing_rules_config)
         self.youtube_playlist_cache_state = load_json_file(
             YOUTUBE_PLAYLIST_CACHE_FILE,
-            {"playlists": {}, "streams": {}},
+            {"playlists": {}, "streams": {}, "sessions": {}},
         )
+        self.youtube_playlist_cache_state.setdefault("sessions", {})
         self.last_nettv_error = ""
         self.nettv_last_failure_category = ""
         self.alert_manager = MediaWaveAlertManager()
@@ -22455,6 +22467,7 @@ class ChannelSurfer(QWidget):
         self.nettv_pending_play_after_seek = False
         self.nettv_prefetch_active = False
         self.nettv_prefetch_generation = 0
+        self.nettv_preresolved_streams = {}
         self.pending_offset = 0
         self.pending_seek_ms = 0
         self.pending_play_after_seek = False
@@ -23653,7 +23666,12 @@ class ChannelSurfer(QWidget):
             playlist = (self.youtube_playlist_cache_state.get("playlists") or {}).get(key) or {}
             entries = playlist.get("entries") or []
             updated_at = float(playlist.get("updated_at", 0) or 0)
-        return not entries or time.time() - updated_at >= 6 * 3600
+            index_limit = int(playlist.get("index_limit", 0) or 0)
+        return (
+            not entries
+            or index_limit < NETTV_PLAYLIST_MAX_ENTRIES
+            or time.time() - updated_at >= 6 * 3600
+        )
 
     def begin_nettv_progress(self):
         self.catalog_btn.setEnabled(False)
@@ -25602,7 +25620,14 @@ class ChannelSurfer(QWidget):
             playlist_cache = (self.youtube_playlist_cache_state.get("playlists") or {}).get(key) or {}
             cached_entries = playlist_cache.get("entries") or []
             updated_at = float(playlist_cache.get("updated_at", 0) or 0)
-        if cached_entries and not force and time.time() - updated_at < 6 * 3600 and (not requires_playlist or len(cached_entries) > 1):
+            cached_index_limit = int(playlist_cache.get("index_limit", 0) or 0)
+        if (
+            cached_entries
+            and not force
+            and cached_index_limit >= NETTV_PLAYLIST_MAX_ENTRIES
+            and time.time() - updated_at < 6 * 3600
+            and (not requires_playlist or len(cached_entries) > 1)
+        ):
             self.last_nettv_error = ""
             self.nettv_last_failure_category = ""
             _nettv_log(f"load_playlist  key={key!r}  source=cache  entries={len(cached_entries)}")
@@ -25720,6 +25745,7 @@ class ChannelSurfer(QWidget):
                 "playlist_url": playlist_source_url,
                 "title": info.get("title") or "NetTV",
                 "updated_at": time.time(),
+                "index_limit": NETTV_PLAYLIST_MAX_ENTRIES,
                 "entries": entries,
             }
             save_json_file(YOUTUBE_PLAYLIST_CACHE_FILE, self.youtube_playlist_cache_state)
@@ -25737,17 +25763,90 @@ class ChannelSurfer(QWidget):
             return "", "This playlist item does not have a playable video URL."
         cached_video = cached_youtube_video_path(entry)
         if cached_video:
-            _nettv_log(f"resolve_stream  title={entry.get('title')!r}  source=local-cache  path={cached_video!r}")
+            _nettv_log(f"cache hit  title={entry.get('title')!r}  source=local-file  path={cached_video!r}")
             return cached_video, ""
         if not YTDLP_COMMAND:
             _nettv_log(f"resolve_stream  title={entry.get('title')!r}  FAILED: yt-dlp not available")
             return "", "yt-dlp is not available, so MediaWave cannot resolve NetTV playlist videos yet."
 
-        output_template = youtube_download_template(entry)
         cache_key = youtube_video_cache_key(entry)
+        with self.youtube_cache_lock:
+            stream_record = dict((self.youtube_playlist_cache_state.get("streams") or {}).get(cache_key) or {})
+        if not entry.get("_nettv_refresh_stream") and not entry.get("_nettv_force_progressive"):
+            reusable_url = cached_stream_url(stream_record)
+            if reusable_url:
+                entry.update(merge_nettv_metadata(entry, stream_record))
+                _nettv_log(f"cache hit  title={entry.get('title')!r}  source=stream-url")
+                return reusable_url, ""
+            if stream_record.get("stream_url"):
+                _nettv_log(f"stream expired  title={entry.get('title')!r}")
+        else:
+            _nettv_log(f"cache miss  title={entry.get('title')!r}  reason=forced-refresh")
+
+        _cookie_args = nettv_cookie_args(self.app_settings)
+        resolve_command = YTDLP_COMMAND + _cookie_args + [
+            "--no-playlist",
+            "--no-warnings",
+            "--ignore-config",
+            "--format",
+            YOUTUBE_PROGRESSIVE_DOWNLOAD_FORMAT,
+            "--dump-single-json",
+            "--socket-timeout",
+            "15",
+            video_url,
+        ]
+        if entry.get("_nettv_force_progressive"):
+            resolved = None
+            _nettv_log(f"fallback to current resolver  title={entry.get('title')!r}  reason=compatibility-retry")
+        else:
+            _nettv_log(f"cache miss  title={entry.get('title')!r}  resolving direct stream")
+            try:
+                resolved = subprocess.run(
+                    resolve_command,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    timeout=90,
+                    text=True,
+                )
+            except Exception as exc:
+                resolved = None
+                _nettv_log(f"fallback to current resolver  title={entry.get('title')!r}  direct_error={exc!r}")
+        if resolved is not None and resolved.returncode == 0 and resolved.stdout.strip():
+            try:
+                resolved_info = json.loads(resolved.stdout)
+            except json.JSONDecodeError:
+                resolved_info = {}
+            direct_url = select_youtube_stream_url(resolved_info)
+            if direct_url:
+                entry.update(merge_nettv_metadata(entry, resolved_info))
+                expires_at = stream_url_expiry(direct_url)
+                with self.youtube_cache_lock:
+                    streams = self.youtube_playlist_cache_state.setdefault("streams", {})
+                    streams[cache_key] = {
+                        "source_url": video_url,
+                        "stream_url": direct_url,
+                        "expires_at": expires_at,
+                        "id": entry.get("id", ""),
+                        "title": entry.get("title", "NetTV Video"),
+                        "uploader": nettv_uploader(entry),
+                        "duration": entry.get("duration", 900.0),
+                        "thumbnail": entry.get("thumbnail", ""),
+                        "cache_version": YOUTUBE_CACHE_VERSION,
+                        "updated_at": time.time(),
+                    }
+                    save_json_file(YOUTUBE_PLAYLIST_CACHE_FILE, self.youtube_playlist_cache_state)
+                _nettv_log(f"resolve_stream  title={entry.get('title')!r}  source=direct-stream  expires_at={expires_at:.0f}")
+                return direct_url, ""
+        elif resolved is not None:
+            raw_error = (resolved.stderr or "").strip().splitlines()
+            _nettv_log(
+                f"fallback to current resolver  title={entry.get('title')!r}  "
+                f"direct_error={(raw_error[-1] if raw_error else 'no stream URL')!r}"
+            )
+
+        output_template = youtube_download_template(entry)
         result = None
         last_exception = None
-        _cookie_args = nettv_cookie_args(self.app_settings)
         format_selectors = (YOUTUBE_PROGRESSIVE_DOWNLOAD_FORMAT,) if entry.get("_nettv_force_progressive") else (YOUTUBE_DOWNLOAD_FORMAT, YOUTUBE_PROGRESSIVE_DOWNLOAD_FORMAT)
         for format_selector in format_selectors:
             command = YTDLP_COMMAND + _cookie_args + [
@@ -25801,6 +25900,7 @@ class ChannelSurfer(QWidget):
                 "source_url": video_url,
                 "local_path": downloaded_path,
                 "title": entry.get("title", "NetTV Video"),
+                "uploader": nettv_uploader(entry),
                 "duration": entry.get("duration", 900.0),
                 "quality": "1080p preferred",
                 "cache_version": YOUTUBE_CACHE_VERSION,
@@ -25809,6 +25909,50 @@ class ChannelSurfer(QWidget):
             save_json_file(YOUTUBE_PLAYLIST_CACHE_FILE, self.youtube_playlist_cache_state)
         _nettv_log(f"resolve_stream  title={entry.get('title')!r}  OK  path={downloaded_path!r}")
         return downloaded_path, ""
+
+    def cached_nettv_session_entry(self, channel, path):
+        playlist_key = getattr(channel, "playlist_key", "")
+        with self.youtube_cache_lock:
+            session = dict((self.youtube_playlist_cache_state.get("sessions") or {}).get(playlist_key) or {})
+        if session.get("path") != path:
+            return {}
+        entry = dict(session.get("entry") or {})
+        if entry:
+            _nettv_log(
+                f"session cache hit  key={playlist_key!r}  position={session.get('schedule_position', -1)}  "
+                f"title={entry.get('title')!r}"
+            )
+        return entry
+
+    def cached_nettv_direct_stream(self, entry):
+        cache_key = youtube_video_cache_key(entry)
+        with self.youtube_cache_lock:
+            record = dict((self.youtube_playlist_cache_state.get("streams") or {}).get(cache_key) or {})
+        return cached_stream_url(record)
+
+    def save_nettv_session(self, channel, entry, stream_url):
+        if channel is None or not isinstance(entry, dict):
+            return
+        entries = channel.get_schedule_entries()
+        entry_path = entry.get("path", "")
+        schedule_position = next(
+            (
+                index
+                for index, schedule_entry in enumerate(entries)
+                if (schedule_entry.get("youtube_entry") or {}).get("path") == entry_path
+            ),
+            -1,
+        )
+        expires_at = stream_url_expiry(stream_url) if stream_url and not os.path.isfile(stream_url) else time.time() + 86400
+        record = build_session_record(entry, stream_url, expires_at, schedule_position)
+        with self.youtube_cache_lock:
+            sessions = self.youtube_playlist_cache_state.setdefault("sessions", {})
+            sessions[channel.playlist_key] = record
+            save_json_file(YOUTUBE_PLAYLIST_CACHE_FILE, self.youtube_playlist_cache_state)
+        _nettv_log(
+            f"session cache saved  key={channel.playlist_key!r}  position={schedule_position}  "
+            f"title={entry.get('title')!r}"
+        )
 
     def find_youtube_entry_by_path(self, path):
         if not isinstance(path, str) or not path.startswith("youtube://"):
@@ -25881,7 +26025,7 @@ class ChannelSurfer(QWidget):
                     if not isinstance(cached, dict) or cached.get("path") != path:
                         continue
                     merged = dict(cached)
-                    for key in ("title", "duration", "thumbnail", "url", "id"):
+                    for key in ("title", "duration", "thumbnail", "url", "id", "uploader"):
                         if entry.get(key):
                             merged[key] = entry[key]
                     entries[index] = merged
@@ -25896,7 +26040,7 @@ class ChannelSurfer(QWidget):
             for cached in getattr(channel, "entries", []):
                 if cached.get("path") == path:
                     merged = dict(cached)
-                    for key in ("title", "duration", "thumbnail", "url", "id"):
+                    for key in ("title", "duration", "thumbnail", "url", "id", "uploader"):
                         if entry.get(key):
                             merged[key] = entry[key]
                     updated_entries.append(merged)
@@ -26484,11 +26628,17 @@ class ChannelSurfer(QWidget):
                 )
                 return
 
+            session_entry = self.cached_nettv_session_entry(ch, youtube_entry.get("path", ""))
+            if session_entry:
+                youtube_entry = merge_nettv_metadata(youtube_entry, session_entry)
+
             if self.video_window.guide_overlay.isVisible():
                 self.refresh_guide()
 
             entry_path = youtube_entry.get("path", "")
             cached_video = cached_youtube_video_path(youtube_entry)
+            cached_direct_stream = self.cached_nettv_direct_stream(youtube_entry)
+            cached_at_tune = bool(cached_video or cached_direct_stream)
             can_resume_live_nettv = (
                 entry_path
                 and entry_path == self.nettv_loaded_entry_path
@@ -26502,7 +26652,7 @@ class ChannelSurfer(QWidget):
                 self.current_youtube_user_path = entry_path
                 self.nettv_audio_output.setMuted(False)
                 self.nettv_current_title = youtube_entry.get("title", self.nettv_current_title or "NetTV video")
-                self.nettv_current_message = f"Uploaded by {ch.name}"
+                self.nettv_current_message = nettv_uploader_summary(youtube_entry)
                 if not self.nettv_last_frame.isNull():
                     self.last_video_frame = self.nettv_last_frame
                     self.video_window.video_surface.set_frame(self.nettv_last_frame)
@@ -26532,20 +26682,20 @@ class ChannelSurfer(QWidget):
             self.pending_youtube_entry = youtube_entry
             self.pending_youtube_entry["_nettv_selected_at"] = time.time()
             self.pending_youtube_entry["_nettv_selected_offset"] = float(offset or 0)
-            self.pending_youtube_entry["_nettv_cached_at_tune"] = bool(cached_video)
+            self.pending_youtube_entry["_nettv_cached_at_tune"] = cached_at_tune
             self.pending_offset = offset
             self.nettv_playing_entry = dict(youtube_entry)
             self.nettv_playing_started_at = time.time()
             self.nettv_playing_offset = float(offset or 0)
             self.nettv_current_title = youtube_entry.get("title", "NetTV video")
-            self.nettv_current_message = "Resuming cached NetTV feed..." if cached_video else "Caching video for reliable playback..."
+            self.nettv_current_message = "Resuming cached NetTV feed..." if cached_at_tune else "Refreshing NetTV stream..."
             self.nettv_waiting_for_visible_frame = True
             self.nettv_visible_frame_seen = False
             self.nettv_waiting_started_at = time.time()
             self.nettv_black_frame_started_at = 0.0
             self.show_youtube_tuning_slate(
                 youtube_entry.get("title", "NetTV video"),
-                "Tuning cached NetTV feed..." if cached_video else "Caching video for reliable playback...",
+                "Tuning cached NetTV feed..." if cached_at_tune else "Refreshing NetTV stream...",
             )
             self.status.setText(
                 f"Channel {display_number}/{len(self.channels)}: "
@@ -26635,8 +26785,20 @@ class ChannelSurfer(QWidget):
             self.youtube_stream_generation += 1
             generation = self.youtube_stream_generation
             self.current_youtube_user_path = entry.get("path", "")
-            self.status.setText(f"Caching NetTV video for playback...\n{entry.get('title', 'NetTV Video')}")
+            self.status.setText(f"Preparing NetTV video...\n{entry.get('title', 'NetTV Video')}")
             self.video_window.hide_special_views()
+
+            prepared = dict(self.nettv_preresolved_streams.get(entry.get("path", "")) or {})
+            prepared_url = prepared.get("stream_url", "")
+            if prepared_url and (
+                os.path.isfile(prepared_url)
+                or cached_stream_url(prepared)
+            ):
+                prepared_entry = merge_nettv_metadata(entry, prepared.get("entry") or {})
+                _nettv_log(f"preload cache hit  title={prepared_entry.get('title')!r}")
+                self.youtubeStreamResolved.emit(generation, prepared_entry, prepared_url, "", offset)
+                return
+            _nettv_log(f"fallback to current resolver  title={entry.get('title')!r}")
 
             def worker():
                 stream_url, error = self.resolve_youtube_stream_url(entry)
@@ -26734,6 +26896,8 @@ class ChannelSurfer(QWidget):
             self.skip_to_next_nettv_entry(error or "This NetTV video could not be cached for playback.")
             return
         self.update_youtube_entry_cache(entry)
+        channel = self.current_youtube_channel()
+        self.save_nettv_session(channel, entry, stream_url)
         actual_duration = float((entry or {}).get("duration") or 0)
         selected_at = float((entry or {}).get("_nettv_selected_at") or time.time())
         effective_offset = max(0.0, float(offset or 0) + max(0.0, time.time() - selected_at))
@@ -26789,6 +26953,9 @@ class ChannelSurfer(QWidget):
                 continue
             if cached_youtube_video_path(youtube_entry):
                 continue
+            prepared = self.nettv_preresolved_streams.get(youtube_entry.get("path", "")) or {}
+            if prepared.get("stream_url") and cached_stream_url(prepared):
+                continue
             prefetch_entries.append(youtube_entry)
         if not prefetch_entries:
             return
@@ -26802,7 +26969,24 @@ class ChannelSurfer(QWidget):
                 for entry in prefetch_entries:
                     if generation != self.nettv_prefetch_generation:
                         break
-                    self.resolve_youtube_stream_url(entry)
+                    _nettv_log(f"preload started  title={entry.get('title')!r}")
+                    stream_url, error = self.resolve_youtube_stream_url(entry)
+                    if generation != self.nettv_prefetch_generation:
+                        break
+                    if stream_url:
+                        expires_at = (
+                            time.time() + 86400
+                            if os.path.isfile(stream_url)
+                            else stream_url_expiry(stream_url)
+                        )
+                        self.nettv_preresolved_streams[entry.get("path", "")] = {
+                            "entry": dict(entry),
+                            "stream_url": stream_url,
+                            "expires_at": expires_at,
+                        }
+                        _nettv_log(f"preload succeeded  title={entry.get('title')!r}")
+                    else:
+                        _nettv_log(f"preload failed  title={entry.get('title')!r}  error={error!r}")
             finally:
                 self.nettv_prefetch_active = False
 
@@ -26822,6 +27006,7 @@ class ChannelSurfer(QWidget):
                 pass
         current_position = max(0.0, self.nettv_player.position() / 1000.0)
         entry["_nettv_force_progressive"] = True
+        entry["_nettv_refresh_stream"] = True
         entry["_nettv_selected_at"] = time.time()
         entry["_nettv_selected_offset"] = current_position or self.nettv_playing_offset
         entry["_nettv_cached_at_tune"] = False
@@ -29377,7 +29562,7 @@ class ChannelSurfer(QWidget):
             else:
                 elapsed = 0.0
             remaining = max(0.0, duration - elapsed)
-            summary = f"Uploaded by {channel.name}"
+            summary = nettv_uploader_summary(entry)
             if self.nettv_waiting_for_visible_frame:
                 summary = self.nettv_current_message or "NetTV is preparing this playlist video."
             return {
