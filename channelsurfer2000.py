@@ -75,6 +75,7 @@ from mediawave.scheduling import (
     ordered_channel_lineup,
     remove_path_from_schedule,
 )
+from mediawave.playback_state import active_playback_path, media_paths_match, tune_context_matches
 from mediawave.channel_logos import (
     CHANNEL_BUG_CORNER_OPTIONS,
     CHANNEL_BUG_DURATION_OPTIONS,
@@ -22481,6 +22482,11 @@ class ChannelSurfer(QWidget):
         self.live_stall_last_advance_at = 0.0
         self.live_stall_checks_started_at = 0.0
         self.local_tune_started_at = 0.0
+        self.local_tune_generation = 0
+        self.pending_video_context = {}
+        self.expected_live_media_path = ""
+        self.active_live_media_path = ""
+        self.last_playback_path_mismatch = ""
         self.live_stall_failures = {}
         self.radiowave_bands = [0.0] * 24
         self.radiowave_cached_art_path = ""
@@ -26579,6 +26585,15 @@ class ChannelSurfer(QWidget):
         )
 
         self.pending_video = video
+        self.local_tune_generation += 1
+        self.expected_live_media_path = video
+        self.pending_video_context = {
+            "generation": self.local_tune_generation,
+            "channel_index": self.current_channel,
+            "channel_object_id": id(ch),
+            "channel_name": ch.name,
+            "path": video,
+        }
         self.pending_video_is_url = False
         self.pending_offset = offset
         self.channel_switch_timer.start(165 if with_transition else 10)
@@ -26624,15 +26639,33 @@ class ChannelSurfer(QWidget):
             return
 
         video = self.pending_video
+        context = dict(self.pending_video_context or {})
         offset_ms = int(self.pending_offset * 1000)
         is_url = bool(self.pending_video_is_url)
         self.pending_video = None
+        self.pending_video_context = {}
         self.pending_video_is_url = False
         self.pending_offset = 0
+
+        current_channel = self.channels[self.current_channel] if self.channels else None
+        if not tune_context_matches(
+            context,
+            self.local_tune_generation,
+            self.current_channel,
+            current_channel,
+            video,
+        ):
+            print(
+                "[Playback][warn] Rejected stale channel tune "
+                f"context={context!r} current_channel={getattr(current_channel, 'name', '')!r} path={video!r}",
+                flush=True,
+            )
+            return
 
         self.pending_seek_ms = offset_ms
         self.pending_play_after_seek = True
         self.local_tune_started_at = time.monotonic()
+        self.active_live_media_path = video
         self.reset_live_playback_health(video)
         self.media_player.setPlaybackRate(1.0)
         self.media_player.stop()
@@ -27067,6 +27100,17 @@ class ChannelSurfer(QWidget):
             if not self.pending_play_after_seek:
                 return
 
+            actual_path = self.media_player.source().toLocalFile()
+            if self.playback_mode == "live" and not media_paths_match(actual_path, self.expected_live_media_path):
+                print(
+                    "[Playback][error] Refusing loaded media that does not match the active tune "
+                    f"expected={self.expected_live_media_path!r} actual={actual_path!r}",
+                    flush=True,
+                )
+                self.pending_play_after_seek = False
+                self.media_player.stop()
+                return
+
             target = self.pending_seek_ms
             self.pending_seek_ms = 0
             self.pending_play_after_seek = False
@@ -27269,6 +27313,21 @@ class ChannelSurfer(QWidget):
             return
         if self.playback_mode == "live" and self.playback_event_is_in_tune_grace(0.35):
             return
+
+        current_channel = self.channels[self.current_channel] if self.channels else None
+        if current_channel is not None and getattr(current_channel, "channel_type", "media") == "media":
+            actual_path = self.media_player.source().toLocalFile()
+            expected_path = self.expected_live_media_path
+            if not expected_path or not media_paths_match(actual_path, expected_path):
+                mismatch = f"{expected_path}|{actual_path}"
+                if mismatch != self.last_playback_path_mismatch:
+                    self.last_playback_path_mismatch = mismatch
+                    print(
+                        "[Playback][error] Dropped stale video frame "
+                        f"channel={current_channel.name!r} expected={expected_path!r} actual={actual_path!r}",
+                        flush=True,
+                    )
+                return
 
         # Vault never shows a live preview, so skip all per-frame work while it
         # covers the screen. Guide does show a live preview, so its sinks stay
@@ -29329,14 +29388,46 @@ class ChannelSurfer(QWidget):
         info = channel.get_now_next()
         if not info:
             return None
-        metadata = self.get_program_metadata(info["current_path"])
+        scheduled_path = info["current_path"]
+        source_path = self.media_player.source().toLocalFile()
+        accepted_source_path = (
+            source_path
+            if media_paths_match(source_path, self.expected_live_media_path)
+            else ""
+        )
+        playback_path = active_playback_path(
+            accepted_source_path or self.active_live_media_path,
+            self.expected_live_media_path,
+            scheduled_path,
+        )
+        metadata = self.get_program_metadata(playback_path)
         now = time.time()
-        duration = max(1.0, info["current_end"] - info["current_start"])
-        elapsed = max(0.0, min(duration, now - info["current_start"]))
-        remaining = max(0.0, info["current_end"] - now)
+        playback_matches_schedule = media_paths_match(playback_path, scheduled_path)
+        if playback_matches_schedule:
+            duration = max(1.0, info["current_end"] - info["current_start"])
+            elapsed = max(0.0, min(duration, now - info["current_start"]))
+            remaining = max(0.0, info["current_end"] - now)
+            program_start = info["current_start"]
+            program_end = info["current_end"]
+        else:
+            mismatch = f"timeline:{scheduled_path}|{playback_path}"
+            if mismatch != self.last_playback_path_mismatch:
+                self.last_playback_path_mismatch = mismatch
+                print(
+                    "[Playback][warn] Schedule metadata path differs from accepted playback path "
+                    f"channel={channel.name!r} scheduled={scheduled_path!r} playing={playback_path!r}",
+                    flush=True,
+                )
+            duration = max(1.0, self.media_player.duration() / 1000.0)
+            elapsed = max(0.0, min(duration, self.media_player.position() / 1000.0))
+            remaining = max(0.0, duration - elapsed)
+            program_start = now - elapsed
+            program_end = now + remaining
         current_entry = info.get("current_entry", {}) if isinstance(info.get("current_entry"), dict) else {}
+        if not playback_matches_schedule:
+            current_entry = {}
         if current_entry.get("is_commercial") or current_entry.get("kind") in {"commercial", "promo", "bumper", "station_id"}:
-            parent_path = schedule_entry_user_path(current_entry, info["current_path"])
+            parent_path = schedule_entry_user_path(current_entry, playback_path)
             parent_title = schedule_entry_user_title(current_entry, info["current_title"], parent_path)
             parent_show_name = current_entry.get("parent_show_name") or metadata.get("show_name", parent_title)
             parent_summary = schedule_entry_user_summary(current_entry, metadata.get("detail_summary") or self.build_guide_summary(channel.name, parent_title))
@@ -29347,8 +29438,8 @@ class ChannelSurfer(QWidget):
                 "title": parent_title,
                 "show_name": parent_show_name,
                 "summary": parent_summary,
-                "start": info["current_start"],
-                "end": info["current_end"],
+                "start": program_start,
+                "end": program_end,
                 "elapsed": elapsed,
                 "remaining": remaining,
                 "duration": duration,
@@ -29357,12 +29448,12 @@ class ChannelSurfer(QWidget):
         return {
             "channel_number": self.channel_display_number(self.current_channel, channel),
             "channel_name": channel.name,
-            "path": info["current_path"],
+            "path": playback_path,
             "title": metadata.get("detail_title", info["current_title"]),
             "show_name": metadata.get("show_name", info["current_title"]),
             "summary": metadata.get("detail_summary") or self.build_guide_summary(channel.name, info["current_title"]),
-            "start": info["current_start"],
-            "end": info["current_end"],
+            "start": program_start,
+            "end": program_end,
             "elapsed": elapsed,
             "remaining": remaining,
             "duration": duration,
@@ -30922,10 +31013,12 @@ class ChannelSurfer(QWidget):
         self.seek_repeat_timer.stop()
         self.youtube_stream_generation += 1
         self.youtube_playlist_generation += 1
+        self.local_tune_generation += 1
         self.nettv_prefetch_generation += 1
         self.nettv_prefetch_active = False
         self.seek_hold_direction = 0
         self.pending_video = None
+        self.pending_video_context = {}
         self.pending_weather_url = None
         self.pending_weather_name = ""
         self.pending_weather_location = ""
@@ -30943,6 +31036,8 @@ class ChannelSurfer(QWidget):
         self.live_stall_last_advance_at = 0.0
         self.live_stall_checks_started_at = 0.0
         self.local_tune_started_at = 0.0
+        self.expected_live_media_path = ""
+        self.active_live_media_path = ""
         self.resume_timer.stop()
         self.video_window.next_up_overlay.hide()
         self.video_window.transport_overlay.hide()
