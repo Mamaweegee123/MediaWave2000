@@ -61,6 +61,10 @@ from mediawave.local_artwork import (
     discover_local_media_assets,
     local_asset_signature,
 )
+from mediawave.commercials import (
+    cached_commercial_assets_for_root,
+    commercial_schedule_needs_rebuild,
+)
 from mediawave.scheduling import (
     CATALOG_PLAYBACK_ORDER_LABELS,
     CATALOG_PLAYBACK_ORDER_RANDOM,
@@ -22233,6 +22237,7 @@ class ChannelSurfer(QWidget):
         self.catalog_progress_last_pump = 0.0
         self.catalog_root = None
         self.commercial_library = []
+        self.commercial_library_loaded_root = ""
 
         self.video_window = VideoWindow()
         self.guide_scale = normalize_guide_scale_name(self.app_settings.get("guide_scale", self.app_settings.get("guide_ui_scale", GUIDE_UI_SCALE_DEFAULT)))
@@ -22523,6 +22528,7 @@ class ChannelSurfer(QWidget):
 
         self.refresh_controls()
         QTimer.singleShot(0, self.auto_load_catalog_if_available)
+        QTimer.singleShot(100, self.restore_saved_commercial_library)
         QTimer.singleShot(300, self.refresh_nettv_playlist_cache_on_startup)
 
     # ---------------- LOAD ---------------- #
@@ -23803,6 +23809,29 @@ class ChannelSurfer(QWidget):
         self.app_settings["commercials"] = settings
         return settings
 
+    def restore_saved_commercial_library(self):
+        settings = self.commercial_settings()
+        root_folder = str(settings.get("root_folder") or "").strip()
+        if not settings.get("enabled") or not root_folder:
+            self.commercial_library = []
+            self.commercial_library_loaded_root = ""
+            return []
+        access = self._classify_catalog_path(root_folder, "commercial.startup.saved", force=True)
+        if self._path_access_blocks_scan(access):
+            self.commercial_library = []
+            self.commercial_library_loaded_root = ""
+            print(f"[Commercials][warn] Saved commercial library is unavailable: {root_folder}", flush=True)
+            return []
+        restored = cached_commercial_assets_for_root(self.commercial_library_cache_state, root_folder)
+        if restored:
+            self.commercial_library = restored
+            self.commercial_library_loaded_root = root_folder
+            print(f"[Commercials] Restored {len(restored)} cached assets from {root_folder}", flush=True)
+            return restored
+        assets = self.load_or_refresh_commercial_library(force_rescan=False)
+        print(f"[Commercials] Initialized {len(assets)} assets from {root_folder}", flush=True)
+        return assets
+
     def commercials_ready(self):
         settings = self.commercial_settings()
         return bool(settings.get("enabled")) and bool(settings.get("root_folder")) and os.path.isdir(settings.get("root_folder", ""))
@@ -24317,6 +24346,13 @@ class ChannelSurfer(QWidget):
                 or state.get("signature") != signature
                 or not str(state.get("mode", "")).startswith("auto")
                 or not state.get("entries")
+                or commercial_schedule_needs_rebuild(
+                    state,
+                    bool(profile.get("enabled"))
+                    and bool(self.commercial_library)
+                    and profile.get("mode") != "off"
+                    and density_ad_range(profile)[1] > 0,
+                )
             )
             if needs_rebuild:
                 rebuild_plan.append((channel, signature, profile))
@@ -24344,33 +24380,26 @@ class ChannelSurfer(QWidget):
 
         progress_index = 0
         for channel_position, (channel, signature, profile) in enumerate(rebuild_plan, start=1):
-            state = channels_state.get(channel.name)
-            if (
-                not state
-                or state.get("signature") != signature
-                or not str(state.get("mode", "")).startswith("auto")
-                or not state.get("entries")
-            ):
-                schedule = self.build_channel_schedule_entries(
-                    root_path,
-                    channel,
-                    progress_callback=self.update_catalog_progress if self.loading_card.isVisible() else None,
-                    progress_index=progress_index,
-                    progress_total=total_programs_to_rebuild,
-                    channel_position=channel_position,
-                    channel_total=max(1, len(rebuild_plan)),
-                    allow_smart_break_scan=allow_smart_break_scan,
-                    defer_midroll_if_no_cached_breaks=defer_midroll_if_no_cached_breaks,
-                )
-                state = {
-                    "signature": signature,
-                    "mode": schedule["mode"],
-                    "anchor_time": schedule["anchor_time"],
-                    "playback_order": schedule.get("playback_order", getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM)),
-                    "entries": schedule["entries"],
-                }
-                channels_state[channel.name] = state
-                changed = True
+            schedule = self.build_channel_schedule_entries(
+                root_path,
+                channel,
+                progress_callback=self.update_catalog_progress if self.loading_card.isVisible() else None,
+                progress_index=progress_index,
+                progress_total=total_programs_to_rebuild,
+                channel_position=channel_position,
+                channel_total=max(1, len(rebuild_plan)),
+                allow_smart_break_scan=allow_smart_break_scan,
+                defer_midroll_if_no_cached_breaks=defer_midroll_if_no_cached_breaks,
+            )
+            state = {
+                "signature": signature,
+                "mode": schedule["mode"],
+                "anchor_time": schedule["anchor_time"],
+                "playback_order": schedule.get("playback_order", getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM)),
+                "entries": schedule["entries"],
+            }
+            channels_state[channel.name] = state
+            changed = True
             if apply_to_current_channel or channel != current_channel_obj:
                 channel.set_schedule(state.get("entries", channel.shows), state.get("anchor_time", GLOBAL_START))
             progress_index += max(1, len(channel.shows))
