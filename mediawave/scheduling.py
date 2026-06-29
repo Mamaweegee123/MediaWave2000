@@ -27,23 +27,25 @@ def auto_schedule_anchor():
     return now - (now % half_hour)
 
 
-def ordered_channel_lineup(root_path, channel_name, file_paths, playback_order=CATALOG_PLAYBACK_ORDER_RANDOM):
+def ordered_channel_lineup(root_path, channel_name, file_paths, playback_order=CATALOG_PLAYBACK_ORDER_RANDOM, shuffle_seed=None):
     ordered = list(file_paths)
     if normalize_playback_order(playback_order) == CATALOG_PLAYBACK_ORDER_SEQUENTIAL:
         ordered.sort(key=media_lineup_sort_key)
         return ordered
-    seeded = random.Random(stable_hash(f"{root_path}|{channel_name}"))
+    seed_value = shuffle_seed if shuffle_seed is not None else stable_hash(f"{root_path}|{channel_name}")
+    seeded = random.Random(seed_value)
     seeded.shuffle(ordered)
     return ordered
 
 
-def generate_auto_schedule(root_path, channel_name, file_paths, playback_order=CATALOG_PLAYBACK_ORDER_RANDOM):
+def generate_auto_schedule(root_path, channel_name, file_paths, playback_order=CATALOG_PLAYBACK_ORDER_RANDOM, shuffle_seed=None):
     normalized_order = normalize_playback_order(playback_order)
     return {
         "mode": "auto",
         "anchor_time": auto_schedule_anchor(),
         "playback_order": normalized_order,
-        "lineup": ordered_channel_lineup(root_path, channel_name, file_paths, normalized_order),
+        "shuffle_seed": shuffle_seed,
+        "lineup": ordered_channel_lineup(root_path, channel_name, file_paths, normalized_order, shuffle_seed),
     }
 
 

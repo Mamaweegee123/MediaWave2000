@@ -56,6 +56,24 @@ check("random lineup is deterministic", random_a == random_b, (random_a, random_
 check("random lineup keeps all paths", sorted(random_a) == sorted(lineup), random_a)
 check("module helper matches app import", scheduling_mod.ordered_channel_lineup("/Media/Toons", "Example", lineup, app.CATALOG_PLAYBACK_ORDER_SEQUENTIAL) == sequential)
 
+boot_pool = [f"/Media/Toons/Example/Example.S01E{index:02d}.mkv" for index in range(1, 21)]
+boot_a = scheduling_mod.ordered_channel_lineup("/Media/Toons", "Example", boot_pool, shuffle_seed=1001)
+boot_a_again = scheduling_mod.ordered_channel_lineup("/Media/Toons", "Example", boot_pool, shuffle_seed=1001)
+boot_b = scheduling_mod.ordered_channel_lineup("/Media/Toons", "Example", boot_pool, shuffle_seed=2002)
+check("same persisted shuffle seed keeps schedule stable", boot_a == boot_a_again, boot_a)
+check("different rebuild seeds produce a different lineup", boot_a != boot_b, (boot_a, boot_b))
+check("random rebuild keeps the full eligible pool", sorted(boot_a) == sorted(boot_pool) and sorted(boot_b) == sorted(boot_pool))
+check(
+    "sequential mode ignores rebuild seed",
+    scheduling_mod.ordered_channel_lineup(
+        "/Media/Toons",
+        "Example",
+        lineup,
+        app.CATALOG_PLAYBACK_ORDER_SEQUENTIAL,
+        shuffle_seed=999,
+    ) == sequential,
+)
+
 
 section("catalog settings")
 settings = app.normalize_catalog_channel_settings({

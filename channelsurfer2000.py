@@ -24153,6 +24153,7 @@ class ChannelSurfer(QWidget):
         self,
         root_path,
         channel,
+        shuffle_seed=None,
         progress_callback=None,
         progress_index=0,
         progress_total=1,
@@ -24163,7 +24164,13 @@ class ChannelSurfer(QWidget):
     ):
         started_at = time.perf_counter()
         playback_order = getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM)
-        base_schedule = generate_auto_schedule(root_path, channel.name, channel.shows, playback_order)
+        base_schedule = generate_auto_schedule(
+            root_path,
+            channel.name,
+            channel.shows,
+            playback_order,
+            shuffle_seed=shuffle_seed,
+        )
         lineup = list(base_schedule.get("lineup", channel.shows))
         anchor = base_schedule.get("anchor_time", GLOBAL_START)
         profile = self.resolve_channel_commercial_profile(channel.name)
@@ -24172,6 +24179,7 @@ class ChannelSurfer(QWidget):
                 "mode": "auto",
                 "anchor_time": anchor,
                 "playback_order": playback_order,
+                "shuffle_seed": shuffle_seed,
                 "entries": list(lineup),
             }
 
@@ -24285,6 +24293,7 @@ class ChannelSurfer(QWidget):
             "mode": "auto-commercials",
             "anchor_time": anchor,
             "playback_order": playback_order,
+            "shuffle_seed": shuffle_seed,
             "entries": entries,
         }
         perf_log(
@@ -24328,12 +24337,13 @@ class ChannelSurfer(QWidget):
 
         for channel in media_channels:
             profile = self.resolve_channel_commercial_profile(channel.name)
+            playback_order = getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM)
             signature = stable_hash(
                 json.dumps(
                     {
                         "channel": channel.name,
                         "files": sorted(channel.shows),
-                        "playback_order": getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM),
+                        "playback_order": playback_order,
                         "commercials": commercial_signature,
                         "commercial_root": commercial_root_signature,
                     },
@@ -24346,6 +24356,10 @@ class ChannelSurfer(QWidget):
                 or state.get("signature") != signature
                 or not str(state.get("mode", "")).startswith("auto")
                 or not state.get("entries")
+                or (
+                    playback_order == CATALOG_PLAYBACK_ORDER_RANDOM
+                    and state.get("shuffle_seed") is None
+                )
                 or commercial_schedule_needs_rebuild(
                     state,
                     bool(profile.get("enabled"))
@@ -24380,9 +24394,16 @@ class ChannelSurfer(QWidget):
 
         progress_index = 0
         for channel_position, (channel, signature, profile) in enumerate(rebuild_plan, start=1):
+            playback_order = getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM)
+            shuffle_seed = (
+                random.SystemRandom().getrandbits(64)
+                if playback_order == CATALOG_PLAYBACK_ORDER_RANDOM
+                else None
+            )
             schedule = self.build_channel_schedule_entries(
                 root_path,
                 channel,
+                shuffle_seed=shuffle_seed,
                 progress_callback=self.update_catalog_progress if self.loading_card.isVisible() else None,
                 progress_index=progress_index,
                 progress_total=total_programs_to_rebuild,
@@ -24396,6 +24417,7 @@ class ChannelSurfer(QWidget):
                 "mode": schedule["mode"],
                 "anchor_time": schedule["anchor_time"],
                 "playback_order": schedule.get("playback_order", getattr(channel, "playback_order", CATALOG_PLAYBACK_ORDER_RANDOM)),
+                "shuffle_seed": schedule.get("shuffle_seed"),
                 "entries": schedule["entries"],
             }
             channels_state[channel.name] = state
