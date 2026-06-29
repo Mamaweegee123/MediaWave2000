@@ -10,9 +10,13 @@ if REPO_ROOT not in sys.path:
 from mediawave.commercials import (
     COMMERCIAL_TIMING_VERSION,
     cached_commercial_assets_for_root,
+    commercial_parent_path,
+    commercial_parent_title,
+    commercial_parent_window,
     commercial_duration_status,
     commercial_schedule_needs_rebuild,
     filter_commercial_assets_by_duration,
+    is_commercial_entry,
     normalize_commercial_max_duration_seconds,
     schedule_has_commercial_entries,
     staggered_timed_breakpoints,
@@ -67,6 +71,22 @@ check("commercial entry is detected", schedule_has_commercial_entries(with_ads))
 check("enabled commercial schedule rebuilds when ads are absent", commercial_schedule_needs_rebuild(content_only, True))
 check("enabled commercial schedule reuses cache when ads are present", not commercial_schedule_needs_rebuild(with_ads, True))
 check("disabled commercials do not force a rebuild", not commercial_schedule_needs_rebuild(content_only, False))
+program_entry = {"kind": "content", "path": "/Media/show.mp4", "title": "Real Show", "duration": 1200}
+ad_entry = {
+    "kind": "commercial",
+    "is_commercial": True,
+    "path": "/Media/Commercials/ad.mp4",
+    "title": "Ad File",
+    "duration": 30,
+    "parent_path": "/Media/show.mp4",
+    "parent_title": "Real Show",
+}
+after_entry = {"kind": "content", "path": "/Media/next.mp4", "title": "Next Show", "duration": 1200}
+check("commercial helper detects ad entries", is_commercial_entry(ad_entry))
+check("commercial parent path hides ad path", commercial_parent_path(ad_entry) == "/Media/show.mp4")
+check("commercial parent title hides ad title", commercial_parent_title(ad_entry) == "Real Show")
+window_start, window_end = commercial_parent_window([program_entry, ad_entry, after_entry], 1, 1200, 1230)
+check("commercial parent window includes parent program duration", window_start == 0 and window_end == 1230)
 check("commercial timing cache version includes staggered breaks", COMMERCIAL_TIMING_VERSION >= 2)
 
 moomin_breaks = staggered_timed_breakpoints("Moomin", "/Media/Moomin/S01E01.mkv", 3600, 900)

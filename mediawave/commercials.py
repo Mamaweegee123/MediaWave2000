@@ -10,6 +10,58 @@ COMMERCIAL_TIMING_VERSION = 2
 DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS = 5 * 60
 
 
+def is_commercial_entry(entry):
+    return isinstance(entry, dict) and (
+        bool(entry.get("is_commercial"))
+        or entry.get("kind") in COMMERCIAL_ENTRY_KINDS
+    )
+
+
+def commercial_parent_path(entry, fallback_path=""):
+    if not is_commercial_entry(entry):
+        return (entry or {}).get("path", "") if isinstance(entry, dict) else fallback_path
+    return entry.get("parent_path") or fallback_path or entry.get("path", "")
+
+
+def commercial_parent_title(entry, fallback_title=""):
+    if not is_commercial_entry(entry):
+        return (entry or {}).get("title", "") if isinstance(entry, dict) else fallback_title
+    return entry.get("parent_title") or entry.get("slot_title") or fallback_title or entry.get("title", "")
+
+
+def commercial_parent_window(entries, current_index, current_start, current_end):
+    entries = entries or []
+    if not (0 <= int(current_index or 0) < len(entries)):
+        return float(current_start or 0), float(current_end or 0)
+    current_index = int(current_index)
+    current_entry = entries[current_index]
+    parent_path = commercial_parent_path(current_entry, current_entry.get("path", ""))
+    if not parent_path:
+        return float(current_start or 0), float(current_end or 0)
+
+    def entry_matches(entry):
+        if is_commercial_entry(entry):
+            return commercial_parent_path(entry, "") == parent_path
+        return entry.get("path") == parent_path
+
+    start = float(current_start or 0)
+    end = float(current_end or start)
+
+    index = current_index - 1
+    while index >= 0 and entry_matches(entries[index]):
+        start -= float(entries[index].get("duration", 0) or 0)
+        index -= 1
+
+    index = current_index + 1
+    while index < len(entries) and entry_matches(entries[index]):
+        end += float(entries[index].get("duration", 0) or 0)
+        index += 1
+
+    if end <= start:
+        return float(current_start or 0), float(current_end or 0)
+    return start, end
+
+
 def normalize_commercial_max_duration_seconds(value, default=DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS):
     try:
         seconds = int(float(value))

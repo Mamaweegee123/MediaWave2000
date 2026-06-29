@@ -64,10 +64,12 @@ from mediawave.local_artwork import (
 from mediawave.commercials import (
     COMMERCIAL_TIMING_VERSION,
     cached_commercial_assets_for_root,
+    commercial_parent_window,
     commercial_duration_status,
     commercial_schedule_needs_rebuild,
     DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS,
     filter_commercial_assets_by_duration,
+    is_commercial_entry,
     normalize_commercial_max_duration_seconds,
     staggered_timed_breakpoints,
 )
@@ -5740,9 +5742,11 @@ class Channel:
             "current_title": schedule_entry_user_title(current_entry, format_program_title(current_path), current_path),
             "current_start": now_start,
             "current_end": now_end,
+            "current_index": index,
             "current_entry": current_entry,
             "next_path": next_path,
             "next_title": schedule_entry_user_title(next_entry, format_program_title(next_path), next_path),
+            "next_index": next_index,
             "next_entry": next_entry,
         }
 
@@ -26773,10 +26777,6 @@ class ChannelSurfer(QWidget):
             self.nettv_visible_frame_seen = False
             self.nettv_waiting_started_at = time.time()
             self.nettv_black_frame_started_at = 0.0
-            self.show_youtube_tuning_slate(
-                youtube_entry.get("title", "NetTV video"),
-                "Tuning cached NetTV feed..." if cached_at_tune else "Refreshing NetTV stream...",
-            )
             self.status.setText(
                 f"Channel {display_number}/{len(self.channels)}: "
                 f"{ch.name}\n{youtube_entry.get('title', 'NetTV video')}"
@@ -26879,12 +26879,27 @@ class ChannelSurfer(QWidget):
                 self.youtubeStreamResolved.emit(generation, prepared_entry, prepared_url, "", offset)
                 return
             _nettv_log(f"fallback to current resolver  title={entry.get('title')!r}")
+            self.nettv_transition_waiting = True
+            self.nettv_transition_generation = generation
+            self.nettv_transition_entry = dict(entry)
+            self.nettv_transition_offset = offset
+            self.nettv_transition_filler_active = False
+            self.nettv_transition_filler_count = 0
+            self.nettv_transition_finished_path = ""
+            self.nettv_transition_ready = {}
+            _nettv_log(f"transition waiting  reason='tune_resolve' next_title={entry.get('title')!r}")
 
             def worker():
                 stream_url, error = self.resolve_youtube_stream_url(entry)
                 self.youtubeStreamResolved.emit(generation, entry, stream_url, error, offset)
 
             threading.Thread(target=worker, daemon=True).start()
+            if not self.start_nettv_transition_filler():
+                _nettv_log("fallback to loading screen  reason='filler unavailable during tune resolve'")
+                self.show_youtube_tuning_slate(
+                    entry.get("title", "NetTV Video"),
+                    "Tuning next playlist video...",
+                )
             return
         if not self.pending_video:
             return
@@ -26984,10 +26999,13 @@ class ChannelSurfer(QWidget):
         channel = self.current_youtube_channel()
         self.save_nettv_session(channel, entry, stream_url)
         if self.nettv_transition_waiting and generation == self.nettv_transition_generation:
+            selected_at = float((entry or {}).get("_nettv_selected_at") or time.time())
+            effective_offset = max(0.0, float(offset or 0) + max(0.0, time.time() - selected_at))
             self.nettv_transition_ready = {
                 "entry": dict(entry or {}),
                 "stream_url": stream_url,
-                "offset": float(offset or 0),
+                "offset": effective_offset,
+                "resolved_at": time.time(),
             }
             self.nettv_preresolved_streams[(entry or {}).get("path", "")] = {
                 "entry": dict(entry or {}),
@@ -27051,6 +27069,8 @@ class ChannelSurfer(QWidget):
         entry = dict(ready.get("entry") or self.nettv_transition_entry or {})
         stream_url = ready.get("stream_url", "")
         offset = float(ready.get("offset", self.nettv_transition_offset) or 0)
+        if ready.get("resolved_at"):
+            offset += max(0.0, time.time() - float(ready.get("resolved_at") or time.time()))
         if not entry or not stream_url:
             return False
         _nettv_log(f"transition start next  title={entry.get('title')!r}")
@@ -27061,14 +27081,18 @@ class ChannelSurfer(QWidget):
     def nettv_transition_filler_asset(self):
         channel = self.current_youtube_channel()
         if channel is None:
+            _nettv_log("commercials unavailable  reason='no active NetTV channel'")
             return None
         profile = self.resolve_channel_commercial_profile(channel.name)
         if not profile.get("enabled"):
+            _nettv_log("commercials disabled  reason='channel commercial profile off'")
             return None
         if not self.load_or_refresh_commercial_library(force_rescan=False):
+            _nettv_log("commercials unavailable  reason='commercial library empty or unavailable'")
             return None
         candidates = self.resolve_commercial_candidates(profile, desired_kind="commercial")
         if not candidates:
+            _nettv_log("commercials unavailable  reason='no allowed filler candidates'")
             return None
         seed = stable_hash(
             f"nettv-transition|{channel.name}|{self.nettv_transition_finished_path}|"
@@ -27077,6 +27101,9 @@ class ChannelSurfer(QWidget):
         return random.Random(seed).choice(candidates)
 
     def start_nettv_transition_filler(self):
+        if self.nettv_transition_filler_active:
+            _nettv_log("commercial engine busy  reason='filler already active'")
+            return False
         if self.nettv_transition_filler_count >= 3:
             _nettv_log("filler unavailable  reason='max filler clips reached'")
             return False
@@ -27097,11 +27124,12 @@ class ChannelSurfer(QWidget):
             },
         )
         self.nettv_transition_filler_active = True
+        target_title = (self.nettv_transition_entry or {}).get("title", "Next NetTV Video")
         self.nettv_waiting_for_visible_frame = False
         self.nettv_visible_frame_seen = False
         self.nettv_black_frame_started_at = 0.0
         self.nettv_playing_entry = dict(filler_entry)
-        self.nettv_current_title = filler_entry.get("title", "Commercial Break")
+        self.nettv_current_title = target_title
         self.nettv_current_message = "NetTV is preparing the next video."
         self.nettv_loaded_entry_path = filler_entry.get("path", "")
         self.nettv_loaded_stream_url = filler_entry.get("path", "")
@@ -27117,7 +27145,7 @@ class ChannelSurfer(QWidget):
             f"title={filler_entry.get('title')!r} duration={float(filler_entry.get('duration', 0) or 0):.1f}s"
         )
         self.status.setText(
-            f"NetTV Loading Break\n{filler_entry.get('title', 'Commercial Break')}\n"
+            f"NetTV Loading Break\n{target_title}\n"
             "Preparing the next playlist video."
         )
         return True
@@ -29811,6 +29839,8 @@ class ChannelSurfer(QWidget):
         if getattr(channel, "channel_type", "media") == "youtube":
             info = channel.get_now_next()
             entry = dict(self.nettv_playing_entry or {})
+            if self.nettv_transition_filler_active and self.nettv_transition_entry:
+                entry = dict(self.nettv_transition_entry or {})
             if not entry and info:
                 current_entry = info.get("current_entry", {}) if isinstance(info.get("current_entry"), dict) else {}
                 entry = dict(current_entry.get("youtube_entry") or {})
@@ -29823,17 +29853,24 @@ class ChannelSurfer(QWidget):
             title = (entry.get("title") or (info or {}).get("current_title") or channel.name).strip() or channel.name
             player_duration = max(0, int(self.nettv_player.duration()))
             player_position = max(0, int(self.nettv_player.position()))
-            duration = max(1.0, (player_duration / 1000.0) if player_duration > 0 else float(entry.get("duration") or 0) or ((info or {}).get("current_end", time.time() + 1) - (info or {}).get("current_start", time.time())))
-            if self.nettv_playing_entry:
-                elapsed = max(0.0, min(duration, player_position / 1000.0 if player_position > 0 else self.nettv_playing_offset + max(0.0, time.time() - self.nettv_playing_started_at)))
-            elif info:
+            if self.nettv_transition_filler_active and info:
+                duration = max(1.0, info["current_end"] - info["current_start"])
                 elapsed = max(0.0, min(duration, time.time() - info["current_start"]))
             else:
+                duration = max(1.0, (player_duration / 1000.0) if player_duration > 0 else float(entry.get("duration") or 0) or ((info or {}).get("current_end", time.time() + 1) - (info or {}).get("current_start", time.time())))
+                elapsed = None
+            if elapsed is None and self.nettv_playing_entry:
+                elapsed = max(0.0, min(duration, player_position / 1000.0 if player_position > 0 else self.nettv_playing_offset + max(0.0, time.time() - self.nettv_playing_started_at)))
+            elif elapsed is None and info:
+                elapsed = max(0.0, min(duration, time.time() - info["current_start"]))
+            elif elapsed is None:
                 elapsed = 0.0
             remaining = max(0.0, duration - elapsed)
             summary = nettv_uploader_summary(entry)
             if self.nettv_waiting_for_visible_frame:
                 summary = self.nettv_current_message or "NetTV is preparing this playlist video."
+            elif self.nettv_transition_filler_active:
+                summary = "NetTV is preparing this playlist video."
             return {
                 "channel_number": self.channel_display_number(self.current_channel, channel),
                 "channel_name": channel.name,
@@ -29852,6 +29889,8 @@ class ChannelSurfer(QWidget):
         if not info:
             return None
         scheduled_path = info["current_path"]
+        current_entry = info.get("current_entry", {}) if isinstance(info.get("current_entry"), dict) else {}
+        current_is_commercial = is_commercial_entry(current_entry)
         source_path = self.media_player.source().toLocalFile()
         accepted_source_path = (
             source_path
@@ -29866,12 +29905,22 @@ class ChannelSurfer(QWidget):
         metadata = self.get_program_metadata(playback_path)
         now = time.time()
         playback_matches_schedule = media_paths_match(playback_path, scheduled_path)
-        if playback_matches_schedule:
-            duration = max(1.0, info["current_end"] - info["current_start"])
-            elapsed = max(0.0, min(duration, now - info["current_start"]))
-            remaining = max(0.0, info["current_end"] - now)
-            program_start = info["current_start"]
-            program_end = info["current_end"]
+        playback_matches_commercial = current_is_commercial and media_paths_match(playback_path, current_entry.get("path", ""))
+        if playback_matches_schedule or playback_matches_commercial:
+            if current_is_commercial:
+                entries = channel.get_schedule_entries()
+                program_start, program_end = commercial_parent_window(
+                    entries,
+                    int(info.get("current_index", 0) or 0),
+                    info["current_start"],
+                    info["current_end"],
+                )
+            else:
+                program_start = info["current_start"]
+                program_end = info["current_end"]
+            duration = max(1.0, program_end - program_start)
+            elapsed = max(0.0, min(duration, now - program_start))
+            remaining = max(0.0, program_end - now)
         else:
             mismatch = f"timeline:{scheduled_path}|{playback_path}"
             if mismatch != self.last_playback_path_mismatch:
@@ -29886,14 +29935,17 @@ class ChannelSurfer(QWidget):
             remaining = max(0.0, duration - elapsed)
             program_start = now - elapsed
             program_end = now + remaining
-        current_entry = info.get("current_entry", {}) if isinstance(info.get("current_entry"), dict) else {}
-        if not playback_matches_schedule:
+        if not (playback_matches_schedule or playback_matches_commercial):
             current_entry = {}
-        if current_entry.get("is_commercial") or current_entry.get("kind") in {"commercial", "promo", "bumper", "station_id"}:
+        if is_commercial_entry(current_entry):
             parent_path = schedule_entry_user_path(current_entry, playback_path)
             parent_title = schedule_entry_user_title(current_entry, info["current_title"], parent_path)
-            parent_show_name = current_entry.get("parent_show_name") or metadata.get("show_name", parent_title)
-            parent_summary = schedule_entry_user_summary(current_entry, metadata.get("detail_summary") or self.build_guide_summary(channel.name, parent_title))
+            parent_metadata = self.get_program_metadata(parent_path)
+            parent_show_name = current_entry.get("parent_show_name") or parent_metadata.get("show_name", parent_title)
+            parent_summary = schedule_entry_user_summary(
+                current_entry,
+                parent_metadata.get("detail_summary") or self.build_guide_summary(channel.name, parent_title),
+            )
             return {
                 "channel_number": self.channel_display_number(self.current_channel, channel),
                 "channel_name": channel.name,
