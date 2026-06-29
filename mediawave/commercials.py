@@ -7,9 +7,51 @@ import random
 
 COMMERCIAL_ENTRY_KINDS = {"commercial", "promo", "bumper", "station_id"}
 COMMERCIAL_TIMING_VERSION = 2
+DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS = 5 * 60
 
 
-def cached_commercial_assets_for_root(cache_state, root_folder, path_exists=os.path.isfile):
+def normalize_commercial_max_duration_seconds(value, default=DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS):
+    try:
+        seconds = int(float(value))
+    except (TypeError, ValueError):
+        seconds = int(default)
+    if seconds <= 0:
+        return 0
+    return max(30, min(6 * 60 * 60, seconds))
+
+
+def commercial_duration_status(duration, max_duration_seconds=DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS):
+    try:
+        seconds = float(duration or 0)
+    except (TypeError, ValueError):
+        seconds = 0.0
+    max_seconds = normalize_commercial_max_duration_seconds(max_duration_seconds)
+    if seconds <= 0:
+        return "unreadable"
+    if max_seconds and seconds > max_seconds:
+        return "too_long"
+    return "ok"
+
+
+def filter_commercial_assets_by_duration(assets, max_duration_seconds=DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS):
+    accepted = []
+    ignored = []
+    for asset in assets or []:
+        if not isinstance(asset, dict):
+            continue
+        if commercial_duration_status(asset.get("duration", 0), max_duration_seconds) == "too_long":
+            ignored.append(dict(asset))
+        else:
+            accepted.append(dict(asset))
+    return accepted, ignored
+
+
+def cached_commercial_assets_for_root(
+    cache_state,
+    root_folder,
+    path_exists=os.path.isfile,
+    max_duration_seconds=DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS,
+):
     if not isinstance(cache_state, dict) or not root_folder:
         return []
     cached_root = str(cache_state.get("root_folder") or "").strip()
@@ -23,7 +65,11 @@ def cached_commercial_assets_for_root(cache_state, root_folder, path_exists=os.p
         if not isinstance(asset, dict):
             continue
         path = str(asset.get("path") or "").strip()
-        if path and path_exists(path):
+        if (
+            path
+            and path_exists(path)
+            and commercial_duration_status(asset.get("duration", 0), max_duration_seconds) != "too_long"
+        ):
             restored.append(dict(asset))
     return restored
 

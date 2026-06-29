@@ -64,7 +64,11 @@ from mediawave.local_artwork import (
 from mediawave.commercials import (
     COMMERCIAL_TIMING_VERSION,
     cached_commercial_assets_for_root,
+    commercial_duration_status,
     commercial_schedule_needs_rebuild,
+    DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS,
+    filter_commercial_assets_by_duration,
+    normalize_commercial_max_duration_seconds,
     staggered_timed_breakpoints,
 )
 from mediawave.scheduling import (
@@ -1219,6 +1223,7 @@ def commercial_settings_defaults():
         "min_ads_per_break": 1,
         "max_ads_per_break": 3,
         "midroll_interval_minutes": 15,
+        "max_commercial_duration_seconds": DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS,
         "preferred_era": "",
         "preferred_category": "",
         "channel_overrides": {},
@@ -1599,6 +1604,9 @@ def normalize_commercials_config(settings):
     except (TypeError, ValueError):
         merged["midroll_interval_minutes"] = defaults["midroll_interval_minutes"]
     merged["midroll_interval_minutes"] = max(6, min(60, merged["midroll_interval_minutes"]))
+    merged["max_commercial_duration_seconds"] = normalize_commercial_max_duration_seconds(
+        merged.get("max_commercial_duration_seconds", defaults["max_commercial_duration_seconds"])
+    )
     merged["min_ads_per_break"] = max(0, merged["min_ads_per_break"])
     merged["max_ads_per_break"] = max(merged["min_ads_per_break"], merged["max_ads_per_break"])
     normalized_overrides = {}
@@ -20130,6 +20138,14 @@ class AdvancedConfigDialog(QDialog):
         self.commercials_midroll_interval_spin.setRange(6, 60)
         self.commercials_midroll_interval_spin.setSuffix(" min")
         self.commercials_midroll_interval_spin.setValue(int(self.commercials_settings.get("midroll_interval_minutes", 15) or 15))
+        self.commercials_max_duration_spin = QSpinBox()
+        self.commercials_max_duration_spin.setRange(0, 360)
+        self.commercials_max_duration_spin.setSuffix(" min")
+        max_duration_seconds = normalize_commercial_max_duration_seconds(
+            self.commercials_settings.get("max_commercial_duration_seconds", DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS)
+        )
+        self.commercials_max_duration_spin.setValue(int(max_duration_seconds / 60) if max_duration_seconds else 0)
+        self.commercials_max_duration_spin.setSpecialValueText("Off")
 
         self.commercials_allow_fallback = QCheckBox("Allow Fallback Commercials")
         self.commercials_allow_fallback.setChecked(bool(self.commercials_settings.get("allow_fallback", True)))
@@ -20271,6 +20287,11 @@ class AdvancedConfigDialog(QDialog):
         details_form.addRow("Min Ads Per Break", self.commercials_min_ads_spin)
         details_form.addRow("Max Ads Per Break", self.commercials_max_ads_spin)
         details_form.addRow("Midroll Interval Minutes", self.commercials_midroll_interval_spin)
+        details_form.addRow("Max Commercial Length", self.commercials_max_duration_spin)
+        length_note = QLabel("Commercials longer than this are ignored by default, which helps prevent accidental full episodes from playing as ads.")
+        length_note.setObjectName("settingsHint")
+        length_note.setWordWrap(True)
+        details_layout.addWidget(length_note)
         details_layout.addLayout(details_form)
         details_layout.addWidget(self.commercials_allow_promos)
         details_layout.addWidget(self.commercials_allow_bumpers)
@@ -20311,6 +20332,11 @@ class AdvancedConfigDialog(QDialog):
         timing_form.addRow("Min Ads / Break", self.commercials_min_ads_spin)
         timing_form.addRow("Max Ads / Break", self.commercials_max_ads_spin)
         timing_form.addRow("Midroll Interval", self.commercials_midroll_interval_spin)
+        timing_form.addRow("Max Commercial Length", self.commercials_max_duration_spin)
+        length_note = QLabel("Protects against accidentally dropping full episodes into the Commercials folder. Set to Off to allow any length.")
+        length_note.setObjectName("settingsHint")
+        length_note.setWordWrap(True)
+        timing_layout.addWidget(length_note)
         timing_layout.addLayout(timing_form)
         timing_layout.addWidget(self.commercials_allow_promos)
         timing_layout.addWidget(self.commercials_allow_bumpers)
@@ -21170,6 +21196,7 @@ class AdvancedConfigDialog(QDialog):
                 "min_ads_per_break": self.commercials_min_ads_spin.value(),
                 "max_ads_per_break": self.commercials_max_ads_spin.value(),
                 "midroll_interval_minutes": self.commercials_midroll_interval_spin.value(),
+                "max_commercial_duration_seconds": self.commercials_max_duration_spin.value() * 60,
                 "channel_overrides": self.channel_commercial_overrides,
             }
         )
@@ -23882,7 +23909,12 @@ class ChannelSurfer(QWidget):
             self.commercial_library_loaded_root = ""
             print(f"[Commercials][warn] Saved commercial library is unavailable: {root_folder}", flush=True)
             return []
-        restored = cached_commercial_assets_for_root(self.commercial_library_cache_state, root_folder)
+        max_duration_seconds = settings.get("max_commercial_duration_seconds", DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS)
+        restored = cached_commercial_assets_for_root(
+            self.commercial_library_cache_state,
+            root_folder,
+            max_duration_seconds=max_duration_seconds,
+        )
         if restored:
             self.commercial_library = restored
             self.commercial_library_loaded_root = root_folder
@@ -23930,6 +23962,7 @@ class ChannelSurfer(QWidget):
         started_at = time.perf_counter()
         settings = self.commercial_settings()
         root_folder = settings.get("root_folder", "")
+        max_duration_seconds = settings.get("max_commercial_duration_seconds", DEFAULT_COMMERCIAL_MAX_DURATION_SECONDS)
         if not settings.get("enabled") or not root_folder or not os.path.isdir(root_folder):
             self.commercial_library = []
             perf_log("commercial.library.load", (time.perf_counter() - started_at) * 1000.0, assets=0, cache="disabled")
@@ -23954,19 +23987,28 @@ class ChannelSurfer(QWidget):
             and os.path.abspath(root_folder) == os.path.abspath(cached_root or "")
             and isinstance(cached_assets, list)
         ):
-            self.commercial_library = cached_assets
+            accepted_assets, ignored_cached = filter_commercial_assets_by_duration(cached_assets, max_duration_seconds)
+            self.commercial_library = accepted_assets
             self.commercial_library_loaded_root = root_folder
             if progress_callback:
                 progress_callback(
                     1,
                     1,
                     "Using cached commercial library",
-                    f"Loaded {len(cached_assets)} commercial assets from cache.",
+                    f"Loaded {len(accepted_assets)} commercial assets from cache.",
                 )
-            perf_log("commercial.library.load", (time.perf_counter() - started_at) * 1000.0, assets=len(cached_assets), cache="disk")
-            return cached_assets
+            if ignored_cached:
+                print(
+                    "[Commercials][warn] Ignored "
+                    f"{len(ignored_cached)} cached commercial file(s) longer than {max_duration_seconds // 60 if max_duration_seconds else 0} min.",
+                    flush=True,
+                )
+            perf_log("commercial.library.load", (time.perf_counter() - started_at) * 1000.0, assets=len(accepted_assets), cache="disk")
+            return accepted_assets
 
         assets = []
+        ignored_long_assets = []
+        ignored_unreadable = 0
         video_files = []
         for walk_root, dirnames, filenames in os.walk(root_folder):
             dirnames.sort(key=str.casefold)
@@ -24002,6 +24044,17 @@ class ChannelSurfer(QWidget):
                 )
             duration = self.media_duration_seconds(path)
             if duration <= 0:
+                ignored_unreadable += 1
+                continue
+            if commercial_duration_status(duration, max_duration_seconds) == "too_long":
+                ignored_long_assets.append(
+                    {
+                        "path": path,
+                        "relative_path": relative,
+                        "title": format_program_title(path),
+                        "duration": duration,
+                    }
+                )
                 continue
             title = format_program_title(path)
             assets.append(
@@ -24032,6 +24085,21 @@ class ChannelSurfer(QWidget):
         self.commercial_library_loaded_root = root_folder
         save_json_file(COMMERCIAL_LIBRARY_CACHE_FILE, self.commercial_library_cache_state)
         save_json_file(MEDIA_CACHE_FILE, self.duration_cache)
+        max_duration_label = "disabled" if not max_duration_seconds else f"{max_duration_seconds // 60} min"
+        print(
+            "[Commercials] Scan summary "
+            f"root={root_folder!r} accepted={len(assets)} "
+            f"ignored_too_long={len(ignored_long_assets)} ignored_unreadable={ignored_unreadable} "
+            f"max_duration={max_duration_label}",
+            flush=True,
+        )
+        if ignored_long_assets:
+            sample = [asset.get("relative_path", asset.get("path", "")) for asset in ignored_long_assets[:5]]
+            print(
+                "[Commercials][warn] Ignored suspicious long commercial file(s): "
+                f"{sample!r}",
+                flush=True,
+            )
         perf_log("commercial.library.load", (time.perf_counter() - started_at) * 1000.0, assets=len(assets), cache="rescan")
         return assets
 

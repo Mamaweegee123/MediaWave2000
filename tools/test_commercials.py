@@ -10,7 +10,10 @@ if REPO_ROOT not in sys.path:
 from mediawave.commercials import (
     COMMERCIAL_TIMING_VERSION,
     cached_commercial_assets_for_root,
+    commercial_duration_status,
     commercial_schedule_needs_rebuild,
+    filter_commercial_assets_by_duration,
+    normalize_commercial_max_duration_seconds,
     schedule_has_commercial_entries,
     staggered_timed_breakpoints,
 )
@@ -40,6 +43,21 @@ check(
 check(
     "missing cached files are skipped",
     cached_commercial_assets_for_root(cache, root, path_exists=lambda _path: False) == [],
+)
+long_asset = {"path": "/Media/Commercials/full-episode.mp4", "duration": 1800.0}
+accepted, ignored = filter_commercial_assets_by_duration([cache["assets"][0], long_asset], 300)
+check("normal commercials pass duration filter", len(accepted) == 1 and accepted[0]["path"] == asset_path)
+check("long suspicious commercials are ignored", len(ignored) == 1 and ignored[0]["path"] == long_asset["path"])
+check("disabled max duration accepts long commercials", commercial_duration_status(1800, 0) == "ok")
+check("invalid max duration falls back to five minutes", normalize_commercial_max_duration_seconds("bad") == 300)
+check(
+    "cached long commercials do not restore by default",
+    cached_commercial_assets_for_root(
+        {"root_folder": root, "assets": [long_asset]},
+        root,
+        path_exists=lambda path: path == long_asset["path"],
+        max_duration_seconds=300,
+    ) == [],
 )
 
 content_only = {"entries": [{"kind": "content", "path": "/Media/show.mp4"}]}
