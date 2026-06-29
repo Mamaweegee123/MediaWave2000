@@ -73,6 +73,10 @@ check(
         shuffle_seed=999,
     ) == sequential,
 )
+diagnostics = scheduling_mod.lineup_diagnostics(boot_pool, boot_a, limit=5)
+check("lineup diagnostics report full eligible pool", diagnostics["eligible_pool_size"] == len(boot_pool), diagnostics)
+check("lineup diagnostics cap displayed paths", len(diagnostics["lineup_paths"]) == 5, diagnostics)
+check("lineup diagnostics report truncated paths", diagnostics["truncated_count"] == 15, diagnostics)
 
 
 section("catalog settings")

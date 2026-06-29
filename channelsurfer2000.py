@@ -62,8 +62,10 @@ from mediawave.local_artwork import (
     local_asset_signature,
 )
 from mediawave.commercials import (
+    COMMERCIAL_TIMING_VERSION,
     cached_commercial_assets_for_root,
     commercial_schedule_needs_rebuild,
+    staggered_timed_breakpoints,
 )
 from mediawave.scheduling import (
     CATALOG_PLAYBACK_ORDER_LABELS,
@@ -71,6 +73,7 @@ from mediawave.scheduling import (
     CATALOG_PLAYBACK_ORDER_SEQUENTIAL,
     auto_schedule_anchor,
     generate_auto_schedule,
+    lineup_diagnostics,
     normalize_playback_order,
     ordered_channel_lineup,
     remove_path_from_schedule,
@@ -24172,21 +24175,8 @@ class ChannelSurfer(QWidget):
         if mode != "timed_midroll":
             return []
 
-        breakpoints = []
-        if duration < 20 * 60:
-            return []
         interval = max(6 * 60, int(profile.get("midroll_interval_minutes", 15) or 15) * 60)
-        first_allowed = 5 * 60
-        last_allowed = max(first_allowed, duration - (5 * 60))
-        target = float(interval)
-        while target < last_allowed:
-            chosen = max(first_allowed, min(last_allowed, target))
-            if chosen >= last_allowed:
-                break
-            if not breakpoints or chosen - breakpoints[-1] >= interval * 0.75:
-                breakpoints.append(float(chosen))
-            target += interval
-        return breakpoints
+        return staggered_timed_breakpoints(channel_name, path, duration, interval)
 
     def build_channel_schedule_entries(
         self,
@@ -24385,6 +24375,7 @@ class ChannelSurfer(QWidget):
                         "playback_order": playback_order,
                         "commercials": commercial_signature,
                         "commercial_root": commercial_root_signature,
+                        "commercial_timing_version": COMMERCIAL_TIMING_VERSION,
                     },
                     sort_keys=True,
                 )
@@ -24450,6 +24441,24 @@ class ChannelSurfer(QWidget):
                 channel_total=max(1, len(rebuild_plan)),
                 allow_smart_break_scan=allow_smart_break_scan,
                 defer_midroll_if_no_cached_breaks=defer_midroll_if_no_cached_breaks,
+            )
+            diagnostic_lineup = ordered_channel_lineup(
+                root_path,
+                channel.name,
+                channel.shows,
+                playback_order,
+                shuffle_seed=shuffle_seed,
+            )
+            diagnostics = lineup_diagnostics(channel.shows, diagnostic_lineup)
+            print(
+                "[Scheduling] rebuilt "
+                f"channel={channel.name!r} order={playback_order} seed={shuffle_seed!r} "
+                f"eligible_pool_size={diagnostics['eligible_pool_size']} "
+                f"lineup_size={diagnostics['lineup_size']} "
+                f"lineup_ids={diagnostics['lineup_ids']!r} "
+                f"lineup_paths={diagnostics['lineup_paths']!r} "
+                f"truncated={diagnostics['truncated_count']}",
+                flush=True,
             )
             state = {
                 "signature": signature,

@@ -49,6 +49,19 @@ def generate_auto_schedule(root_path, channel_name, file_paths, playback_order=C
     }
 
 
+def lineup_diagnostics(file_paths, lineup, limit=25):
+    eligible = list(file_paths or [])
+    chosen = list(lineup or [])
+    visible = chosen[:max(1, int(limit or 1))]
+    return {
+        "eligible_pool_size": len(eligible),
+        "lineup_size": len(chosen),
+        "lineup_ids": [stable_hash(path)[:12] for path in visible],
+        "lineup_paths": visible,
+        "truncated_count": max(0, len(chosen) - len(visible)),
+    }
+
+
 def remove_path_from_schedule(schedule, path):
     """Remove one media path from every lineup collection in a schedule."""
     if not isinstance(schedule, dict) or not path:
