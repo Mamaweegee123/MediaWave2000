@@ -6,6 +6,10 @@ import urllib.parse
 
 NETTV_STREAM_EXPIRY_MARGIN_SECONDS = 120
 NETTV_STREAM_DEFAULT_TTL_SECONDS = 30 * 60
+NETTV_TRANSITION_FILLER_MAX_CLIPS = 12
+NETTV_TRANSITION_FILLER_MAX_SECONDS = 20 * 60
+NETTV_TRANSITION_RESOLVE_RETRY_LIMIT = 3
+NETTV_PLAYBACK_CONFIRMATION_TIMEOUT_SECONDS = 9.0
 
 
 def nettv_uploader(entry):
@@ -102,3 +106,15 @@ def next_nettv_schedule_entry(entries, current_path=""):
         youtube_entry.setdefault("duration", float(candidate.get("duration", 900.0) or 900.0))
         return youtube_entry, index
     return {}, -1
+
+
+def nettv_filler_limit_reached(count, started_at=0, now=None):
+    count = int(count or 0)
+    if count >= NETTV_TRANSITION_FILLER_MAX_CLIPS:
+        return True, "max filler clips reached"
+    started_at = float(started_at or 0)
+    if started_at > 0:
+        now = float(time.time() if now is None else now)
+        if now - started_at >= NETTV_TRANSITION_FILLER_MAX_SECONDS:
+            return True, "max filler cover time reached"
+    return False, ""

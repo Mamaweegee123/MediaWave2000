@@ -15,6 +15,9 @@ from mediawave.nettv import (
     build_session_record,
     cached_stream_url,
     merge_nettv_metadata,
+    NETTV_TRANSITION_FILLER_MAX_CLIPS,
+    NETTV_TRANSITION_FILLER_MAX_SECONDS,
+    nettv_filler_limit_reached,
     nettv_uploader,
     nettv_uploader_summary,
     next_nettv_schedule_entry,
@@ -119,6 +122,12 @@ next_entry, next_index = next_nettv_schedule_entry(schedule_entries, "youtube://
 check("transition helper advances to next NetTV item", next_entry.get("path") == "youtube://two" and next_index == 1, (next_entry, next_index))
 wrap_entry, wrap_index = next_nettv_schedule_entry(schedule_entries, "youtube://two")
 check("transition helper wraps only when scheduled", wrap_entry.get("path") == "youtube://one" and wrap_index == 0, (wrap_entry, wrap_index))
+limit_reached, limit_reason = nettv_filler_limit_reached(1, now - 60, now=now)
+check("transition filler can continue beyond one commercial", not limit_reached, limit_reason)
+limit_reached, limit_reason = nettv_filler_limit_reached(NETTV_TRANSITION_FILLER_MAX_CLIPS, now - 60, now=now)
+check("transition filler has a clip safety limit", limit_reached and "clips" in limit_reason, limit_reason)
+limit_reached, limit_reason = nettv_filler_limit_reached(1, now - NETTV_TRANSITION_FILLER_MAX_SECONDS - 1, now=now)
+check("transition filler has a wall-clock safety limit", limit_reached and "time" in limit_reason, limit_reason)
 
 
 print("\n--- friendly failures ---")

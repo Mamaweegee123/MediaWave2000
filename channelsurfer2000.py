@@ -89,6 +89,9 @@ from mediawave.nettv import (
     build_session_record,
     cached_stream_url,
     merge_nettv_metadata,
+    NETTV_PLAYBACK_CONFIRMATION_TIMEOUT_SECONDS,
+    NETTV_TRANSITION_RESOLVE_RETRY_LIMIT,
+    nettv_filler_limit_reached,
     nettv_uploader,
     nettv_uploader_summary,
     next_nettv_schedule_entry,
@@ -1902,6 +1905,20 @@ def probe_media_json(path):
         return json.loads(result.stdout.decode("utf-8") or "{}")
     except (subprocess.SubprocessError, OSError, json.JSONDecodeError, UnicodeDecodeError):
         return {}
+
+
+def playback_probe_summary(path):
+    probe = probe_media_json(path)
+    if not probe:
+        return "probe=unavailable"
+    format_name = (probe.get("format") or {}).get("format_name", "")
+    streams = []
+    for stream in probe.get("streams") or []:
+        codec_type = stream.get("codec_type", "")
+        codec_name = stream.get("codec_name", "")
+        if codec_type or codec_name:
+            streams.append(f"{codec_type}:{codec_name}")
+    return f"format={format_name or 'unknown'} streams={','.join(streams) or 'unknown'}"
 
 
 def validate_video_media(path):
@@ -22508,6 +22525,14 @@ class ChannelSurfer(QWidget):
         self.nettv_transition_filler_count = 0
         self.nettv_transition_finished_path = ""
         self.nettv_transition_ready = {}
+        self.nettv_transition_started_at = 0.0
+        self.nettv_transition_resolve_attempts = 0
+        self.nettv_transition_last_error = ""
+        self.nettv_stream_confirming = False
+        self.nettv_stream_confirm_started_at = 0.0
+        self.nettv_stream_opened_at = 0.0
+        self.nettv_watchdog_retry_counts = {}
+        self.nettv_watchdog_last_recovery_at = 0.0
         self.pending_offset = 0
         self.pending_seek_ms = 0
         self.pending_play_after_seek = False
@@ -22539,6 +22564,9 @@ class ChannelSurfer(QWidget):
         self.live_stall_checks_started_at = 0.0
         self.local_tune_started_at = 0.0
         self.local_tune_generation = 0
+        self.local_first_frame_seen = False
+        self.local_playback_diag_path = ""
+        self.local_playback_diag_started_at = 0.0
         self.pending_video_context = {}
         self.expected_live_media_path = ""
         self.active_live_media_path = ""
@@ -26086,6 +26114,9 @@ class ChannelSurfer(QWidget):
         self.nettv_playing_entry = {}
         self.nettv_playing_started_at = 0.0
         self.nettv_playing_offset = 0.0
+        self.nettv_stream_confirming = False
+        self.nettv_stream_confirm_started_at = 0.0
+        self.nettv_stream_opened_at = 0.0
         self.video_window.hide_nettv_status()
 
     def suspend_nettv_visuals(self):
@@ -26887,6 +26918,9 @@ class ChannelSurfer(QWidget):
             self.nettv_transition_filler_count = 0
             self.nettv_transition_finished_path = ""
             self.nettv_transition_ready = {}
+            self.nettv_transition_started_at = time.time()
+            self.nettv_transition_resolve_attempts = 1
+            self.nettv_transition_last_error = ""
             _nettv_log(f"transition waiting  reason='tune_resolve' next_title={entry.get('title')!r}")
 
             def worker():
@@ -26931,8 +26965,16 @@ class ChannelSurfer(QWidget):
         self.pending_seek_ms = offset_ms
         self.pending_play_after_seek = True
         self.local_tune_started_at = time.monotonic()
+        self.local_first_frame_seen = False
+        self.local_playback_diag_path = video
+        self.local_playback_diag_started_at = time.time()
         self.active_live_media_path = video
         self.reset_live_playback_health(video)
+        print(
+            "[Playback][diag] local renderer start "
+            f"path={video!r} offset_ms={offset_ms} is_url={is_url}",
+            flush=True,
+        )
         self.media_player.setPlaybackRate(1.0)
         self.media_player.stop()
         self.suspend_nettv_visuals()
@@ -26990,8 +27032,12 @@ class ChannelSurfer(QWidget):
             _nettv_log(f"stream_resolved  FAILED  title={title!r}  error={error!r}")
             if self.nettv_transition_waiting and generation == self.nettv_transition_generation:
                 self.nettv_transition_ready = {}
+                self.nettv_transition_last_error = error or "NetTV stream resolver did not return a playable URL."
                 if not self.nettv_transition_filler_active:
-                    self.show_youtube_tuning_slate(title, "NetTV is still tuning the next video...")
+                    if self.retry_nettv_transition_resolve("resolve_failed"):
+                        self.start_nettv_transition_filler()
+                    elif not self.start_nettv_transition_filler():
+                        self.show_youtube_tuning_slate(title, "NetTV could not tune this video.")
                 return
             self.skip_to_next_nettv_entry(error or "This NetTV video could not be cached for playback.")
             return
@@ -27025,7 +27071,7 @@ class ChannelSurfer(QWidget):
             return
         self.start_nettv_stream(entry, stream_url, effective_offset)
 
-    def start_nettv_stream(self, entry, stream_url, effective_offset=0.0):
+    def start_nettv_stream(self, entry, stream_url, effective_offset=0.0, show_tuning_slate=True):
         title = (entry or {}).get("title", "NetTV Video")
         self.nettv_transition_filler_active = False
         self.current_youtube_user_path = (entry or {}).get("path", self.current_youtube_user_path)
@@ -27034,10 +27080,20 @@ class ChannelSurfer(QWidget):
         self.nettv_pending_play_after_seek = True
         self.pending_video_is_url = False
         self.reset_live_playback_health((entry or {}).get("path", stream_url))
-        if (entry or {}).get("_nettv_cached_at_tune"):
-            self.show_youtube_tuning_slate(title, "Tuning cached NetTV feed...")
+        self.nettv_stream_confirming = True
+        self.nettv_stream_confirm_started_at = time.time()
+        self.nettv_stream_opened_at = 0.0
+        self.nettv_waiting_for_visible_frame = True
+        self.nettv_visible_frame_seen = False
+        self.nettv_waiting_started_at = time.time()
+        self.nettv_black_frame_started_at = 0.0
+        if show_tuning_slate:
+            if (entry or {}).get("_nettv_cached_at_tune"):
+                self.show_youtube_tuning_slate(title, "Tuning cached NetTV feed...")
+            else:
+                self.show_youtube_tuning_slate(title, "Starting cached NetTV video...")
         else:
-            self.show_youtube_tuning_slate(title, "Starting cached NetTV video...")
+            _nettv_log(f"playback confirmation pending behind filler  title={title!r}")
         self.nettv_playing_entry = dict(entry or {})
         self.nettv_playing_started_at = time.time()
         self.nettv_playing_offset = effective_offset
@@ -27061,6 +27117,9 @@ class ChannelSurfer(QWidget):
         self.nettv_transition_filler_active = False
         self.nettv_transition_filler_count = 0
         self.nettv_transition_finished_path = ""
+        self.nettv_transition_started_at = 0.0
+        self.nettv_transition_resolve_attempts = 0
+        self.nettv_transition_last_error = ""
         if clear_ready:
             self.nettv_transition_ready = {}
 
@@ -27074,8 +27133,9 @@ class ChannelSurfer(QWidget):
         if not entry or not stream_url:
             return False
         _nettv_log(f"transition start next  title={entry.get('title')!r}")
+        covered_by_filler = self.nettv_transition_filler_count > 0
         self.clear_nettv_transition_state(clear_ready=True)
-        self.start_nettv_stream(entry, stream_url, offset)
+        self.start_nettv_stream(entry, stream_url, offset, show_tuning_slate=not covered_by_filler)
         return True
 
     def nettv_transition_filler_asset(self):
@@ -27104,8 +27164,12 @@ class ChannelSurfer(QWidget):
         if self.nettv_transition_filler_active:
             _nettv_log("commercial engine busy  reason='filler already active'")
             return False
-        if self.nettv_transition_filler_count >= 3:
-            _nettv_log("filler unavailable  reason='max filler clips reached'")
+        limit_reached, limit_reason = nettv_filler_limit_reached(
+            self.nettv_transition_filler_count,
+            self.nettv_transition_started_at,
+        )
+        if limit_reached:
+            _nettv_log(f"filler unavailable  reason={limit_reason!r}")
             return False
         asset = self.nettv_transition_filler_asset()
         if not asset:
@@ -27150,6 +27214,86 @@ class ChannelSurfer(QWidget):
         )
         return True
 
+    def retry_nettv_transition_resolve(self, reason=""):
+        if not self.nettv_transition_waiting or not self.nettv_transition_entry:
+            return False
+        if self.nettv_transition_resolve_attempts >= NETTV_TRANSITION_RESOLVE_RETRY_LIMIT:
+            _nettv_log(
+                "transition resolve retry limit reached  "
+                f"attempts={self.nettv_transition_resolve_attempts} reason={reason!r} "
+                f"last_error={self.nettv_transition_last_error!r}"
+            )
+            return False
+        self.nettv_transition_resolve_attempts += 1
+        self.youtube_stream_generation += 1
+        self.nettv_transition_generation = self.youtube_stream_generation
+        entry = dict(self.nettv_transition_entry or {})
+        entry["_nettv_refresh_stream"] = True
+        entry["_nettv_selected_at"] = time.time()
+        offset = float(self.nettv_transition_offset or 0.0)
+        generation = self.nettv_transition_generation
+        _nettv_log(
+            "transition resolve retry started  "
+            f"attempt={self.nettv_transition_resolve_attempts}/{NETTV_TRANSITION_RESOLVE_RETRY_LIMIT} "
+            f"reason={reason!r} title={entry.get('title')!r}"
+        )
+
+        def worker():
+            stream_url, error = self.resolve_youtube_stream_url(entry)
+            self.youtubeStreamResolved.emit(generation, entry, stream_url, error, offset)
+
+        threading.Thread(target=worker, daemon=True).start()
+        return True
+
+    def recover_nettv_to_filler(self, reason=""):
+        if self.current_youtube_channel() is None:
+            return False
+        now = time.time()
+        if now - self.nettv_watchdog_last_recovery_at < 2.0:
+            return False
+        entry = dict(self.nettv_transition_entry or self.nettv_playing_entry or {})
+        if not entry or is_commercial_entry(entry):
+            return False
+        key = entry.get("path") or entry.get("id") or entry.get("url") or "nettv"
+        retry_count = int(self.nettv_watchdog_retry_counts.get(key, 0)) + 1
+        self.nettv_watchdog_retry_counts[key] = retry_count
+        if retry_count > NETTV_TRANSITION_RESOLVE_RETRY_LIMIT:
+            _nettv_log(
+                "watchdog recovery limit reached  "
+                f"title={entry.get('title')!r} retries={retry_count - 1} reason={reason!r}"
+            )
+            return False
+        current_position = max(0.0, self.nettv_player.position() / 1000.0)
+        entry["_nettv_refresh_stream"] = True
+        entry["_nettv_selected_at"] = time.time()
+        entry["_nettv_selected_offset"] = current_position or self.nettv_playing_offset
+        entry["_nettv_cached_at_tune"] = False
+        self.nettv_transition_waiting = True
+        self.nettv_transition_entry = dict(entry)
+        self.nettv_transition_offset = float(entry["_nettv_selected_offset"])
+        self.nettv_transition_filler_active = False
+        self.nettv_transition_ready = {}
+        self.nettv_transition_started_at = time.time()
+        self.nettv_transition_resolve_attempts = 0
+        self.nettv_transition_last_error = reason or ""
+        self.nettv_stream_confirming = False
+        self.nettv_stream_confirm_started_at = 0.0
+        self.nettv_stream_opened_at = 0.0
+        self.nettv_watchdog_last_recovery_at = now
+        self.nettv_player.stop()
+        self.nettv_loaded_entry_path = ""
+        self.nettv_loaded_stream_url = ""
+        _nettv_log(
+            "watchdog recovery to filler  "
+            f"title={entry.get('title')!r} retry={retry_count}/{NETTV_TRANSITION_RESOLVE_RETRY_LIMIT} "
+            f"reason={reason!r}"
+        )
+        self.retry_nettv_transition_resolve("watchdog_recovery")
+        if self.start_nettv_transition_filler():
+            return True
+        _nettv_log("fallback to loading screen  reason='watchdog filler unavailable'")
+        return False
+
     def begin_nettv_transition_to_next(self, reason="ended"):
         channel = self.current_youtube_channel()
         if channel is None:
@@ -27175,6 +27319,9 @@ class ChannelSurfer(QWidget):
         self.nettv_transition_filler_count = 0
         self.nettv_transition_finished_path = current_path
         self.nettv_transition_ready = {}
+        self.nettv_transition_started_at = time.time()
+        self.nettv_transition_resolve_attempts = 1
+        self.nettv_transition_last_error = ""
         self.youtube_stream_generation += 1
         self.nettv_transition_generation = self.youtube_stream_generation
         self.current_youtube_user_path = next_entry.get("path", "")
@@ -27280,6 +27427,8 @@ class ChannelSurfer(QWidget):
         entry = dict(self.nettv_playing_entry or {})
         if channel is None or not entry or entry.get("_nettv_force_progressive"):
             self.skip_to_next_nettv_entry(reason or "NetTV could not open this cached video.")
+            return
+        if self.recover_nettv_to_filler(reason or "NetTV could not open this stream."):
             return
         cached_path = cached_youtube_video_path(entry)
         if cached_path and os.path.isfile(cached_path):
@@ -27493,16 +27642,25 @@ class ChannelSurfer(QWidget):
             status = self.nettv_player.mediaStatus()
             title = self.nettv_current_title or "NetTV"
             if status in (QMediaPlayer.MediaStatus.InvalidMedia, QMediaPlayer.MediaStatus.StalledMedia):
+                if self.recover_nettv_to_filler("media status stalled or invalid"):
+                    return
                 self.show_youtube_tuning_slate(title, "NetTV could not play this video. Tuning to next available.")
                 self.status.setText("NetTV playback stalled or could not open this cached video.")
                 return
             if self.nettv_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState and not self.nettv_pending_play_after_seek:
+                if self.nettv_transition_filler_active:
+                    return
+                if self.nettv_stream_confirming and self.recover_nettv_to_filler("player did not enter playing state"):
+                    return
                 self.show_youtube_tuning_slate(title, "Tuning to channel feed...")
                 self.status.setText("NetTV is waiting for the player to start.")
                 return
             if self.nettv_waiting_for_visible_frame and now - self.nettv_waiting_started_at >= 6.0:
                 entry = dict(self.nettv_playing_entry or {})
                 waited = now - self.nettv_waiting_started_at
+                if self.nettv_stream_confirming and waited >= NETTV_PLAYBACK_CONFIRMATION_TIMEOUT_SECONDS:
+                    if self.recover_nettv_to_filler("playback confirmation timed out before visible frames"):
+                        return
 
                 # If the first cached/downloaded format never produces picture,
                 # automatically rebuild it with the progressive MP4 selector
@@ -27566,6 +27724,15 @@ class ChannelSurfer(QWidget):
             return
 
         if now - self.live_stall_last_advance_at >= 7.0:
+            print(
+                "[Playback][diag] local playback watchdog "
+                f"path={self.live_stall_path!r} status={status.name} "
+                f"state={self.media_player.playbackState().name} "
+                f"position_ms={position} duration_ms={duration} "
+                f"first_frame={self.local_first_frame_seen} "
+                f"{playback_probe_summary(self.live_stall_path)}",
+                flush=True,
+            )
             self.recover_live_playback_failure("Playback froze and stopped advancing")
 
     @Slot(QMediaPlayer.MediaStatus)
@@ -27598,6 +27765,12 @@ class ChannelSurfer(QWidget):
             else:
                 self.media_player.play()
             if self.playback_mode == "live" and self.live_stall_path:
+                print(
+                    "[Playback][diag] local media opened "
+                    f"path={self.live_stall_path!r} status={status.name} "
+                    f"duration_ms={self.media_player.duration()} target_ms={target}",
+                    flush=True,
+                )
                 self.live_stall_last_position_ms = int(target)
                 self.live_stall_last_advance_at = time.time()
                 self.live_stall_checks_started_at = time.time()
@@ -27667,6 +27840,13 @@ class ChannelSurfer(QWidget):
             QMediaPlayer.MediaStatus.LoadedMedia,
             QMediaPlayer.MediaStatus.BufferedMedia,
         ):
+            if not self.nettv_transition_filler_active:
+                self.nettv_stream_opened_at = time.time()
+                _nettv_log(
+                    "stream opened  "
+                    f"title={(self.nettv_playing_entry or {}).get('title', self.nettv_current_title)!r} "
+                    f"status={status.name}"
+                )
             if self.nettv_pending_play_after_seek:
                 target = self.nettv_pending_seek_ms
                 self.nettv_pending_seek_ms = 0
@@ -27691,13 +27871,26 @@ class ChannelSurfer(QWidget):
                 self.nettv_loaded_entry_path = ""
                 self.nettv_loaded_stream_url = ""
                 self.nettv_last_frame = QPixmap()
+                _nettv_log(
+                    "filler break finished  "
+                    f"count={self.nettv_transition_filler_count} "
+                    f"ready={bool(self.nettv_transition_ready)} "
+                    f"waiting={self.nettv_transition_waiting}"
+                )
                 if self.current_youtube_channel() is not None:
                     if self.start_ready_nettv_transition():
+                        return
+                    if self.nettv_transition_last_error and self.retry_nettv_transition_resolve("filler_finished_after_resolve_error"):
+                        self.start_nettv_transition_filler()
                         return
                     if self.nettv_transition_waiting and self.start_nettv_transition_filler():
                         return
                     if self.nettv_transition_waiting:
                         title = (self.nettv_transition_entry or {}).get("title", "NetTV Video")
+                        _nettv_log(
+                            "fallback to loading screen  "
+                            f"reason='filler ended before stream ready' last_error={self.nettv_transition_last_error!r}"
+                        )
                         self.show_youtube_tuning_slate(title, "NetTV is still tuning the next video...")
                 return
             self.nettv_loaded_entry_path = ""
@@ -27712,14 +27905,16 @@ class ChannelSurfer(QWidget):
             QMediaPlayer.MediaStatus.StalledMedia,
         ):
             if self.current_youtube_channel() is not None:
-                self.retry_nettv_with_compatible_format("NetTV playback stalled or could not open this cached video.")
+                if not self.recover_nettv_to_filler("NetTV playback stalled or could not open this cached video."):
+                    self.retry_nettv_with_compatible_format("NetTV playback stalled or could not open this cached video.")
 
     @Slot()
     def on_nettv_media_error(self):
         if self.current_youtube_channel() is None:
             return
         error_text = self.nettv_player.errorString() or "NetTV playback error"
-        self.retry_nettv_with_compatible_format(error_text)
+        if not self.recover_nettv_to_filler(error_text):
+            self.retry_nettv_with_compatible_format(error_text)
         self.status.setText(f"NetTV playback error:\n{error_text}")
 
     @Slot(object)
@@ -27775,6 +27970,21 @@ class ChannelSurfer(QWidget):
 
         if visible_frame:
             self.nettv_last_frame = pixmap
+            if self.nettv_stream_confirming:
+                self.nettv_stream_confirming = False
+                confirmed_after = time.time() - float(self.nettv_stream_confirm_started_at or time.time())
+                self.nettv_watchdog_retry_counts.pop(
+                    (self.nettv_playing_entry or {}).get("path")
+                    or (self.nettv_playing_entry or {}).get("id")
+                    or (self.nettv_playing_entry or {}).get("url")
+                    or "",
+                    None,
+                )
+                _nettv_log(
+                    "playback confirmed  "
+                    f"title={(self.nettv_playing_entry or {}).get('title', self.nettv_current_title)!r} "
+                    f"after={confirmed_after:.1f}s position={self.nettv_player.position()}ms"
+                )
             self.nettv_waiting_for_visible_frame = False
             self.nettv_visible_frame_seen = True
             self.nettv_black_frame_started_at = 0.0
@@ -27861,6 +28071,21 @@ class ChannelSurfer(QWidget):
                             self.video_window.show_nettv_status(self.nettv_current_title or "NetTV", message)
                         return
             self.last_video_frame = pixmap
+            actual_frame_path = self.media_player.source().toLocalFile()
+            if (
+                self.playback_mode == "live"
+                and not self.local_first_frame_seen
+                and self.local_playback_diag_path
+                and media_paths_match(actual_frame_path, self.local_playback_diag_path)
+            ):
+                self.local_first_frame_seen = True
+                print(
+                    "[Playback][diag] local first rendered frame "
+                    f"path={self.local_playback_diag_path!r} "
+                    f"after={time.time() - float(self.local_playback_diag_started_at or time.time()):.2f}s "
+                    f"size={pixmap.width()}x{pixmap.height()}",
+                    flush=True,
+                )
             if guide_active:
                 current_channel = self.channels[self.current_channel] if self.channels and 0 <= self.current_channel < len(self.channels) else None
                 current_type = getattr(current_channel, "channel_type", "media")
