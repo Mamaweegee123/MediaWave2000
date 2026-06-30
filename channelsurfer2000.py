@@ -94,6 +94,7 @@ from mediawave.playback_health import (
     stream_expectations_from_probe,
     summarize_probe_for_log,
 )
+from mediawave.playback_diagnostics import collect_playback_diagnostic, resolve_mpv_path
 from mediawave.nettv import (
     build_session_record,
     cached_stream_url,
@@ -173,7 +174,7 @@ except ImportError:
 
 from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QLabel, QHBoxLayout, QComboBox, QFormLayout, QSizePolicy, QProgressBar, QDialog, QLineEdit, QCheckBox, QSpinBox, QListWidget, QAbstractItemView, QScrollArea, QTabWidget, QTextEdit, QGridLayout, QButtonGroup, QStackedWidget, QMessageBox
 from PySide6.QtCore import Qt, QTimer, Slot, QUrl, Signal, QRect, QRectF, QPoint, QPointF, QSize, QEvent
-from PySide6.QtGui import QPainter, QColor, QIcon, QKeySequence, QShortcut, QPixmap, QFont, QFontDatabase, QLinearGradient, QRadialGradient, QPen, QPolygon, QImage, QFontMetrics, QPainterPath
+from PySide6.QtGui import QPainter, QColor, QDesktopServices, QIcon, QKeySequence, QShortcut, QPixmap, QFont, QFontDatabase, QLinearGradient, QRadialGradient, QPen, QPolygon, QImage, QFontMetrics, QPainterPath
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink, QSoundEffect, QAudioBufferOutput, QAudioFormat
 from PySide6.QtWebEngineWidgets import QWebEngineView
 from PySide6.QtWebEngineCore import QWebEngineSettings
@@ -610,6 +611,7 @@ SPOTIFY_TRACK_CACHE_FILE = os.path.join(DATA_DIR, "spotify_track_cache.json")
 RADIOWAVE_METADATA_CACHE_FILE = os.path.join(DATA_DIR, "radiowave_metadata_cache.json")
 YOUTUBE_PLAYLIST_CACHE_FILE = os.path.join(DATA_DIR, "youtube_playlist_cache.json")
 CATALOG_VALIDATION_FILE = os.path.join(DATA_DIR, "catalog_validation.json")
+PLAYBACK_DIAGNOSTICS_DIR = os.path.join(DATA_DIR, "playback_diagnostics")
 CUSTOM_THEMES_FILE = os.path.join(DATA_DIR, "custom_themes.json")
 configure_custom_themes_file(CUSTOM_THEMES_FILE)
 AIRING_RULES_FILE = os.path.join(DATA_DIR, "airing_rules.json")
@@ -18819,7 +18821,16 @@ class DiagnosticSummaryLabel(QLabel):
 
 
 class DiagnosticReadoutDialog(QDialog):
-    def __init__(self, text, theme_name=DEFAULT_THEME_NAME, skin_name=DEFAULT_SKIN_NAME, parent=None):
+    def __init__(
+        self,
+        text,
+        theme_name=DEFAULT_THEME_NAME,
+        skin_name=DEFAULT_SKIN_NAME,
+        parent=None,
+        diagnose_current=None,
+        enable_safe_mode=None,
+        convert_current=None,
+    ):
         super().__init__(parent)
         self.setWindowTitle("Diagnostic Readout")
         self.setModal(True)
@@ -18847,6 +18858,18 @@ class DiagnosticReadoutDialog(QDialog):
         layout.addWidget(readout, 1)
 
         buttons = QHBoxLayout()
+        if diagnose_current is not None:
+            diagnose_btn = QPushButton("Diagnose Current Video")
+            diagnose_btn.clicked.connect(lambda: (self.accept(), diagnose_current()))
+            buttons.addWidget(diagnose_btn)
+        if enable_safe_mode is not None:
+            safe_btn = QPushButton("Retry in Safe Playback Mode")
+            safe_btn.clicked.connect(lambda: (self.accept(), enable_safe_mode()))
+            buttons.addWidget(safe_btn)
+        if convert_current is not None:
+            convert_btn = QPushButton("Convert for Compatibility")
+            convert_btn.clicked.connect(lambda: (self.accept(), convert_current()))
+            buttons.addWidget(convert_btn)
         buttons.addStretch(1)
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
@@ -20132,6 +20155,11 @@ class AdvancedConfigDialog(QDialog):
         self.allow_dummy_vault_catalog.setChecked(bool(settings.get("allow_dummy_vault_catalog", False)))
         self.dev_menu_enabled = QCheckBox("Enable Diagnostics for viewing")
         self.dev_menu_enabled.setChecked(bool(settings.get("dev_menu_enabled", True)))
+        self.safe_playback_mode = QCheckBox("Safe Playback Mode (software decoding)")
+        self.safe_playback_mode.setChecked(bool(settings.get("safe_playback_mode", False)))
+        self.safe_playback_mode.setToolTip(
+            "Disables hardware video decoding and rebuilds the local player for difficult files."
+        )
 
         self.commercials_enabled = QCheckBox("Enable Commercials")
         self.commercials_enabled.setChecked(bool(self.commercials_settings.get("enabled", False)))
@@ -21131,6 +21159,7 @@ class AdvancedConfigDialog(QDialog):
         test_layout.addWidget(self.allow_empty_catalog_tv)
         test_layout.addWidget(self.allow_dummy_vault_catalog)
         test_layout.addWidget(self.dev_menu_enabled)
+        test_layout.addWidget(self.safe_playback_mode)
         layout.addWidget(test_card)
 
         self.nettv_clear_cache_on_exit = QCheckBox("Delete NetTV cache on app close")
@@ -21255,6 +21284,7 @@ class AdvancedConfigDialog(QDialog):
             "allow_empty_catalog_tv": self.allow_empty_catalog_tv.isChecked(),
             "allow_dummy_vault_catalog": self.allow_dummy_vault_catalog.isChecked(),
             "dev_menu_enabled": self.dev_menu_enabled.isChecked(),
+            "safe_playback_mode": self.safe_playback_mode.isChecked(),
             "nettv_clear_cache_on_exit": self.nettv_clear_cache_on_exit.isChecked(),
             "commercials": commercials,
             "catalog_channel_settings": self.collect_catalog_channel_settings(),
@@ -21938,16 +21968,20 @@ class _AdvNavPanel(QWidget):
 
 
 class VideoSurface(QWidget):
+    visibleFramePainted = Signal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_frame = QPixmap()
         self.last_target_rect = None
         self.profile_name = "Auto"
+        self._pending_visible_frame = False
         self.setAttribute(Qt.WA_OpaquePaintEvent, True)
         self.setStyleSheet("background-color: black;")
 
-    def set_frame(self, pixmap):
+    def set_frame(self, pixmap, visible_content=False):
         self.current_frame = pixmap
+        self._pending_visible_frame = bool(visible_content and not pixmap.isNull())
         self.update()
 
     def set_display_profile(self, profile_name):
@@ -21990,6 +22024,9 @@ class VideoSurface(QWidget):
         target_rect, source_rect = self.compute_video_mapping()
         self.last_target_rect = target_rect
         painter.drawPixmap(target_rect, self.current_frame, source_rect)
+        if self._pending_visible_frame:
+            self._pending_visible_frame = False
+            self.visibleFramePainted.emit()
 
     def compute_video_mapping(self):
         widget_rect = self.rect()
@@ -22051,6 +22088,7 @@ class ChannelSurfer(QWidget):
     youtubePlaylistLoaded = Signal(int, str, list, str)
     episodeThumbnailReady = Signal(str)
     artworkWarmupReady = Signal(str, bytes)
+    playbackDiagnosticReady = Signal(str, str)
 
     def __init__(self):
         super().__init__()
@@ -22081,6 +22119,7 @@ class ChannelSurfer(QWidget):
                 "dev_menu_enabled": False,
                 "auto_launch": False,
                 "experimental_remote_metadata": False,
+                "safe_playback_mode": False,
                 "commercials": commercial_settings_defaults(),
                 "catalog_channel_settings": {},
             },
@@ -22106,6 +22145,8 @@ class ChannelSurfer(QWidget):
         self.app_settings["guide_ui_scale"] = guide_ui_scale_for_name(migrated_guide_scale)
         self.app_settings["commercials"] = normalize_commercials_config(self.app_settings.get("commercials", {}))
         self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
+        if self.app_settings.get("safe_playback_mode", False):
+            os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
         migrated_commercials = json.dumps(self.app_settings.get("commercials", {}), sort_keys=True)
         migrated_catalog_channel_settings = json.dumps(self.app_settings.get("catalog_channel_settings", {}), sort_keys=True)
         if (
@@ -22574,6 +22615,11 @@ class ChannelSurfer(QWidget):
         self.local_tune_started_at = 0.0
         self.local_tune_generation = 0
         self.local_first_frame_seen = False
+        self.local_visible_frame_received = False
+        self.local_frame_received_count = 0
+        self.local_frame_map_failures = 0
+        self.local_last_frame_details = {}
+        self.local_playback_events = []
         self.local_playback_diag_path = ""
         self.local_playback_diag_started_at = 0.0
         self.local_first_audio_seen = False
@@ -22583,6 +22629,7 @@ class ChannelSurfer(QWidget):
         self.local_probe_details = {}
         self.local_fallback_attempts = {}
         self.local_fallback_active_path = ""
+        self.local_conversion_offers = set()
         self.pending_video_context = {}
         self.expected_live_media_path = ""
         self.active_live_media_path = ""
@@ -22612,6 +22659,10 @@ class ChannelSurfer(QWidget):
         self.media_player.setAudioOutput(self.audio_output)
         self.media_player.setVideoSink(self.video_sink)
         self.media_player.setAudioBufferOutput(self.local_audio_buffer_output)
+        if self.app_settings.get("safe_playback_mode", False):
+            safe_options = self.media_player.playbackOptions()
+            safe_options.setProbeSize(32 * 1024 * 1024)
+            self.media_player.setPlaybackOptions(safe_options)
         self.nettv_player.setAudioOutput(self.nettv_audio_output)
         self.nettv_player.setVideoSink(self.nettv_video_sink)
         self.nettv_audio_output.setMuted(True)
@@ -22631,6 +22682,7 @@ class ChannelSurfer(QWidget):
         self.radiowave_buffer_output.audioBufferReceived.connect(self.on_radiowave_audio_buffer_received)
         self.local_audio_buffer_output.audioBufferReceived.connect(self.on_local_audio_buffer_received)
         self.video_sink.videoFrameChanged.connect(self.on_video_frame_changed)
+        self.video_window.video_surface.visibleFramePainted.connect(self.on_local_visible_frame_painted)
         self.switch_sound.setSource(QUrl.fromLocalFile(CHANNEL_SWITCH_SOUND))
         self.switch_sound.setVolume(0.18)
         self.channel_switch_timer = QTimer(self)
@@ -22658,6 +22710,7 @@ class ChannelSurfer(QWidget):
         self.youtubePlaylistLoaded.connect(self.on_youtube_playlist_loaded_for_tune)
         self.episodeThumbnailReady.connect(self.on_episode_thumbnail_ready)
         self.artworkWarmupReady.connect(self.on_artwork_warmup_ready)
+        self.playbackDiagnosticReady.connect(self.on_playback_diagnostic_ready)
         self.profile_combo.currentTextChanged.connect(self.apply_display_settings)
         self.theme_combo.currentTextChanged.connect(self.apply_display_settings)
         self.skin_combo.currentTextChanged.connect(self.on_skin_changed)
@@ -23419,8 +23472,108 @@ class ChannelSurfer(QWidget):
                 f"Allow Live TV with no catalog: {bool_label(self.app_settings.get('allow_empty_catalog_tv', False))}",
                 f"Allow MediaWave Vault with no catalog: {bool_label(self.app_settings.get('allow_dummy_vault_catalog', False))}",
                 f"Diagnostics for viewing: {bool_label(self.diagnostics_enabled())}",
+                f"Safe Playback Mode: {bool_label(self.app_settings.get('safe_playback_mode', False))}",
             ]
         )
+
+    def current_diagnostic_media_path(self):
+        if self.playback_mode == "ondemand" and self.current_on_demand_path:
+            return self.current_on_demand_path
+        source_path = self.media_player.source().toLocalFile()
+        if source_path:
+            return source_path
+        return self.live_stall_path or self.active_live_media_path or ""
+
+    def playback_diagnostic_snapshot(self, path):
+        options = self.media_player.playbackOptions()
+        return {
+            "source": self.media_player.source().toString(),
+            "path_matches_current_source": media_paths_match(path, self.media_player.source().toLocalFile()),
+            "playback_mode": self.playback_mode,
+            "playback_state": self.media_player.playbackState().name,
+            "media_status": self.media_player.mediaStatus().name,
+            "error": self.media_player.errorString(),
+            "position_ms": self.media_player.position(),
+            "duration_ms": self.media_player.duration(),
+            "expects_video": self.local_expected_video,
+            "expects_audio": self.local_expected_audio,
+            "video_frames_received": self.local_frame_received_count,
+            "visible_frame_received": self.local_visible_frame_received,
+            "visible_frame_painted": self.local_first_frame_seen,
+            "audio_buffer_received": self.local_first_audio_seen,
+            "frame_map_failures": self.local_frame_map_failures,
+            "last_frame": dict(self.local_last_frame_details),
+            "recent_events": list(self.local_playback_events[-100:]),
+            "qt_playback_options": {
+                "network_timeout_ms": options.networkTimeout(),
+                "probe_size": options.probeSize(),
+                "playback_intent": options.playbackIntent().name,
+            },
+        }
+
+    def record_local_playback_event(self, event, **fields):
+        row = {"at": time.strftime("%Y-%m-%d %H:%M:%S"), "event": str(event)}
+        row.update({key: value for key, value in fields.items() if value not in (None, "")})
+        self.local_playback_events.append(row)
+        if len(self.local_playback_events) > 200:
+            del self.local_playback_events[:-200]
+
+    def mediawave_playback_options(self):
+        return {
+            "embedded_engine": "Qt Multimedia FFmpeg backend",
+            "embedded_mpv": False,
+            "mpv_options": "not applicable; MediaWave does not embed mpv",
+            "qt_ffmpeg_decoding_hw_device_types": os.environ.get(
+                "QT_FFMPEG_DECODING_HW_DEVICE_TYPES", "<unset>"
+            ),
+            "qt_media_backend": os.environ.get("QT_MEDIA_BACKEND", "<automatic>"),
+            "safe_playback_mode": bool(self.app_settings.get("safe_playback_mode", False)),
+            "video_output": "QVideoSink -> QVideoFrame.toImage -> QPixmap -> VideoSurface paintEvent",
+            "audio_output": "QAudioOutput with QAudioBufferOutput health tap",
+        }
+
+    @Slot()
+    def diagnose_current_video(self):
+        path = self.current_diagnostic_media_path()
+        if not path or not os.path.isfile(path):
+            QMessageBox.information(self, "No Local Video", "Tune to a local video, then run the diagnostic again.")
+            return
+        snapshot = self.playback_diagnostic_snapshot(path)
+        options = self.mediawave_playback_options()
+        self.status.setText(f"Collecting playback diagnostic for {os.path.basename(path)}...")
+
+        def worker():
+            try:
+                report_path, report = collect_playback_diagnostic(
+                    path,
+                    PLAYBACK_DIAGNOSTICS_DIR,
+                    ffprobe_path=FFPROBE_PATH or "",
+                    mpv_path=resolve_mpv_path(),
+                    embedded_snapshot=snapshot,
+                    mediawave_options=options,
+                )
+                self.playbackDiagnosticReady.emit(report_path, report.get("comparison", "Diagnostic complete."))
+            except Exception as exc:
+                self.playbackDiagnosticReady.emit("", str(exc))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    @Slot(str, str)
+    def on_playback_diagnostic_ready(self, report_path, summary):
+        if not report_path:
+            QMessageBox.warning(self, "Diagnostic Failed", summary or "MediaWave could not create the report.")
+            return
+        self.status.setText(f"Playback diagnostic saved:\n{report_path}")
+        box = QMessageBox(self)
+        box.setWindowTitle("Playback Diagnostic Ready")
+        box.setIcon(QMessageBox.Icon.Information)
+        box.setText(summary)
+        box.setInformativeText(f"Report saved to:\n{report_path}")
+        open_button = box.addButton("Show Report", QMessageBox.ButtonRole.ActionRole)
+        box.addButton(QMessageBox.StandardButton.Close)
+        box.exec()
+        if box.clickedButton() is open_button:
+            QDesktopServices.openUrl(QUrl.fromLocalFile(report_path))
 
     def refresh_diagnostics_summary(self):
         box = getattr(self, "diagnostics_summary", None)
@@ -23440,7 +23593,17 @@ class ChannelSurfer(QWidget):
         else:
             text = self.full_diagnostics_text()
         parent = self.video_window if getattr(self, "video_window", None) is not None and self.video_window.isVisible() else self
-        dialog = DiagnosticReadoutDialog(text, theme_name, skin_name, parent)
+        current_path = self.current_diagnostic_media_path()
+        has_local_video = bool(current_path and os.path.isfile(current_path))
+        dialog = DiagnosticReadoutDialog(
+            text,
+            theme_name,
+            skin_name,
+            parent,
+            diagnose_current=self.diagnose_current_video if has_local_video else None,
+            enable_safe_mode=(lambda: self.activate_safe_playback_mode(True, True)) if has_local_video else None,
+            convert_current=(lambda: self.launch_converter_for_file(current_path)) if has_local_video else None,
+        )
         dialog.exec()
 
     def sync_overlay_qol_settings(self):
@@ -23614,6 +23777,8 @@ class ChannelSurfer(QWidget):
         self.app_settings["allow_empty_catalog_tv"] = values["allow_empty_catalog_tv"]
         self.app_settings["allow_dummy_vault_catalog"] = values["allow_dummy_vault_catalog"]
         self.app_settings["dev_menu_enabled"] = values["dev_menu_enabled"]
+        previous_safe_mode = bool(self.app_settings.get("safe_playback_mode", False))
+        self.app_settings["safe_playback_mode"] = values.get("safe_playback_mode", False)
         self.app_settings["nettv_clear_cache_on_exit"] = values.get("nettv_clear_cache_on_exit", False)
         self.app_settings["commercials"] = normalize_commercials_config(values.get("commercials", {}))
         self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(values.get("catalog_channel_settings", {}))
@@ -23621,6 +23786,11 @@ class ChannelSurfer(QWidget):
         invalidate_channel_bug_cache()
         self.configure_channel_bug()
         save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        if self.app_settings["safe_playback_mode"] != previous_safe_mode:
+            if self.app_settings["safe_playback_mode"]:
+                self.activate_safe_playback_mode(retry_current=True, persist=False)
+            else:
+                self.status.setText("Safe Playback Mode will turn off after MediaWave restarts.")
         # Reload airing rules config in case the user saved rules during this session
         self.airing_rules_config = load_airing_rules_config()
         airing_rules_diagnostics(self.airing_rules_config)
@@ -26985,6 +27155,10 @@ class ChannelSurfer(QWidget):
         self.pending_play_after_seek = True
         self.local_tune_started_at = time.monotonic()
         self.local_first_frame_seen = False
+        self.local_visible_frame_received = False
+        self.local_frame_received_count = 0
+        self.local_frame_map_failures = 0
+        self.local_last_frame_details = {}
         self.local_first_audio_seen = False
         self.local_first_audio_at = 0.0
         self.local_playback_diag_path = video
@@ -26996,6 +27170,15 @@ class ChannelSurfer(QWidget):
         )
         self.local_expected_audio = bool(expectations.get("has_audio"))
         self.local_probe_details = summarize_probe_for_log(video, probe)
+        self.local_playback_events = []
+        self.record_local_playback_event(
+            "source_set",
+            path=video,
+            offset_ms=offset_ms,
+            expects_video=self.local_expected_video,
+            expects_audio=self.local_expected_audio,
+            probe=self.local_probe_details.get("summary", ""),
+        )
         self.active_live_media_path = video
         self.reset_live_playback_health(video)
         print(
@@ -27585,6 +27768,7 @@ class ChannelSurfer(QWidget):
             return
         self.local_first_audio_seen = True
         self.local_first_audio_at = time.time()
+        self.record_local_playback_event("first_audio_buffer", path=self.live_stall_path)
         print(
             "[Playback][diag] local first audio buffer "
             f"path={self.live_stall_path!r} "
@@ -27604,11 +27788,17 @@ class ChannelSurfer(QWidget):
         self.pending_seek_ms = current_position_ms
         self.pending_play_after_seek = True
         self.local_first_frame_seen = False
+        self.local_visible_frame_received = False
+        self.local_frame_received_count = 0
+        self.local_frame_map_failures = 0
+        self.local_last_frame_details = {}
         self.local_first_audio_seen = False
         self.local_first_audio_at = 0.0
         self.local_playback_diag_started_at = time.time()
         self.local_fallback_active_path = path
+        self.app_settings["safe_playback_mode"] = True
         os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
+        self.record_local_playback_event("safe_retry", path=path, reason=reason, resume_ms=current_position_ms)
         print(
             "[Playback][fallback] retrying local file with software-decode hint "
             f"path={path!r} attempt={attempts + 1} reason={reason!r} "
@@ -27621,6 +27811,78 @@ class ChannelSurfer(QWidget):
         self.media_player.setPlaybackRate(1.0)
         self.media_player.setSource(QUrl.fromLocalFile(path))
         return True
+
+    def activate_safe_playback_mode(self, retry_current=True, persist=True):
+        path = self.current_diagnostic_media_path()
+        position_ms = max(0, int(self.media_player.position()))
+        self.app_settings["safe_playback_mode"] = True
+        os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
+        if persist:
+            save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        print(
+            "[Playback][safe] enabled software-decoding compatibility mode "
+            f"path={path!r} retry={bool(retry_current)}",
+            flush=True,
+        )
+        if retry_current and path and os.path.isfile(path):
+            self.pending_seek_ms = position_ms
+            self.pending_play_after_seek = True
+            self.local_first_frame_seen = False
+            self.local_visible_frame_received = False
+            self.local_frame_received_count = 0
+            self.local_frame_map_failures = 0
+            self.local_last_frame_details = {}
+            self.local_first_audio_seen = False
+            self.local_playback_diag_started_at = time.time()
+            self.recreate_local_media_player(reason="safe playback mode")
+            self.reset_live_playback_health(path)
+            self.media_player.setSource(QUrl.fromLocalFile(path))
+            self.status.setText(f"Retrying in Safe Playback Mode:\n{os.path.basename(path)}")
+        else:
+            self.status.setText("Safe Playback Mode enabled. Local videos will use software decoding.")
+
+    def launch_converter_for_file(self, path):
+        path = os.path.abspath(os.path.expanduser(str(path or "")))
+        if not os.path.isfile(path):
+            QMessageBox.warning(self, "Video Not Found", "MediaWave could not find that video file.")
+            return False
+        try:
+            if getattr(sys, "frozen", False) and sys.platform == "darwin":
+                app_parent = macos_app_parent_dir()
+                converter_app = os.path.join(app_parent, "MediaWave Converter.app")
+                if os.path.isdir(converter_app):
+                    subprocess.Popen(["open", converter_app, "--args", "--safe-media", path])
+                    return True
+            converter_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mediawave_converter.py")
+            if os.path.isfile(converter_script):
+                subprocess.Popen([sys.executable, converter_script, "--safe-media", path])
+                return True
+        except OSError as exc:
+            print(f"[Playback][convert] converter launch failed path={path!r} error={exc}", flush=True)
+        QMessageBox.information(
+            self,
+            "Open MediaWave Converter",
+            "Open MediaWave Converter and choose the MediaWave Safe MP4 preset for this file.",
+        )
+        return False
+
+    def offer_media_compatibility_conversion(self, path, reason):
+        if not path or path in self.local_conversion_offers or not os.path.isfile(path):
+            return
+        self.local_conversion_offers.add(path)
+        box = QMessageBox(self.video_window if self.video_window.isVisible() else self)
+        box.setWindowTitle("This Video Needs Compatibility Help")
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setText("MediaWave could not produce healthy picture and sound from this file.")
+        box.setInformativeText(
+            f"{os.path.basename(path)}\n\nYou can convert a compatible copy without changing the original file."
+        )
+        convert_button = box.addButton("Convert this file for MediaWave compatibility", QMessageBox.ButtonRole.AcceptRole)
+        box.addButton("Skip for now", QMessageBox.ButtonRole.RejectRole)
+        box.setDetailedText(str(reason or "Playback output was not confirmed."))
+        box.exec()
+        if box.clickedButton() is convert_button:
+            self.launch_converter_for_file(path)
 
     def remove_media_from_channels(self, path):
         removed_any = False
@@ -27668,6 +27930,7 @@ class ChannelSurfer(QWidget):
         self.live_stall_path = ""
 
         if failed_path:
+            QTimer.singleShot(0, lambda p=failed_path, r=reason: self.offer_media_compatibility_conversion(p, r))
             failure_count = self.live_stall_failures.get(failed_path, 0) + 1
             self.live_stall_failures[failed_path] = failure_count
             should_quarantine = self._should_quarantine_media_failure(failed_path, reason)
@@ -27776,7 +28039,7 @@ class ChannelSurfer(QWidget):
             return
         if self.current_weather_channel() is not None or self.current_radiowave_channel() is not None:
             return
-        if self.video_window.is_vault_active():
+        if self.video_window.is_vault_active() or self.video_window.guide_overlay.isVisible():
             return
 
         now = time.time()
@@ -27881,6 +28144,13 @@ class ChannelSurfer(QWidget):
 
     @Slot(QMediaPlayer.MediaStatus)
     def on_media_status_changed(self, status):
+        if self.current_diagnostic_media_path():
+            self.record_local_playback_event(
+                "media_status",
+                status=status.name,
+                state=self.media_player.playbackState().name,
+                position_ms=self.media_player.position(),
+            )
         if status in (
             QMediaPlayer.MediaStatus.LoadedMedia,
             QMediaPlayer.MediaStatus.BufferedMedia,
@@ -27970,6 +28240,7 @@ class ChannelSurfer(QWidget):
     @Slot()
     def on_media_error(self):
         error_text = self.media_player.errorString() or "Playback error"
+        self.record_local_playback_event("media_error", error=error_text)
         if self.playback_mode == "live":
             if self.playback_event_is_in_tune_grace():
                 print(f"[Playback] Deferred player error during channel tune: {error_text}", flush=True)
@@ -28180,6 +28451,26 @@ class ChannelSurfer(QWidget):
                     )
                 return
 
+        if self.playback_mode == "live" and self.local_playback_diag_path:
+            self.local_frame_received_count += 1
+            try:
+                surface = frame.surfaceFormat()
+                self.local_last_frame_details = {
+                    "pixel_format": frame.pixelFormat().name,
+                    "handle_type": frame.handleType().name,
+                    "frame_size": f"{surface.frameWidth()}x{surface.frameHeight()}",
+                    "frame_rate": surface.frameRate(),
+                    "color_space": surface.colorSpace().name,
+                    "color_transfer": surface.colorTransfer().name,
+                    "color_range": surface.colorRange().name,
+                    "start_time_us": frame.startTime(),
+                    "end_time_us": frame.endTime(),
+                }
+            except (AttributeError, RuntimeError):
+                self.local_last_frame_details = {"detail_error": "Qt frame properties unavailable"}
+            if self.local_frame_received_count == 1:
+                self.record_local_playback_event("first_video_frame_received", **self.local_last_frame_details)
+
         # Vault never shows a live preview, so skip all per-frame work while it
         # covers the screen. Guide does show a live preview, so its sinks stay
         # attached (see suspend_video_decode_for_navigation_overlay) and we only
@@ -28194,12 +28485,25 @@ class ChannelSurfer(QWidget):
         now = time.time()
         image = frame.toImage()
         if image.isNull():
+            if self.playback_mode == "live" and self.local_playback_diag_path:
+                self.local_frame_map_failures += 1
+                self.record_local_playback_event(
+                    "video_frame_to_image_failed",
+                    failure_count=self.local_frame_map_failures,
+                    frame=dict(self.local_last_frame_details),
+                )
+                if self.local_frame_map_failures <= 3:
+                    print(
+                        "[Playback][render] QVideoFrame.toImage failed "
+                        f"path={self.local_playback_diag_path!r} frame={self.local_last_frame_details!r}",
+                        flush=True,
+                    )
             return
 
         pixmap = QPixmap.fromImage(image)
         if not pixmap.isNull():
+            visible_frame = pixmap_has_visible_content(pixmap)
             if self.current_youtube_channel() is not None:
-                visible_frame = pixmap_has_visible_content(pixmap)
                 if visible_frame:
                     self.nettv_waiting_for_visible_frame = False
                     self.nettv_visible_frame_seen = True
@@ -28224,25 +28528,38 @@ class ChannelSurfer(QWidget):
             actual_frame_path = self.media_player.source().toLocalFile()
             if (
                 self.playback_mode == "live"
-                and not self.local_first_frame_seen
                 and self.local_playback_diag_path
                 and media_paths_match(actual_frame_path, self.local_playback_diag_path)
             ):
-                self.local_first_frame_seen = True
-                print(
-                    "[Playback][diag] local first rendered frame "
-                    f"path={self.local_playback_diag_path!r} "
-                    f"after={time.time() - float(self.local_playback_diag_started_at or time.time()):.2f}s "
-                    f"size={pixmap.width()}x{pixmap.height()}",
-                    flush=True,
-                )
+                self.local_visible_frame_received = self.local_visible_frame_received or visible_frame
             if guide_active:
                 current_channel = self.channels[self.current_channel] if self.channels and 0 <= self.current_channel < len(self.channels) else None
                 current_type = getattr(current_channel, "channel_type", "media")
                 if current_type not in ("weatherstar", "radiowave", "youtube"):
                     self.video_window.guide_overlay.set_preview_frame(pixmap)
             else:
-                self.video_window.video_surface.set_frame(pixmap)
+                self.video_window.video_surface.set_frame(pixmap, visible_content=visible_frame)
+
+    @Slot()
+    def on_local_visible_frame_painted(self):
+        if self.playback_mode != "live" or not self.local_visible_frame_received or self.local_first_frame_seen:
+            return
+        actual_path = self.media_player.source().toLocalFile()
+        if not media_paths_match(actual_path, self.local_playback_diag_path):
+            return
+        self.local_first_frame_seen = True
+        self.record_local_playback_event(
+            "first_visible_frame_painted",
+            frames_received=self.local_frame_received_count,
+            frame=dict(self.local_last_frame_details),
+        )
+        print(
+            "[Playback][diag] local first visible frame painted "
+            f"path={self.local_playback_diag_path!r} "
+            f"after={time.time() - float(self.local_playback_diag_started_at or time.time()):.2f}s "
+            f"frames_received={self.local_frame_received_count} frame={self.local_last_frame_details!r}",
+            flush=True,
+        )
 
     @Slot()
     def up(self):
@@ -31174,6 +31491,8 @@ class ChannelSurfer(QWidget):
 
     def recreate_local_media_player(self, reason=""):
         old_player = self.media_player
+        old_sink = self.video_sink
+        old_buffer_output = self.local_audio_buffer_output
         try:
             old_player.stop()
             old_player.setVideoSink(None)
@@ -31182,13 +31501,23 @@ class ChannelSurfer(QWidget):
         except RuntimeError:
             pass
         self.media_player = QMediaPlayer(self)
+        self.video_sink = QVideoSink(self)
+        self.local_audio_buffer_output = QAudioBufferOutput(self)
         self.media_player.setAudioOutput(self.audio_output)
         self.media_player.setVideoSink(self.video_sink)
         self.media_player.setAudioBufferOutput(self.local_audio_buffer_output)
+        if self.app_settings.get("safe_playback_mode", False):
+            safe_options = self.media_player.playbackOptions()
+            safe_options.setProbeSize(32 * 1024 * 1024)
+            self.media_player.setPlaybackOptions(safe_options)
         self.media_player.mediaStatusChanged.connect(self.on_media_status_changed)
         self.media_player.errorOccurred.connect(self.on_media_error)
         self.media_player.positionChanged.connect(self.on_live_position_changed)
+        self.video_sink.videoFrameChanged.connect(self.on_video_frame_changed)
+        self.local_audio_buffer_output.audioBufferReceived.connect(self.on_local_audio_buffer_received)
         old_player.deleteLater()
+        old_sink.deleteLater()
+        old_buffer_output.deleteLater()
         print(
             "[Playback][fallback] recreated local Qt media player "
             f"reason={reason!r} hw_decode_hint={os.environ.get('QT_FFMPEG_DECODING_HW_DEVICE_TYPES', '<unset>')!r}",
