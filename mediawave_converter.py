@@ -51,6 +51,20 @@ APP_NAME = "MediaWaveConverter"
 WINDOW_TITLE = "MediaWave Converter"
 PIPELINE_VERSION = "2026.04.11"
 DISPLAY_VERSION = "0.1.0"
+SAFE_MEDIA_PRESET = "MediaWave Safe MP4"
+SAFE_MEDIA_OUTPUT_FORMAT = "MP4 (Recommended)"
+SAFE_MEDIA_ENCODER_MODE = "Compatibility Mode"
+SAFE_MEDIA_PIXEL_FORMAT = "yuv420p"
+SAFE_MEDIA_FRAME_RATE_MODE = "cfr"
+SAFE_MEDIA_MOVFLAGS = "+faststart"
+SAFE_MEDIA_VIDEO_FLAGS = (
+    "-pix_fmt",
+    SAFE_MEDIA_PIXEL_FORMAT,
+    "-fps_mode",
+    SAFE_MEDIA_FRAME_RATE_MODE,
+    "-movflags",
+    SAFE_MEDIA_MOVFLAGS,
+)
 TARGET_LUFS = -16
 TARGET_TP = -1.5
 TARGET_LRA = 11
@@ -291,6 +305,16 @@ QUALITY_PRESETS = {
         "description": "Runs quicker and saves space while still looking solid.",
         "vt_bitrate": "6M",
         "vt_maxrate": "9M",
+    },
+    SAFE_MEDIA_PRESET: {
+        "crf": 20,
+        "preset": "medium",
+        "audio_bitrate": "192k",
+        "tag": "safe",
+        "description": "Software-encoded H.264, yuv420p, AAC, constant frame rate, and faststart for difficult files.",
+        "vt_bitrate": "6M",
+        "vt_maxrate": "9M",
+        "safe_compatibility": True,
     },
 }
 FRAMING_CHOICES = {
@@ -1726,7 +1750,13 @@ class BatchWorker(QThread):
                 )
                 self.row_update.emit(row_key, "Checking", "Taking a quick look at the file.", str(output_path))
                 probe = self.probe_media(source_path)
-                crop = self.detect_crop(source_path, probe)
+                if self.options.quality_profile.get("safe_compatibility"):
+                    crop = (0, 0, even_floor(probe.width), even_floor(probe.height))
+                    self.log_message.emit(
+                        f"Safe MP4 for {source_path.name}: preserving the full source frame and aspect ratio."
+                    )
+                else:
+                    crop = self.detect_crop(source_path, probe)
                 crop = self.apply_target_aspect(crop, probe.width, probe.height)
                 self.row_update.emit(
                     row_key,
@@ -2115,6 +2145,9 @@ class BatchWorker(QThread):
         chosen_subtitle: "SubtitleStreamInfo | None",
     ) -> None:
         primary_encoder = (
+            "libx264"
+            if self.options.quality_profile.get("safe_compatibility")
+            else
             "mpeg4"
             if self.options.output_profile["video_codec"] == "mpeg4"
             else resolve_video_encoder(self.options.encoder_mode)
@@ -2243,13 +2276,15 @@ class BatchWorker(QThread):
                 *(["-sn"] if not subtitle_copy else []),
                 "-dn",
                 "-pix_fmt",
-                "yuv420p",
+                SAFE_MEDIA_PIXEL_FORMAT,
             ]
         )
         if output_profile["extension"] == ".mp4":
-            command.extend(["-movflags", "+faststart"])
+            command.extend(["-movflags", SAFE_MEDIA_MOVFLAGS])
         if output_profile["video_codec"] == "h264":
             command.extend(["-profile:v", "high"])
+        if quality.get("safe_compatibility"):
+            command.extend(["-fps_mode", SAFE_MEDIA_FRAME_RATE_MODE])
 
         if use_filter_complex:
             command.extend(["-filter_complex", video_filter, "-map", "[vout]"])
@@ -3516,6 +3551,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self.quality_combo = QComboBox()
         self.quality_combo.addItems(list(QUALITY_PRESETS.keys()))
         self.quality_combo.currentTextChanged.connect(self.refresh_main_summary)
+        self.quality_combo.currentTextChanged.connect(self.apply_compatibility_preset_ui)
         batch_layout.addLayout(self.form_row("Speed mode", self.quality_combo))
 
         self.encoder_combo = QComboBox()
@@ -3553,6 +3589,17 @@ class MediaWaveConverterWindow(QMainWindow):
         self.output_format_note.setText(note)
         if hasattr(self, "encoder_combo"):
             self.encoder_combo.setEnabled(profile["video_codec"] != "mpeg4")
+        self.refresh_main_summary()
+
+    def apply_compatibility_preset_ui(self, label: str) -> None:
+        if label != SAFE_MEDIA_PRESET:
+            return
+        self.output_format_combo.setCurrentText(SAFE_MEDIA_OUTPUT_FORMAT)
+        self.encoder_combo.setCurrentText(SAFE_MEDIA_ENCODER_MODE)
+        self.framing_mode_combo.setCurrentText("Keep More Picture")
+        self.framing_combo.setCurrentText("Keep More Picture")
+        self.crop_slider.setValue(0)
+        self.audio_leveling_checkbox.setChecked(False)
         self.refresh_main_summary()
 
     def switch_page(self, page_key: str) -> None:
@@ -4947,6 +4994,26 @@ class MediaWaveConverterWindow(QMainWindow):
         self.save_settings()
         self.warn_current_source_collisions()
 
+    def apply_safe_media_file(self, raw_path: str) -> None:
+        path = Path(raw_path).expanduser()
+        if not path.is_file() or path.suffix.lower() not in SUPPORTED_VIDEO_EXTENSIONS:
+            QMessageBox.warning(self, "Video Not Found", "The requested compatibility source could not be opened.")
+            return
+        self._apply_sources([str(path)])
+        self.quality_combo.setCurrentText(SAFE_MEDIA_PRESET)
+        self.output_format_combo.setCurrentText(SAFE_MEDIA_OUTPUT_FORMAT)
+        self.encoder_combo.setCurrentText(SAFE_MEDIA_ENCODER_MODE)
+        self.framing_mode_combo.setCurrentText("Keep More Picture")
+        self.framing_combo.setCurrentText("Keep More Picture")
+        self.crop_slider.setValue(0)
+        self.audio_pref_combo.setCurrentText("Auto")
+        self.audio_leveling_checkbox.setChecked(False)
+        self.subtitle_pref_combo.setCurrentText("No Subtitles")
+        self.switch_page("converter")
+        self.refresh_main_summary()
+        self.raise_()
+        self.activateWindow()
+
     def _pick_files(self) -> None:
         start_dir = self.source_edit.text().strip() or str(Path.home())
         ext_list = " ".join(f"*{ext}" for ext in sorted(SUPPORTED_VIDEO_EXTENSIONS))
@@ -5471,7 +5538,16 @@ class MediaWaveConverterWindow(QMainWindow):
         )
 
 
+def _safe_media_argument(argv: list[str]) -> str:
+    try:
+        index = argv.index("--safe-media")
+    except ValueError:
+        return ""
+    return argv[index + 1] if index + 1 < len(argv) else ""
+
+
 def main() -> int:
+    safe_media_path = _safe_media_argument(sys.argv)
     QApplication.setApplicationName(APP_NAME)
     QApplication.setOrganizationName("MediaWave")
     app = QApplication(sys.argv)
@@ -5481,6 +5557,8 @@ def main() -> int:
         app.setWindowIcon(QIcon(str(CONVERTER_ICON_PATH)))
     window = MediaWaveConverterWindow()
     window.show()
+    if safe_media_path:
+        QTimer.singleShot(0, lambda: window.apply_safe_media_file(safe_media_path))
     return app.exec()
 
 
