@@ -85,6 +85,15 @@ from mediawave.scheduling import (
     remove_path_from_schedule,
 )
 from mediawave.playback_state import active_playback_path, media_paths_match, tune_context_matches
+from mediawave.playback_health import (
+    LOCAL_PLAYBACK_HEALTHY,
+    LOCAL_PLAYBACK_STALLED,
+    LOCAL_PLAYBACK_WAITING,
+    evaluate_local_playback_health,
+    should_retry_local_playback,
+    stream_expectations_from_probe,
+    summarize_probe_for_log,
+)
 from mediawave.nettv import (
     build_session_record,
     cached_stream_url,
@@ -1893,7 +1902,7 @@ def probe_media_json(path):
                 "-show_entries",
                 "format=duration:format_tags=title,artist,album,album_artist,date,year,genre",
                 "-show_entries",
-                "stream=index,codec_name,codec_type:stream_tags=title,artist,album,album_artist,date,year,genre",
+                "stream=index,codec_name,codec_type,width,height,pix_fmt,sample_rate,channels:stream_tags=title,artist,album,album_artist,date,year,genre",
                 "-of",
                 "json",
                 path,
@@ -22567,6 +22576,13 @@ class ChannelSurfer(QWidget):
         self.local_first_frame_seen = False
         self.local_playback_diag_path = ""
         self.local_playback_diag_started_at = 0.0
+        self.local_first_audio_seen = False
+        self.local_first_audio_at = 0.0
+        self.local_expected_video = False
+        self.local_expected_audio = False
+        self.local_probe_details = {}
+        self.local_fallback_attempts = {}
+        self.local_fallback_active_path = ""
         self.pending_video_context = {}
         self.expected_live_media_path = ""
         self.active_live_media_path = ""
@@ -22585,6 +22601,7 @@ class ChannelSurfer(QWidget):
         self.audio_output = QAudioOutput(self)
         self.media_player = QMediaPlayer(self)
         self.video_sink = QVideoSink(self)
+        self.local_audio_buffer_output = QAudioBufferOutput(self)
         self.nettv_audio_output = QAudioOutput(self)
         self.nettv_player = QMediaPlayer(self)
         self.nettv_video_sink = QVideoSink(self)
@@ -22594,6 +22611,7 @@ class ChannelSurfer(QWidget):
         self.switch_sound = QSoundEffect(self)
         self.media_player.setAudioOutput(self.audio_output)
         self.media_player.setVideoSink(self.video_sink)
+        self.media_player.setAudioBufferOutput(self.local_audio_buffer_output)
         self.nettv_player.setAudioOutput(self.nettv_audio_output)
         self.nettv_player.setVideoSink(self.nettv_video_sink)
         self.nettv_audio_output.setMuted(True)
@@ -22611,6 +22629,7 @@ class ChannelSurfer(QWidget):
         self.radiowave_player.mediaStatusChanged.connect(self.on_radiowave_media_status_changed)
         self.radiowave_player.positionChanged.connect(self.on_radiowave_position_changed)
         self.radiowave_buffer_output.audioBufferReceived.connect(self.on_radiowave_audio_buffer_received)
+        self.local_audio_buffer_output.audioBufferReceived.connect(self.on_local_audio_buffer_received)
         self.video_sink.videoFrameChanged.connect(self.on_video_frame_changed)
         self.switch_sound.setSource(QUrl.fromLocalFile(CHANNEL_SWITCH_SOUND))
         self.switch_sound.setVolume(0.18)
@@ -26966,13 +26985,24 @@ class ChannelSurfer(QWidget):
         self.pending_play_after_seek = True
         self.local_tune_started_at = time.monotonic()
         self.local_first_frame_seen = False
+        self.local_first_audio_seen = False
+        self.local_first_audio_at = 0.0
         self.local_playback_diag_path = video
         self.local_playback_diag_started_at = time.time()
+        probe = probe_media_json(video) if not is_url else {}
+        expectations = stream_expectations_from_probe(probe)
+        self.local_expected_video = bool(expectations.get("has_video")) or (
+            not is_url and str(video).lower().endswith(VIDEO_EXTS)
+        )
+        self.local_expected_audio = bool(expectations.get("has_audio"))
+        self.local_probe_details = summarize_probe_for_log(video, probe)
         self.active_live_media_path = video
         self.reset_live_playback_health(video)
         print(
             "[Playback][diag] local renderer start "
-            f"path={video!r} offset_ms={offset_ms} is_url={is_url}",
+            f"path={video!r} offset_ms={offset_ms} is_url={is_url} "
+            f"qt_backend=QtMultimedia/FFmpeg hw_decode_hint={os.environ.get('QT_FFMPEG_DECODING_HW_DEVICE_TYPES', '<unset>')!r} "
+            f"{self.local_probe_details.get('summary', '')}",
             flush=True,
         )
         self.media_player.setPlaybackRate(1.0)
@@ -27545,6 +27575,53 @@ class ChannelSurfer(QWidget):
             self.live_stall_last_position_ms = int(position)
             self.live_stall_last_advance_at = time.time()
 
+    @Slot(object)
+    def on_local_audio_buffer_received(self, buffer):
+        if self.playback_mode != "live" or not self.live_stall_path:
+            return
+        if self.local_first_audio_seen:
+            return
+        if not buffer or not buffer.isValid():
+            return
+        self.local_first_audio_seen = True
+        self.local_first_audio_at = time.time()
+        print(
+            "[Playback][diag] local first audio buffer "
+            f"path={self.live_stall_path!r} "
+            f"after={self.local_first_audio_at - float(self.local_playback_diag_started_at or self.local_first_audio_at):.2f}s",
+            flush=True,
+        )
+
+    def retry_local_playback_with_fallback(self, reason):
+        path = self.live_stall_path or self.media_player.source().toLocalFile()
+        if not path:
+            return False
+        attempts = int(self.local_fallback_attempts.get(path, 0))
+        if not should_retry_local_playback(reason, attempts):
+            return False
+        self.local_fallback_attempts[path] = attempts + 1
+        current_position_ms = max(0, int(self.media_player.position()))
+        self.pending_seek_ms = current_position_ms
+        self.pending_play_after_seek = True
+        self.local_first_frame_seen = False
+        self.local_first_audio_seen = False
+        self.local_first_audio_at = 0.0
+        self.local_playback_diag_started_at = time.time()
+        self.local_fallback_active_path = path
+        os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
+        print(
+            "[Playback][fallback] retrying local file with software-decode hint "
+            f"path={path!r} attempt={attempts + 1} reason={reason!r} "
+            f"resume_ms={current_position_ms} {self.local_probe_details.get('summary', '')}",
+            flush=True,
+        )
+        self.recreate_local_media_player(reason=reason)
+        self.ensure_video_sinks_attached()
+        self.reset_live_playback_health(path)
+        self.media_player.setPlaybackRate(1.0)
+        self.media_player.setSource(QUrl.fromLocalFile(path))
+        return True
+
     def remove_media_from_channels(self, path):
         removed_any = False
         for channel in self.channels:
@@ -27699,6 +27776,8 @@ class ChannelSurfer(QWidget):
             return
         if self.current_weather_channel() is not None or self.current_radiowave_channel() is not None:
             return
+        if self.video_window.is_vault_active():
+            return
 
         now = time.time()
         if now - self.live_stall_checks_started_at < 6.0:
@@ -27706,15 +27785,80 @@ class ChannelSurfer(QWidget):
 
         status = self.media_player.mediaStatus()
         if status in (QMediaPlayer.MediaStatus.InvalidMedia, QMediaPlayer.MediaStatus.StalledMedia):
+            health_status, health_reason = evaluate_local_playback_health(
+                elapsed_seconds=now - self.live_stall_checks_started_at,
+                position_ms=self.media_player.position(),
+                last_position_ms=0,
+                playback_state=self.media_player.playbackState().name,
+                media_status=status.name,
+                expects_video=self.local_expected_video,
+                expects_audio=self.local_expected_audio,
+                video_frame_seen=self.local_first_frame_seen,
+                audio_seen=self.local_first_audio_seen,
+                pending_seek=self.pending_play_after_seek,
+            )
+            if self.retry_local_playback_with_fallback(health_status):
+                return
+            print(
+                "[Playback][diag] local unhealthy "
+                f"path={self.live_stall_path!r} health={health_status} reason={health_reason!r} "
+                f"{self.local_probe_details.get('summary', '')}",
+                flush=True,
+            )
             self.recover_live_playback_failure("Playback stalled while opening this file")
             return
 
         if self.media_player.playbackState() != QMediaPlayer.PlaybackState.PlayingState and not self.pending_play_after_seek:
+            health_status, health_reason = evaluate_local_playback_health(
+                elapsed_seconds=now - self.live_stall_checks_started_at,
+                position_ms=self.media_player.position(),
+                last_position_ms=0,
+                playback_state=self.media_player.playbackState().name,
+                media_status=status.name,
+                expects_video=self.local_expected_video,
+                expects_audio=self.local_expected_audio,
+                video_frame_seen=self.local_first_frame_seen,
+                audio_seen=self.local_first_audio_seen,
+                pending_seek=self.pending_play_after_seek,
+            )
+            if self.retry_local_playback_with_fallback(health_status):
+                return
+            print(
+                "[Playback][diag] local unhealthy "
+                f"path={self.live_stall_path!r} health={health_status} reason={health_reason!r} "
+                f"{self.local_probe_details.get('summary', '')}",
+                flush=True,
+            )
             self.recover_live_playback_failure("Playback stopped unexpectedly")
             return
 
         position = int(self.media_player.position())
         duration = int(self.media_player.duration())
+        health_status, health_reason = evaluate_local_playback_health(
+            elapsed_seconds=now - self.live_stall_checks_started_at,
+            position_ms=position,
+            last_position_ms=0,
+            playback_state=self.media_player.playbackState().name,
+            media_status=status.name,
+            expects_video=self.local_expected_video,
+            expects_audio=self.local_expected_audio,
+            video_frame_seen=self.local_first_frame_seen,
+            audio_seen=self.local_first_audio_seen,
+            pending_seek=self.pending_play_after_seek,
+        )
+        if health_status not in (LOCAL_PLAYBACK_HEALTHY, LOCAL_PLAYBACK_WAITING):
+            if self.retry_local_playback_with_fallback(health_status):
+                return
+            print(
+                "[Playback][diag] local unhealthy "
+                f"path={self.live_stall_path!r} health={health_status} reason={health_reason!r} "
+                f"position_ms={position} duration_ms={duration} "
+                f"first_audio={self.local_first_audio_seen} first_frame={self.local_first_frame_seen} "
+                f"{self.local_probe_details.get('summary', '')}",
+                flush=True,
+            )
+            self.recover_live_playback_failure(health_reason)
+            return
         if position > self.live_stall_last_position_ms + 120:
             self.live_stall_last_position_ms = position
             self.live_stall_last_advance_at = now
@@ -27768,7 +27912,9 @@ class ChannelSurfer(QWidget):
                 print(
                     "[Playback][diag] local media opened "
                     f"path={self.live_stall_path!r} status={status.name} "
-                    f"duration_ms={self.media_player.duration()} target_ms={target}",
+                    f"duration_ms={self.media_player.duration()} target_ms={target} "
+                    f"expects_video={self.local_expected_video} expects_audio={self.local_expected_audio} "
+                    f"{self.local_probe_details.get('summary', '')}",
                     flush=True,
                 )
                 self.live_stall_last_position_ms = int(target)
@@ -27817,6 +27963,8 @@ class ChannelSurfer(QWidget):
                 self.retry_nettv_with_compatible_format("Playback stalled or could not open this cached video.")
                 self.status.setText("NetTV playback stalled or could not open this cached video.")
                 return
+            if self.retry_local_playback_with_fallback(LOCAL_PLAYBACK_STALLED):
+                return
             self.recover_live_playback_failure("The media file could not keep playing safely")
 
     @Slot()
@@ -27829,6 +27977,8 @@ class ChannelSurfer(QWidget):
             if self.current_youtube_channel() is not None:
                 self.retry_nettv_with_compatible_format(error_text)
                 self.status.setText(f"NetTV playback error:\n{error_text}")
+                return
+            if self.retry_local_playback_with_fallback(LOCAL_PLAYBACK_STALLED):
                 return
             self.recover_live_playback_failure(error_text)
             return
@@ -31021,6 +31171,29 @@ class ChannelSurfer(QWidget):
             self.media_player.setVideoSink(self.video_sink)
         if self.nettv_player.videoSink() is not self.nettv_video_sink:
             self.nettv_player.setVideoSink(self.nettv_video_sink)
+
+    def recreate_local_media_player(self, reason=""):
+        old_player = self.media_player
+        try:
+            old_player.stop()
+            old_player.setVideoSink(None)
+            old_player.setAudioOutput(None)
+            old_player.setAudioBufferOutput(None)
+        except RuntimeError:
+            pass
+        self.media_player = QMediaPlayer(self)
+        self.media_player.setAudioOutput(self.audio_output)
+        self.media_player.setVideoSink(self.video_sink)
+        self.media_player.setAudioBufferOutput(self.local_audio_buffer_output)
+        self.media_player.mediaStatusChanged.connect(self.on_media_status_changed)
+        self.media_player.errorOccurred.connect(self.on_media_error)
+        self.media_player.positionChanged.connect(self.on_live_position_changed)
+        old_player.deleteLater()
+        print(
+            "[Playback][fallback] recreated local Qt media player "
+            f"reason={reason!r} hw_decode_hint={os.environ.get('QT_FFMPEG_DECODING_HW_DEVICE_TYPES', '<unset>')!r}",
+            flush=True,
+        )
 
     def resume_video_decode_after_navigation_overlay(self):
         if not getattr(self, "_video_decode_suspended_for_navigation_overlay", False):
