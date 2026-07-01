@@ -22629,6 +22629,8 @@ class ChannelSurfer(QWidget):
         self.local_probe_details = {}
         self.local_fallback_attempts = {}
         self.local_fallback_active_path = ""
+        self.local_player_reset_generation = 0
+        self.local_player_reset_pending = False
         self.local_conversion_offers = set()
         self.pending_video_context = {}
         self.expected_live_media_path = ""
@@ -27805,11 +27807,7 @@ class ChannelSurfer(QWidget):
             f"resume_ms={current_position_ms} {self.local_probe_details.get('summary', '')}",
             flush=True,
         )
-        self.recreate_local_media_player(reason=reason)
-        self.ensure_video_sinks_attached()
-        self.reset_live_playback_health(path)
-        self.media_player.setPlaybackRate(1.0)
-        self.media_player.setSource(QUrl.fromLocalFile(path))
+        self.schedule_local_player_reset(path, current_position_ms, reason)
         return True
 
     def activate_safe_playback_mode(self, retry_current=True, persist=True):
@@ -27834,9 +27832,7 @@ class ChannelSurfer(QWidget):
             self.local_last_frame_details = {}
             self.local_first_audio_seen = False
             self.local_playback_diag_started_at = time.time()
-            self.recreate_local_media_player(reason="safe playback mode")
-            self.reset_live_playback_health(path)
-            self.media_player.setSource(QUrl.fromLocalFile(path))
+            self.schedule_local_player_reset(path, position_ms, "safe playback mode")
             self.status.setText(f"Retrying in Safe Playback Mode:\n{os.path.basename(path)}")
         else:
             self.status.setText("Safe Playback Mode enabled. Local videos will use software decoding.")
@@ -28194,6 +28190,7 @@ class ChannelSurfer(QWidget):
             return
 
         if status == QMediaPlayer.EndOfMedia:
+            self.cancel_pending_local_player_reset("end of media")
             if self.playback_mode == "live" and self.playback_event_is_in_tune_grace():
                 print("[Playback] Ignored stale EndOfMedia during channel tune", flush=True)
                 return
@@ -31506,37 +31503,74 @@ class ChannelSurfer(QWidget):
         if self.nettv_player.videoSink() is not self.nettv_video_sink:
             self.nettv_player.setVideoSink(self.nettv_video_sink)
 
-    def recreate_local_media_player(self, reason=""):
-        old_player = self.media_player
-        old_sink = self.video_sink
-        old_buffer_output = self.local_audio_buffer_output
-        try:
-            old_player.stop()
-            old_player.setVideoSink(None)
-            old_player.setAudioOutput(None)
-            old_player.setAudioBufferOutput(None)
-        except RuntimeError:
-            pass
-        self.media_player = QMediaPlayer(self)
-        self.video_sink = QVideoSink(self)
-        self.local_audio_buffer_output = QAudioBufferOutput(self)
-        self.media_player.setAudioOutput(self.audio_output)
-        self.media_player.setVideoSink(self.video_sink)
-        self.media_player.setAudioBufferOutput(self.local_audio_buffer_output)
+    def cancel_pending_local_player_reset(self, reason=""):
+        self.local_player_reset_generation += 1
+        was_pending = self.local_player_reset_pending
+        self.local_player_reset_pending = False
+        if was_pending:
+            print(f"[Playback][fallback] canceled pending player reset reason={reason!r}", flush=True)
+
+    def schedule_local_player_reset(self, path, resume_ms=0, reason=""):
+        self.local_player_reset_generation += 1
+        generation = self.local_player_reset_generation
+        self.local_player_reset_pending = True
+        playback_mode = self.playback_mode
+        expected_path = str(path or "")
+        print(
+            "[Playback][fallback] queued local player reset after Qt callback "
+            f"generation={generation} mode={playback_mode!r} path={expected_path!r} reason={reason!r}",
+            flush=True,
+        )
+        QTimer.singleShot(
+            0,
+            lambda: self.perform_local_player_reset(
+                generation,
+                playback_mode,
+                expected_path,
+                max(0, int(resume_ms or 0)),
+                reason,
+            ),
+        )
+
+    def perform_local_player_reset(self, generation, playback_mode, path, resume_ms, reason):
+        if self._closing or generation != self.local_player_reset_generation:
+            return False
+        self.local_player_reset_pending = False
+        if playback_mode != self.playback_mode:
+            print(
+                "[Playback][fallback] skipped stale player reset "
+                f"requested_mode={playback_mode!r} current_mode={self.playback_mode!r}",
+                flush=True,
+            )
+            return False
+        active_path = self.current_on_demand_path if playback_mode == "ondemand" else self.live_stall_path
+        current_source = self.media_player.source().toLocalFile()
+        if not media_paths_match(path, active_path) or (current_source and not media_paths_match(path, current_source)):
+            print(
+                "[Playback][fallback] skipped stale player reset "
+                f"requested={path!r} active={active_path!r} source={current_source!r}",
+                flush=True,
+            )
+            return False
+        self.pending_seek_ms = max(0, int(resume_ms or 0))
+        self.pending_play_after_seek = True
+        self.reset_local_media_player(reason=reason)
+        self.ensure_video_sinks_attached()
+        if playback_mode == "live":
+            self.reset_live_playback_health(path)
+        self.media_player.setPlaybackRate(1.0)
+        self.media_player.setSource(QUrl.fromLocalFile(path))
+        return True
+
+    def reset_local_media_player(self, reason=""):
+        self.media_player.stop()
+        self.media_player.setSource(QUrl())
         if self.app_settings.get("safe_playback_mode", False):
             safe_options = self.media_player.playbackOptions()
             safe_options.setProbeSize(32 * 1024 * 1024)
             self.media_player.setPlaybackOptions(safe_options)
-        self.media_player.mediaStatusChanged.connect(self.on_media_status_changed)
-        self.media_player.errorOccurred.connect(self.on_media_error)
-        self.media_player.positionChanged.connect(self.on_live_position_changed)
-        self.video_sink.videoFrameChanged.connect(self.on_video_frame_changed)
-        self.local_audio_buffer_output.audioBufferReceived.connect(self.on_local_audio_buffer_received)
-        old_player.deleteLater()
-        old_sink.deleteLater()
-        old_buffer_output.deleteLater()
         print(
-            "[Playback][fallback] recreated local Qt media player "
+            "[Playback][fallback] reset long-lived local Qt player in place "
             f"reason={reason!r} hw_decode_hint={os.environ.get('QT_FFMPEG_DECODING_HW_DEVICE_TYPES', '<unset>')!r}",
             flush=True,
         )
@@ -32291,6 +32325,7 @@ class ChannelSurfer(QWidget):
         )
 
     def stop_player(self):
+        self.cancel_pending_local_player_reset("player stopped or playback changed")
         self.channel_switch_timer.stop()
         self.live_stall_timer.stop()
         self.seek_hold_timer.stop()
@@ -32593,9 +32628,15 @@ class ChannelSurfer(QWidget):
 
     def closeEvent(self, event):
         self._closing = True
+        self.cancel_pending_local_player_reset("application closing")
         self.youtube_playlist_generation += 1
         self.youtube_stream_generation += 1
         self.youtube_playlist_loads_in_flight.clear()
+        for player in (self.media_player, self.radiowave_player):
+            try:
+                player.setAudioBufferOutput(None)
+            except RuntimeError:
+                pass
         self.stop_player()
         self.sleep_preventer.release()
         self.stop_radiowave_background()
