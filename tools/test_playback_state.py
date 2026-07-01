@@ -7,7 +7,13 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
-from mediawave.playback_state import active_playback_path, media_paths_match, tune_context_matches
+from mediawave.playback_state import (
+    active_playback_path,
+    expected_frame_path,
+    media_paths_match,
+    playback_frame_matches,
+    tune_context_matches,
+)
 
 
 PASS = []
@@ -35,6 +41,10 @@ check("equivalent local paths match", media_paths_match("/Media/Moomin/../Moomin
 check("different media paths do not match", not media_paths_match("/Media/Moomin/S01E01.mkv", "/Media/Other/S01E01.mkv"))
 check("active path wins metadata selection", active_playback_path("actual.mkv", "expected.mkv", "scheduled.mkv") == "actual.mkv")
 check("expected path wins before playback starts", active_playback_path("", "expected.mkv", "scheduled.mkv") == "expected.mkv")
+check("live frames use scheduled live path", expected_frame_path("live", "live.mkv", "vault.mkv") == "live.mkv")
+check("Vault frames use selected Vault path", expected_frame_path("ondemand", "live.mkv", "vault.mkv") == "vault.mkv")
+check("Vault frame accepts selected episode", playback_frame_matches("ondemand", "/Media/Top Gear.mkv", "/Media/Samurai.mkv", "/Media/Top Gear.mkv"))
+check("Vault frame rejects stale live episode", not playback_frame_matches("ondemand", "/Media/Samurai.mkv", "/Media/Samurai.mkv", "/Media/Top Gear.mkv"))
 
 print(f"\nResults: {len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

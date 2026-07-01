@@ -31,3 +31,16 @@ def tune_context_matches(context, generation, channel_index, channel_object, pat
 
 def active_playback_path(active_path, expected_path, scheduled_path):
     return str(active_path or expected_path or scheduled_path or "")
+
+
+def expected_frame_path(playback_mode, expected_live_path="", on_demand_path=""):
+    if playback_mode == "ondemand":
+        return str(on_demand_path or "")
+    if playback_mode == "live":
+        return str(expected_live_path or "")
+    return ""
+
+
+def playback_frame_matches(playback_mode, actual_path, expected_live_path="", on_demand_path=""):
+    expected_path = expected_frame_path(playback_mode, expected_live_path, on_demand_path)
+    return bool(expected_path and media_paths_match(actual_path, expected_path))

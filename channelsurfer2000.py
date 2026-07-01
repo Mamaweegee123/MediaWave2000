@@ -84,7 +84,7 @@ from mediawave.scheduling import (
     ordered_channel_lineup,
     remove_path_from_schedule,
 )
-from mediawave.playback_state import active_playback_path, media_paths_match, tune_context_matches
+from mediawave.playback_state import active_playback_path, media_paths_match, playback_frame_matches, tune_context_matches
 from mediawave.playback_health import (
     LOCAL_PLAYBACK_HEALTHY,
     LOCAL_PLAYBACK_STALLED,
@@ -27760,7 +27760,7 @@ class ChannelSurfer(QWidget):
 
     @Slot(object)
     def on_local_audio_buffer_received(self, buffer):
-        if self.playback_mode != "live" or not self.live_stall_path:
+        if self.playback_mode not in {"live", "ondemand"} or not self.local_playback_diag_path:
             return
         if self.local_first_audio_seen:
             return
@@ -27768,10 +27768,10 @@ class ChannelSurfer(QWidget):
             return
         self.local_first_audio_seen = True
         self.local_first_audio_at = time.time()
-        self.record_local_playback_event("first_audio_buffer", path=self.live_stall_path)
+        self.record_local_playback_event("first_audio_buffer", path=self.local_playback_diag_path)
         print(
             "[Playback][diag] local first audio buffer "
-            f"path={self.live_stall_path!r} "
+            f"path={self.local_playback_diag_path!r} "
             f"after={self.local_first_audio_at - float(self.local_playback_diag_started_at or self.local_first_audio_at):.2f}s",
             flush=True,
         )
@@ -28437,21 +28437,36 @@ class ChannelSurfer(QWidget):
             return
 
         current_channel = self.channels[self.current_channel] if self.channels else None
-        if current_channel is not None and getattr(current_channel, "channel_type", "media") == "media":
+        validates_local_path = self.playback_mode == "ondemand" or (
+            self.playback_mode == "live"
+            and current_channel is not None
+            and getattr(current_channel, "channel_type", "media") == "media"
+        )
+        if validates_local_path:
             actual_path = self.media_player.source().toLocalFile()
-            expected_path = self.expected_live_media_path
-            if not expected_path or not media_paths_match(actual_path, expected_path):
+            if not playback_frame_matches(
+                self.playback_mode,
+                actual_path,
+                self.expected_live_media_path,
+                self.current_on_demand_path,
+            ):
+                expected_path = (
+                    self.current_on_demand_path
+                    if self.playback_mode == "ondemand"
+                    else self.expected_live_media_path
+                )
                 mismatch = f"{expected_path}|{actual_path}"
                 if mismatch != self.last_playback_path_mismatch:
                     self.last_playback_path_mismatch = mismatch
                     print(
                         "[Playback][error] Dropped stale video frame "
-                        f"channel={current_channel.name!r} expected={expected_path!r} actual={actual_path!r}",
+                        f"mode={self.playback_mode!r} channel={getattr(current_channel, 'name', '')!r} "
+                        f"expected={expected_path!r} actual={actual_path!r}",
                         flush=True,
                     )
                 return
 
-        if self.playback_mode == "live" and self.local_playback_diag_path:
+        if self.playback_mode in {"live", "ondemand"} and self.local_playback_diag_path:
             self.local_frame_received_count += 1
             try:
                 surface = frame.surfaceFormat()
@@ -28485,7 +28500,7 @@ class ChannelSurfer(QWidget):
         now = time.time()
         image = frame.toImage()
         if image.isNull():
-            if self.playback_mode == "live" and self.local_playback_diag_path:
+            if self.playback_mode in {"live", "ondemand"} and self.local_playback_diag_path:
                 self.local_frame_map_failures += 1
                 self.record_local_playback_event(
                     "video_frame_to_image_failed",
@@ -28528,7 +28543,9 @@ class ChannelSurfer(QWidget):
             actual_frame_path = self.media_player.source().toLocalFile()
             if (
                 self.playback_mode == "live"
-                and self.local_playback_diag_path
+                or self.playback_mode == "ondemand"
+            ) and (
+                self.local_playback_diag_path
                 and media_paths_match(actual_frame_path, self.local_playback_diag_path)
             ):
                 self.local_visible_frame_received = self.local_visible_frame_received or visible_frame
@@ -28542,7 +28559,7 @@ class ChannelSurfer(QWidget):
 
     @Slot()
     def on_local_visible_frame_painted(self):
-        if self.playback_mode != "live" or not self.local_visible_frame_received or self.local_first_frame_seen:
+        if self.playback_mode not in {"live", "ondemand"} or not self.local_visible_frame_received or self.local_first_frame_seen:
             return
         actual_path = self.media_player.source().toLocalFile()
         if not media_paths_match(actual_path, self.local_playback_diag_path):
@@ -32098,6 +32115,31 @@ class ChannelSurfer(QWidget):
         self.stop_player()
         self.playback_mode = "ondemand"
         self.current_on_demand_path = path
+        self.local_playback_diag_path = path
+        self.local_playback_diag_started_at = time.time()
+        self.local_first_frame_seen = False
+        self.local_visible_frame_received = False
+        self.local_frame_received_count = 0
+        self.local_frame_map_failures = 0
+        self.local_last_frame_details = {}
+        self.local_first_audio_seen = False
+        self.local_first_audio_at = 0.0
+        probe = probe_media_json(path)
+        expectations = stream_expectations_from_probe(probe)
+        self.local_expected_video = bool(expectations.get("has_video")) or str(path).lower().endswith(VIDEO_EXTS)
+        self.local_expected_audio = bool(expectations.get("has_audio"))
+        self.local_probe_details = summarize_probe_for_log(path, probe)
+        self.local_playback_events = []
+        self.last_playback_path_mismatch = ""
+        self.record_local_playback_event(
+            "source_set",
+            path=path,
+            offset_ms=max(0, int(position_ms)),
+            playback_mode="ondemand",
+            expects_video=self.local_expected_video,
+            expects_audio=self.local_expected_audio,
+            probe=self.local_probe_details.get("summary", ""),
+        )
         self.pending_seek_ms = max(0, int(position_ms))
         self.pending_play_after_seek = True
         self.ensure_video_sinks_attached()
