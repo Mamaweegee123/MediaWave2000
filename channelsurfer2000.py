@@ -29113,7 +29113,35 @@ class ChannelSurfer(QWidget):
                         "start": slot_start,
                         "end": program["end"],
                         "path": program["path"],
+                        # Internal fields used only for segment coalescing below.
+                        "_seg_start": float(entry.get("start_offset", 0) or 0),
+                        "_seg_end": float(entry.get("end_offset", 0) or 0),
                     })
+
+            # Coalesce consecutive slots that are segments of the same program
+            # split at commercial breakpoints (e.g. a 2-hour movie cut into
+            # three content chunks by midroll commercials).  File-level offsets
+            # distinguish a genuine multi-segment airing from two intentional
+            # separate airings of the same title — back-to-back airings each
+            # start at offset 0, so their offsets are non-contiguous with the
+            # previous airing's end_offset.
+            if len(slot_data) > 1:
+                coalesced = [slot_data[0]]
+                for slot in slot_data[1:]:
+                    prev = coalesced[-1]
+                    if (
+                        slot["path"]
+                        and slot["path"] == prev["path"]
+                        and abs(slot.get("_seg_start", -1.0) - prev.get("_seg_end", -2.0)) < 0.5
+                    ):
+                        prev["end"] = slot["end"]
+                        prev["_seg_end"] = slot.get("_seg_end", prev.get("_seg_end", 0.0))
+                    else:
+                        coalesced.append(slot)
+                slot_data = coalesced
+            for slot in slot_data:
+                slot.pop("_seg_start", None)
+                slot.pop("_seg_end", None)
 
             if not slot_data:
                 slot_data = [{
