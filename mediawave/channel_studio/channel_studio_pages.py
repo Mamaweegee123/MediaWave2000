@@ -1,19 +1,22 @@
 """Page content builders for Channel Studio (Preview).
 
-Every page here is a placeholder — no scheduling, library, or settings
-data is read or written, aside from a read-only list of existing
-channel names/numbers on the Channels page. See channel_studio.py for
-the shell that wires these into the sidebar navigation.
+Every page here is a friendly, card-based mock. Aside from a read-only
+list of existing channel names/numbers/logos on the Channels page, no
+scheduling, library, or settings data is read or written. Buttons open
+"Preview only" dialogs explaining what the feature will eventually do.
+See channel_studio.py for the shell that wires these into the sidebar.
 """
 
-from .channel_studio_cards import ChannelEditorPreviewDialog, build_channel_card
+from PySide6.QtWidgets import QVBoxLayout, QWidget
+
+from .channel_studio_cards import ChannelEditorPreviewDialog, build_block_card, build_channel_card
+from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_widgets import (
     build_action_button_row,
-    build_mock_card_grid,
-    build_placeholder_note,
+    build_card_grid,
+    build_empty_state,
+    build_info_card,
 )
-
-from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 
 def _page(dialog, title_text, note_text=None):
@@ -26,6 +29,12 @@ def _page(dialog, title_text, note_text=None):
     return content, layout, card_layout
 
 
+def _preview(dialog, title, description):
+    show_preview_dialog(dialog, title, description)
+
+
+# ── Channels ─────────────────────────────────────────────────────────────
+
 def build_channels_page(dialog):
     content, layout, hero_layout = _page(
         dialog,
@@ -34,107 +43,307 @@ def build_channels_page(dialog):
         "existing channels — nothing here changes real schedules yet.",
     )
     action_row, _buttons = build_action_button_row(
-        ["Select a Channel", "Create a New Channel", "Import an Existing Channel"]
+        ["Create Channel", "Import Existing Channel", "Build from Library"],
+        fallback=lambda label: _preview(
+            dialog, label, f"{label} will walk you through this step by step. Not wired up yet."
+        ),
     )
     hero_layout.addWidget(action_row)
 
     list_card, list_layout = dialog.build_section_card("Your Channels")
     infos = list(getattr(dialog, "catalog_channel_infos", None) or [])
     if not infos:
-        list_layout.addWidget(build_placeholder_note("No channels found yet."))
+        list_layout.addWidget(
+            build_empty_state(
+                "No channels yet. Once you create or import one, it'll show up here "
+                "as a card you can open in the Studio.",
+                icon="📺",
+            )
+        )
     else:
-        def _open_editor(channel_info):
+        def _open_studio(channel_info):
             ChannelEditorPreviewDialog(channel_info, parent=dialog).exec()
 
+        def _open_preview(channel_info):
+            _preview(
+                dialog,
+                f"Preview {channel_info.get('name', 'Channel')}",
+                "This will eventually show a live preview of what's currently "
+                "playing on this channel.",
+            )
+
+        def _open_edit_basics(channel_info):
+            _preview(
+                dialog,
+                f"Edit Basics — {channel_info.get('name', 'Channel')}",
+                "Quick renaming and channel-number changes will live here, "
+                "without opening the full Studio editor.",
+            )
+
         for info in sorted(infos, key=lambda i: i.get("default_number", 0)):
-            list_layout.addWidget(build_channel_card(info, _open_editor))
+            list_layout.addWidget(build_channel_card(info, _open_studio, _open_preview, _open_edit_basics))
     layout.addWidget(list_card)
 
     layout.addStretch(1)
     return content
 
 
+# ── Library ──────────────────────────────────────────────────────────────
+
 def build_library_page(dialog):
     content, layout, card_layout = _page(
         dialog,
         "Library",
-        "Your media stays exactly where it already is. MediaWave creates "
-        "virtual collections instead of requiring folders or symlinks.",
+        "Your files stay where they are. MediaWave builds channels from "
+        "references — no folders to reorganize, no symlinks to manage.",
     )
     action_row, _buttons = build_action_button_row(
-        ["Add Library", "Create Collection", "Scan Libraries"]
+        ["Add Library Location", "Create Collection", "Scan Library", "Explain How This Works"],
+        fallback=lambda label: _preview(
+            dialog,
+            label,
+            "MediaWave creates virtual collections that point at your existing "
+            "files instead of copying or moving anything. This step isn't wired "
+            "up yet, but that's the plan."
+            if label == "Explain How This Works"
+            else f"{label} is a preview placeholder — no library changes happen yet.",
+        ),
     )
     card_layout.addWidget(action_row)
+    card_layout.addWidget(
+        build_empty_state(
+            "No collections yet. Add a library location to get started — "
+            "MediaWave will never move or rename your files.",
+            icon="📁",
+        )
+    )
     layout.addStretch(1)
     return content
+
+
+# ── Programming ──────────────────────────────────────────────────────────
+
+_PROGRAMMING_ACTIONS = [
+    ("Add Show", "Pick a show from your library to add to a channel."),
+    ("Add Movie Folder", "Point at a folder of movies to program from."),
+    ("Create Programming Block", "Group content into a recurring block, like Nick at Nite."),
+    ("Add Seasonal Event", "Plan holiday or seasonal takeovers ahead of time."),
+    ("Create Marathon", "Queue up a back-to-back run of episodes or movies."),
+    ("Add Night Block", "Build a themed overnight lineup."),
+]
 
 
 def build_programming_page(dialog):
     content, layout, card_layout = _page(
-        dialog, "Programming", "Prototype of a television-style programming workflow."
+        dialog,
+        "Programming",
+        "Plan your lineup like a television network. Nothing here is "
+        "connected to real scheduling yet.",
     )
-    card_layout.addWidget(
-        build_mock_card_grid(
-            [
-                ("Programming Blocks", "Recurring lineup segments"),
-                ("Marathons", "Back-to-back runs"),
-                ("Movies", "Feature presentations"),
-                ("Seasonal Events", "Holiday & special programming"),
-                ("Schedules", "Day-by-day lineups"),
-            ]
+    cards = [
+        build_info_card(
+            title,
+            note,
+            buttons=[("Start", lambda checked=False, t=title, n=note: _preview(dialog, t, n))],
         )
-    )
+        for title, note in _PROGRAMMING_ACTIONS
+    ]
+    card_layout.addWidget(build_card_grid(cards))
     layout.addStretch(1)
     return content
+
+
+# ── Blocks ───────────────────────────────────────────────────────────────
+
+_MOCK_BLOCKS = [
+    {
+        "name": "Daytime",
+        "time_range": "6:00 AM – 3:00 PM",
+        "content_type": "Sitcoms & Cartoons",
+        "commercials_profile": "Kids Daytime",
+        "bumper_set": "Channel IDs",
+    },
+    {
+        "name": "Nick at Nite",
+        "time_range": "8:00 PM – 12:00 AM",
+        "content_type": "Classic Sitcoms",
+        "commercials_profile": "Night",
+        "bumper_set": "Block Starts",
+    },
+    {
+        "name": "Adult Swim",
+        "time_range": "12:00 AM – 6:00 AM",
+        "content_type": "Adult Animation",
+        "commercials_profile": "Night",
+        "bumper_set": "Adult Swim Style",
+    },
+    {
+        "name": "Friday Night Movies",
+        "time_range": "8:00 PM – 11:00 PM",
+        "content_type": "Feature Films",
+        "commercials_profile": "Movies",
+        "bumper_set": "Block Starts",
+    },
+    {
+        "name": "Holiday Marathon",
+        "time_range": "All Day",
+        "content_type": "Seasonal Specials",
+        "commercials_profile": "Holiday",
+        "bumper_set": "Holiday",
+    },
+]
 
 
 def build_blocks_page(dialog):
-    content, layout, card_layout = _page(dialog, "Blocks", "This section is under construction.")
-    card_layout.addWidget(
-        build_mock_card_grid(
-            ["Nickelodeon Day", "Nick at Nite", "Adult Swim", "Friday Night Movies", "Holiday Marathon"]
-        )
+    content, layout, card_layout = _page(
+        dialog,
+        "Blocks",
+        "Blocks are recurring chunks of programming, like a network would air. "
+        "These are example blocks — building your own comes later.",
     )
+    cards = [
+        build_block_card(
+            block,
+            on_edit=lambda b: _preview(
+                dialog, f"Edit {b['name']}", "Block editing isn't wired up yet — this is a preview."
+            ),
+            on_preview=lambda b: _preview(
+                dialog, f"Preview {b['name']}", "This will eventually simulate a night of this block."
+            ),
+        )
+        for block in _MOCK_BLOCKS
+    ]
+    card_layout.addWidget(build_card_grid(cards, columns=2))
     layout.addStretch(1)
     return content
+
+
+# ── Commercials ──────────────────────────────────────────────────────────
+
+_COMMERCIAL_PROFILES = [
+    ("Kids Daytime", "Cereal, toys, and Saturday-morning energy."),
+    ("Night", "Slower-paced spots for late-night viewing."),
+    ("Holiday", "Seasonal ads for the time of year."),
+    ("Infomercials", "Long-form spots for overnight blocks."),
+    ("Movies", "Trailer-style breaks for feature presentations."),
+]
 
 
 def build_commercials_page(dialog):
-    content, layout, card_layout = _page(dialog, "Commercials", "This section is under construction.")
-    card_layout.addWidget(
-        build_mock_card_grid(["Daytime", "Night", "Holiday", "Infomercials", "Kids", "Adult"])
+    content, layout, card_layout = _page(
+        dialog,
+        "Commercials",
+        "Commercial profiles decide what kind of breaks play on a channel or block.",
     )
+    action_row, _buttons = build_action_button_row(
+        ["Create Profile", "Assign to Block", "Scan Commercials"],
+        fallback=lambda label: _preview(
+            dialog, label, f"{label} is a preview placeholder — no commercial settings change yet."
+        ),
+    )
+    card_layout.addWidget(action_row)
+    cards = [
+        build_info_card(
+            title,
+            note,
+            buttons=[("Preview", lambda checked=False, t=title, n=note: _preview(dialog, t, n))],
+        )
+        for title, note in _COMMERCIAL_PROFILES
+    ]
+    card_layout.addWidget(build_card_grid(cards))
     layout.addStretch(1)
     return content
+
+
+# ── Bumpers ──────────────────────────────────────────────────────────────
+
+_BUMPER_SETS = [
+    ("Channel IDs", "Short idents that remind viewers what channel they're on."),
+    ("Block Starts", "Plays right before a programming block begins."),
+    ("Block Ends", "Plays right after a programming block wraps up."),
+    ("Holiday", "Seasonal bumpers for the time of year."),
+    ("Adult Swim Style", "Moody, late-night transition bumpers."),
+]
 
 
 def build_bumpers_page(dialog):
-    content, layout, card_layout = _page(dialog, "Bumpers", "This section is under construction.")
-    card_layout.addWidget(
-        build_mock_card_grid(["Day", "Night", "Seasonal", "Network IDs", "Transitions"])
+    content, layout, card_layout = _page(
+        dialog,
+        "Bumpers",
+        "Bumpers are the short transitions between shows, blocks, and breaks.",
     )
+    action_row, _buttons = build_action_button_row(
+        ["Add Bumper Folder", "Assign to Block"],
+        fallback=lambda label: _preview(
+            dialog, label, f"{label} is a preview placeholder — no bumper settings change yet."
+        ),
+    )
+    card_layout.addWidget(action_row)
+    cards = [
+        build_info_card(
+            title,
+            note,
+            buttons=[("Preview", lambda checked=False, t=title, n=note: _preview(dialog, t, n))],
+        )
+        for title, note in _BUMPER_SETS
+    ]
+    card_layout.addWidget(build_card_grid(cards))
     layout.addStretch(1)
     return content
 
+
+# ── Branding ─────────────────────────────────────────────────────────────
 
 def build_branding_page(dialog):
-    content, layout, card_layout = _page(dialog, "Branding", "This section is under construction.")
-    card_layout.addWidget(
-        build_mock_card_grid(["Logo", "Station IDs", "Theme", "Colors", "Future Era Mode"])
+    content, layout, card_layout = _page(
+        dialog,
+        "Branding",
+        "How your channels look and feel — logos, colors, and station idents.",
     )
+    branding_items = [
+        ("Channel Logo", "The bug shown on screen for this channel.", None),
+        ("Station IDs", "Short idents that play between programs.", None),
+        ("Colors", "Pick an accent color for guide and overlays.", None),
+        ("Theme", "Choose a visual theme for this channel's on-screen look.", None),
+        ("Future Era Mode", "Style channels like a specific decade of television.", "Later"),
+    ]
+    cards = [
+        build_info_card(
+            title,
+            note,
+            badge_text=badge,
+            buttons=[("Preview", lambda checked=False, t=title, n=note: _preview(dialog, t, n))],
+        )
+        for title, note, badge in branding_items
+    ]
+    card_layout.addWidget(build_card_grid(cards))
     layout.addStretch(1)
     return content
 
 
+# ── Appearance / Advanced ────────────────────────────────────────────────
+
 def build_appearance_page(dialog):
-    content, layout, card_layout = _page(dialog, "Appearance", "This section is under construction.")
+    content, layout, card_layout = _page(
+        dialog,
+        "Appearance",
+        "Fine-tune how Channel Studio itself looks. Nothing to configure yet.",
+    )
+    card_layout.addWidget(
+        build_empty_state("This is reserved for future look-and-feel options.", icon="🎨")
+    )
     layout.addStretch(1)
     return content
 
 
 def build_advanced_page(dialog):
     content, layout, card_layout = _page(
-        dialog, "Advanced", "Reserved for future advanced configuration."
+        dialog,
+        "Advanced",
+        "Power-user options will live here once the basics are solid.",
+    )
+    card_layout.addWidget(
+        build_empty_state("Nothing to configure yet — check back in a future update.", icon="⚙")
     )
     layout.addStretch(1)
     return content
