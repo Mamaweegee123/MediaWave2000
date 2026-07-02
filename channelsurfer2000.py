@@ -27926,7 +27926,8 @@ class ChannelSurfer(QWidget):
         self.live_stall_path = ""
 
         if failed_path:
-            QTimer.singleShot(0, lambda p=failed_path, r=reason: self.offer_media_compatibility_conversion(p, r))
+            if self.diagnostics_enabled():
+                QTimer.singleShot(0, lambda p=failed_path, r=reason: self.offer_media_compatibility_conversion(p, r))
             failure_count = self.live_stall_failures.get(failed_path, 0) + 1
             self.live_stall_failures[failed_path] = failure_count
             should_quarantine = self._should_quarantine_media_failure(failed_path, reason)
