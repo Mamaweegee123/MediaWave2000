@@ -20066,6 +20066,7 @@ class AdvancedConfigDialog(QDialog):
             ("📁  My Catalog",          2),
             ("📻  Channel Logos",       3),
             ("⚙️  Power User",           4),
+            ("🎬  Channel Studio (Preview)", 5),
         ]
         for label, idx in _nav_items:
             btn = QPushButton(label)
@@ -20230,6 +20231,7 @@ class AdvancedConfigDialog(QDialog):
         self._adv_stack.addWidget(self.build_my_catalog_tab())     # 2
         self._adv_stack.addWidget(self.build_channel_logos_tab())  # 3
         self._adv_stack.addWidget(self.build_smart_alecs_tab())    # 4
+        self._adv_stack.addWidget(self.build_channel_studio_tab()) # 5
         self._adv_nav_group.idClicked.connect(self._adv_stack.setCurrentIndex)
 
         # ── Footer: Save / Close ─────────────────────────────────────────────
@@ -20462,6 +20464,16 @@ class AdvancedConfigDialog(QDialog):
         if loc and not cs.alert_manager.weather_location:
             cs.alert_manager.weather_location = loc
             cs.alert_manager.save()
+
+    def build_channel_studio_tab(self):
+        """Experimental preview shell — see mediawave/channel_studio/.
+
+        Isolated prototype for a future My Catalog replacement. Does not
+        touch existing catalog data or scheduling; safe to remove by
+        reverting the commits that introduced it.
+        """
+        from mediawave.channel_studio.channel_studio import build_channel_studio_tab
+        return build_channel_studio_tab(self, nav_panel_cls=_AdvNavPanel)
 
     def build_my_catalog_tab(self):
         content = QWidget()
