@@ -1,0 +1,60 @@
+"""Sidebar navigation for Channel Studio (Preview).
+
+Mirrors the QButtonGroup + QStackedWidget navigation philosophy already
+used by the Advanced Configuration dialog's own sidebar, so Channel
+Studio looks and behaves like the rest of MediaWave.
+"""
+
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QButtonGroup, QLabel, QPushButton, QVBoxLayout, QWidget
+
+CHANNEL_STUDIO_SECTIONS = [
+    ("📺  Channels", 0),
+    ("📁  Library", 1),
+    ("🕒  Programming", 2),
+    ("🎬  Blocks", 3),
+    ("📢  Commercials", 4),
+    ("🎞  Bumpers", 5),
+    ("⭐  Branding", 6),
+    ("🎨  Appearance", 7),
+    ("⚙  Advanced", 8),
+]
+
+
+def build_channel_studio_sidebar(panel_cls=None):
+    """Build the sidebar panel + its button group.
+
+    `panel_cls` lets the caller supply the same custom-painted nav panel
+    class used elsewhere in MediaWave (starfield background, fixed
+    width) so Channel Studio matches pixel-for-pixel. Falls back to a
+    plain QWidget if not provided.
+    """
+    panel = (panel_cls or QWidget)()
+    inner = QVBoxLayout(panel)
+    inner.setContentsMargins(0, 0, 0, 0)
+    inner.setSpacing(2)
+
+    header = QLabel("Channel Studio")
+    header.setObjectName("advNavSubtitle")
+    header.setContentsMargins(20, 22, 16, 10)
+    inner.addWidget(header)
+
+    sep = QWidget()
+    sep.setObjectName("advNavSep")
+    sep.setFixedHeight(1)
+    inner.addWidget(sep)
+
+    group = QButtonGroup(panel)
+    group.setExclusive(True)
+    for label, idx in CHANNEL_STUDIO_SECTIONS:
+        btn = QPushButton(label)
+        btn.setObjectName("advNavItem")
+        btn.setCheckable(True)
+        btn.setChecked(idx == 0)
+        btn.setFlat(True)
+        btn.setCursor(Qt.PointingHandCursor)
+        inner.addWidget(btn)
+        group.addButton(btn, idx)
+
+    inner.addStretch(1)
+    return group, panel
