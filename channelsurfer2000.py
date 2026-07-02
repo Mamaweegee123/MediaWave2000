@@ -172,8 +172,8 @@ except ImportError:
     AppKit = None
     Foundation = None
 
-from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QLabel, QHBoxLayout, QComboBox, QFormLayout, QSizePolicy, QProgressBar, QDialog, QLineEdit, QCheckBox, QSpinBox, QListWidget, QAbstractItemView, QScrollArea, QTabWidget, QTextEdit, QGridLayout, QButtonGroup, QStackedWidget, QMessageBox
-from PySide6.QtCore import Qt, QTimer, Slot, QUrl, Signal, QRect, QRectF, QPoint, QPointF, QSize, QEvent
+from PySide6.QtWidgets import QApplication, QWidget, QPushButton, QVBoxLayout, QFileDialog, QLabel, QHBoxLayout, QComboBox, QFormLayout, QSizePolicy, QProgressBar, QDialog, QLineEdit, QCheckBox, QSpinBox, QListWidget, QAbstractItemView, QScrollArea, QTabWidget, QTextEdit, QGridLayout, QButtonGroup, QStackedWidget, QMessageBox, QGraphicsOpacityEffect
+from PySide6.QtCore import Qt, QTimer, Slot, QUrl, Signal, QRect, QRectF, QPoint, QPointF, QSize, QEvent, QPropertyAnimation, QEasingCurve
 from PySide6.QtGui import QPainter, QColor, QDesktopServices, QIcon, QKeySequence, QShortcut, QPixmap, QFont, QFontDatabase, QLinearGradient, QRadialGradient, QPen, QPolygon, QImage, QFontMetrics, QPainterPath
 from PySide6.QtMultimedia import QMediaPlayer, QAudioOutput, QVideoSink, QSoundEffect, QAudioBufferOutput, QAudioFormat
 from PySide6.QtWebEngineWidgets import QWebEngineView
@@ -20023,8 +20023,19 @@ class AdvancedConfigDialog(QDialog):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
+        # ── Mode switch: main settings page | Channel Studio (full width) ──
+        self._mode_stack = QStackedWidget()
+        self._mode_stack.setObjectName("advModeStack")
+        self._mode_transition_active = False
+        self._mode_fade_anim = None
+        self._last_adv_stack_index = 0
+        outer.addWidget(self._mode_stack, 1)
+
+        main_settings_page = QWidget()
+        main_settings_page.setObjectName("advMainSettingsPage")
+
         # ── Wizard split: nav sidebar | content stack ───────────────────────
-        split = QHBoxLayout()
+        split = QHBoxLayout(main_settings_page)
         split.setContentsMargins(0, 0, 0, 0)
         split.setSpacing(0)
 
@@ -20092,7 +20103,7 @@ class AdvancedConfigDialog(QDialog):
         self._adv_stack = QStackedWidget()
         self._adv_stack.setObjectName("advContentStack")
         split.addWidget(self._adv_stack, 1)
-        outer.addLayout(split, 1)
+        self._mode_stack.addWidget(main_settings_page)  # mode 0: main settings
 
         # Placeholder — real layout variable used by widget-creation code below
         layout = self._adv_stack  # widgets below use layout.addWidget-style via card
@@ -20231,8 +20242,11 @@ class AdvancedConfigDialog(QDialog):
         self._adv_stack.addWidget(self.build_my_catalog_tab())     # 2
         self._adv_stack.addWidget(self.build_channel_logos_tab())  # 3
         self._adv_stack.addWidget(self.build_smart_alecs_tab())    # 4
-        self._adv_stack.addWidget(self.build_channel_studio_tab()) # 5
-        self._adv_nav_group.idClicked.connect(self._adv_stack.setCurrentIndex)
+
+        # Channel Studio (Preview) lives in its own full-width mode, not as
+        # an _adv_stack page, so it doesn't share the main settings sidebar.
+        self._mode_stack.addWidget(self.build_channel_studio_tab())  # mode 1
+        self._adv_nav_group.idClicked.connect(self._on_adv_nav_clicked)
 
         # ── Footer: Save / Close ─────────────────────────────────────────────
         adv_footer = QWidget()
@@ -20473,7 +20487,66 @@ class AdvancedConfigDialog(QDialog):
         reverting the commits that introduced it.
         """
         from mediawave.channel_studio.channel_studio import build_channel_studio_tab
-        return build_channel_studio_tab(self, nav_panel_cls=_AdvNavPanel)
+        return build_channel_studio_tab(
+            self, nav_panel_cls=_AdvNavPanel, on_back=self._exit_channel_studio_mode
+        )
+
+    def _on_adv_nav_clicked(self, idx):
+        """Route main-settings nav clicks normally; Channel Studio gets its own mode."""
+        if idx == 5:
+            self._enter_channel_studio_mode()
+            return
+        self._last_adv_stack_index = idx
+        self._adv_stack.setCurrentIndex(idx)
+
+    def _enter_channel_studio_mode(self):
+        self._animate_mode_switch(1)
+
+    def _exit_channel_studio_mode(self):
+        self._animate_mode_switch(0)
+        prev_btn = self._adv_nav_group.button(self._last_adv_stack_index)
+        if prev_btn is not None:
+            prev_btn.setChecked(True)
+        self._adv_stack.setCurrentIndex(self._last_adv_stack_index)
+
+    def _animate_mode_switch(self, target_index):
+        """Short crossfade between main settings and Channel Studio mode.
+
+        Guarded against re-entry (double-clicks) and parented to `self`
+        so the animation is torn down safely if the dialog closes mid-transition.
+        """
+        if self._mode_transition_active or self._mode_stack.currentIndex() == target_index:
+            return
+        self._mode_transition_active = True
+
+        effect = QGraphicsOpacityEffect(self._mode_stack)
+        self._mode_stack.setGraphicsEffect(effect)
+
+        fade_out = QPropertyAnimation(effect, b"opacity", self)
+        fade_out.setDuration(130)
+        fade_out.setStartValue(1.0)
+        fade_out.setEndValue(0.0)
+        fade_out.setEasingCurve(QEasingCurve.OutCubic)
+
+        def _swap_and_fade_in():
+            self._mode_stack.setCurrentIndex(target_index)
+            fade_in = QPropertyAnimation(effect, b"opacity", self)
+            fade_in.setDuration(130)
+            fade_in.setStartValue(0.0)
+            fade_in.setEndValue(1.0)
+            fade_in.setEasingCurve(QEasingCurve.InCubic)
+
+            def _finish():
+                self._mode_transition_active = False
+                self._mode_stack.setGraphicsEffect(None)
+
+            fade_in.finished.connect(_finish)
+            self._mode_fade_anim = fade_in
+            fade_in.start()
+
+        fade_out.finished.connect(_swap_and_fade_in)
+        self._mode_fade_anim = fade_out
+        fade_out.start()
 
     def build_my_catalog_tab(self):
         content = QWidget()
