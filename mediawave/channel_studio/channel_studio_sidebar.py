@@ -21,13 +21,15 @@ CHANNEL_STUDIO_SECTIONS = [
 ]
 
 
-def build_channel_studio_sidebar(panel_cls=None):
+def build_channel_studio_sidebar(panel_cls=None, on_back=None):
     """Build the sidebar panel + its button group.
 
     `panel_cls` lets the caller supply the same custom-painted nav panel
     class used elsewhere in MediaWave (starfield background, fixed
     width) so Channel Studio matches pixel-for-pixel. Falls back to a
-    plain QWidget if not provided.
+    plain QWidget if not provided. `on_back`, if given, wires a
+    bottom-left "Back to Settings" button that returns to the main
+    Advanced Configuration page.
     """
     panel = (panel_cls or QWidget)()
     inner = QVBoxLayout(panel)
@@ -57,4 +59,18 @@ def build_channel_studio_sidebar(panel_cls=None):
         group.addButton(btn, idx)
 
     inner.addStretch(1)
+
+    if on_back is not None:
+        back_sep = QWidget()
+        back_sep.setObjectName("advNavSep")
+        back_sep.setFixedHeight(1)
+        inner.addWidget(back_sep)
+
+        back_btn = QPushButton("←  Back to Settings")
+        back_btn.setObjectName("advNavItem")
+        back_btn.setFlat(True)
+        back_btn.setCursor(Qt.PointingHandCursor)
+        back_btn.clicked.connect(on_back)
+        inner.addWidget(back_btn)
+
     return group, panel

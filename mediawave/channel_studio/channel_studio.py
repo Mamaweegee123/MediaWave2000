@@ -26,7 +26,7 @@ _PAGE_BUILDERS = [
 ]
 
 
-def build_channel_studio_tab(dialog, nav_panel_cls=None):
+def build_channel_studio_tab(dialog, nav_panel_cls=None, on_back=None):
     """Build the Channel Studio (Preview) tab and wire its internal sidebar.
 
     `dialog` is the owning AdvancedConfigDialog; used only to reuse its
@@ -34,6 +34,8 @@ def build_channel_studio_tab(dialog, nav_panel_cls=None):
     so Channel Studio inherits the same look without duplicating QSS.
     `nav_panel_cls`, if given, is the same custom-painted sidebar panel
     class used by the rest of the Advanced Configuration dialog.
+    `on_back`, if given, is called when the sidebar's "Back to Settings"
+    button is clicked, so the dialog can return to its main settings mode.
     """
     container = QWidget()
     container.setObjectName("channelStudioRoot")
@@ -45,7 +47,7 @@ def build_channel_studio_tab(dialog, nav_panel_cls=None):
     splitter.setObjectName("channelStudioSplitter")
     splitter.setChildrenCollapsible(False)
 
-    nav_group, nav_panel = build_channel_studio_sidebar(panel_cls=nav_panel_cls)
+    nav_group, nav_panel = build_channel_studio_sidebar(panel_cls=nav_panel_cls, on_back=on_back)
     splitter.addWidget(nav_panel)
 
     stack = QStackedWidget()
