@@ -18,6 +18,7 @@ from .channel_studio_widgets import (
     build_empty_state,
     build_info_card,
 )
+from .programming_blocks import DEFAULT_PROGRAMMING_BLOCKS
 
 
 def _page(dialog, title_text, note_text=None):
@@ -215,63 +216,25 @@ def build_programming_page(dialog):
 
 # ── Blocks ───────────────────────────────────────────────────────────────
 
-_MOCK_BLOCKS = [
-    {
-        "name": "Daytime",
-        "time_range": "6:00 AM – 3:00 PM",
-        "content_type": "Sitcoms & Cartoons",
-        "commercials_profile": "Kids Daytime",
-        "bumper_set": "Channel IDs",
-    },
-    {
-        "name": "Nick at Nite",
-        "time_range": "8:00 PM – 12:00 AM",
-        "content_type": "Classic Sitcoms",
-        "commercials_profile": "Night",
-        "bumper_set": "Block Starts",
-    },
-    {
-        "name": "Adult Swim",
-        "time_range": "12:00 AM – 6:00 AM",
-        "content_type": "Adult Animation",
-        "commercials_profile": "Night",
-        "bumper_set": "Adult Swim Style",
-    },
-    {
-        "name": "Friday Night Movies",
-        "time_range": "8:00 PM – 11:00 PM",
-        "content_type": "Feature Films",
-        "commercials_profile": "Movies",
-        "bumper_set": "Block Starts",
-    },
-    {
-        "name": "Holiday Marathon",
-        "time_range": "All Day",
-        "content_type": "Seasonal Specials",
-        "commercials_profile": "Holiday",
-        "bumper_set": "Holiday",
-    },
-]
-
-
 def build_blocks_page(dialog):
     content, layout, card_layout = _page(
         dialog,
         "Blocks",
-        "Blocks are recurring chunks of programming, like a network would air. "
-        "These are example blocks — building your own comes later.",
+        "Blocks are the identities that make up a broadcast day — like a "
+        "network's own dayparts. These are example blocks — building your "
+        "own comes later.",
     )
     cards = [
         build_block_card(
             block,
             on_edit=lambda b: _preview(
-                dialog, f"Edit {b['name']}", "Block editing isn't wired up yet — this is a preview."
+                dialog, f"Edit {b.title}", "Block editing isn't wired up yet — this is a preview."
             ),
             on_preview=lambda b: _preview(
-                dialog, f"Preview {b['name']}", "This will eventually simulate a night of this block."
+                dialog, f"Preview {b.title}", "This will eventually simulate a night of this block."
             ),
         )
-        for block in _MOCK_BLOCKS
+        for block in DEFAULT_PROGRAMMING_BLOCKS
     ]
     card_layout.addWidget(build_card_grid(cards, columns=2))
     layout.addStretch(1)

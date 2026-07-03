@@ -237,18 +237,19 @@ class ChannelEditorPreviewDialog(QDialog):
 
 
 def build_block_card(block, on_edit, on_preview):
-    """block: dict with keys name, time_range, content_type, commercials_profile, bumper_set."""
+    """block: a `ProgrammingBlock` — a named identity, not a raw time range."""
     meta_lines = [
-        f"⏰ {block.get('time_range', '')}",
-        f"🎞 {block.get('content_type', '')}",
-        f"📢 Commercials: {block.get('commercials_profile', '')}",
-        f"🎬 Bumpers: {block.get('bumper_set', '')}",
+        f"⏰ Typically airs {block.typical_airtime}",
+        f"📢 Commercials: {block.commercial_profile}",
+        f"🎬 Bumpers: {block.bumper_set}",
+        f"⭐ Branding: {block.branding_style}",
     ]
     return build_info_card(
-        block.get("name", "Block"),
+        block.title,
+        block.description,
         meta_lines=meta_lines,
         buttons=[
             ("Edit Block", lambda: on_edit(block)),
-            ("Preview Night", lambda: on_preview(block)),
+            ("Preview", lambda: on_preview(block)),
         ],
     )
