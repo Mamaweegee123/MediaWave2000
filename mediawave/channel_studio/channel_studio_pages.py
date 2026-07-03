@@ -247,9 +247,9 @@ def build_blocks_page(dialog):
     content, layout, card_layout = _page(
         dialog,
         "Blocks",
-        "Blocks are the identities that make up a broadcast day — like a "
-        "network's own dayparts. These are example blocks — building your "
-        "own comes later.",
+        "When should this channel come alive? Blocks are the identities "
+        "that make up a broadcast day — like a network's own dayparts. "
+        "These are example blocks — building your own comes later.",
     )
     cards = [
         build_block_card(
@@ -283,7 +283,8 @@ def build_commercials_page(dialog):
     content, layout, card_layout = _page(
         dialog,
         "Commercials",
-        "Commercial profiles decide what kind of breaks play on a channel or block.",
+        "What kind of commercials belong here? Commercial profiles decide "
+        "what kind of breaks play on a channel or block.",
     )
     action_row, _buttons = build_action_button_row(
         ["Create Profile", "Assign to Block", "Scan Commercials"],
