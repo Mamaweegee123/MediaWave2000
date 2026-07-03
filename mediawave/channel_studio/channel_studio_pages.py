@@ -349,13 +349,32 @@ def build_branding_page(dialog):
     content, layout, card_layout = _page(
         dialog,
         "Branding",
-        "How your channels look and feel — logos, colors, and station idents.",
+        "How your channels look and feel — logos, station idents, and "
+        "on-screen identity. Your app's own theme stays put; these are "
+        "just for how a channel presents itself on screen.",
     )
     branding_items = [
         ("Channel Logo", "The bug shown on screen for this channel.", None),
         ("Station IDs", "Short idents that play between programs.", None),
-        ("Colors", "Pick an accent color for guide and overlays.", None),
-        ("Theme", "Choose a visual theme for this channel's on-screen look.", None),
+        (
+            "Channel Colors",
+            "A future accent color for this channel's own guide entries and "
+            "overlays — separate from your app's theme, not a replacement for it.",
+            "Later",
+        ),
+        (
+            "Channel Look",
+            "A future on-screen style for this channel, layered on top of "
+            "your app's look rather than changing it.",
+            "Later",
+        ),
+        (
+            "On-Air Popups",
+            "Future support for fun on-screen extras during a show — think "
+            "an 'Up next' character popup or a lower-third, styled to match "
+            "the channel.",
+            "Later",
+        ),
         ("Future Era Mode", "Style channels like a specific decade of television.", "Later"),
     ]
     cards = [
