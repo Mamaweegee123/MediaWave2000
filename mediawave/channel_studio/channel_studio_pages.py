@@ -134,9 +134,16 @@ def build_channels_page(dialog):
             airing_rules_config=getattr(dialog, "_airing_rules_config", None),
             logo_lookup=getattr(dialog, "_channel_logo_lookup", None),
         )
+        summaries_by_id = {summary.channel_id: summary for summary in summaries}
+        channels_by_id = getattr(dialog, "_studio_channels_by_id", None) or {}
 
         def _open_studio(channel_info):
-            ChannelEditorPreviewDialog(channel_info, parent=dialog).exec()
+            channel_id = channel_info.get("id", "")
+            summary = summaries_by_id.get(channel_id)
+            schedule = build_tonight_schedules([channel_info], channels_by_id=channels_by_id)[0]
+            ChannelEditorPreviewDialog(
+                channel_info, summary=summary, schedule=schedule, parent=dialog
+            ).exec()
 
         def _open_preview(channel_info):
             _preview(

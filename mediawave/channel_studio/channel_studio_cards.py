@@ -15,13 +15,14 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QPushButton,
-    QTabWidget,
+    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .channel_studio_dialogs import show_preview_dialog
-from .channel_studio_widgets import build_info_card
+from .channel_studio_widgets import build_card_grid, build_info_card, build_schedule_timeline
+from .programming_blocks import DEFAULT_PROGRAMMING_BLOCKS
 
 _LOGO_CANDIDATE_NAMES = ("logo.png", "logo.jpg", "logo.jpeg", "bug.png", "channel.png")
 
@@ -122,35 +123,33 @@ def build_channel_card(summary, on_open_studio, on_preview, on_edit_basics):
     return card
 
 
-# (section title, friendly blurb, [(mock item title, mock item note), ...])
-_EDITOR_SECTIONS = [
+# (card title, icon, one-line blurb shown on the landing hub,
+#  friendly section note, [(mock item title, mock item note), ...])
+_EDITOR_CARDS = [
     (
-        "Overview",
-        "The at-a-glance basics for this channel.",
-        [
-            ("Channel Name & Number", "Rename this channel or move it to a new number."),
-            ("Description", "A short blurb viewers might see in a future guide."),
-        ],
+        "Watching Tonight",
+        "🌙",
+        "See what's playing on this channel right now.",
+        "Here's what this channel feels like tonight.",
+        None,  # rendered specially — see _build_watching_tonight_page
     ),
     (
         "Programming",
-        "What shows up on this channel, and when.",
+        "🕒",
+        "What plays on this channel, and when.",
+        "What plays on this channel, and when?",
         [
             ("Shows & Movies", "Pick what plays on this channel."),
             ("Programming Blocks", "Group shows into recurring blocks like Nick at Nite."),
-        ],
-    ),
-    (
-        "Schedule",
-        "The day-by-day lineup for this channel.",
-        [
             ("Weekly Grid", "See a full week of programming at a glance."),
             ("Marathons & Events", "Plan one-off marathons or seasonal takeovers."),
         ],
     ),
     (
-        "Commercials & Promos",
-        "The breaks that play between programs.",
+        "Commercials",
+        "📢",
+        "What kind of commercials belong here?",
+        "What kind of commercials belong here?",
         [
             ("Commercial Profile", "Choose which commercial mix plays on this channel."),
             ("Promos", "Cross-promote your other channels."),
@@ -158,82 +157,199 @@ _EDITOR_SECTIONS = [
     ),
     (
         "Branding",
-        "How this channel looks and feels.",
+        "⭐",
+        "How should this channel look and feel?",
+        "How should this channel look and feel?",
         [
             ("Logo & Bug", "Set the on-screen channel logo."),
             ("Station IDs", "Short idents that play between programs."),
         ],
     ),
     (
-        "Advanced",
-        "Reserved for power-user options.",
-        [
-            ("Channel Inheritance", "Coming later."),
-            ("Raw Overrides", "Coming later."),
-        ],
+        "Blocks",
+        "🎬",
+        "When should this channel come alive?",
+        "When should this channel come alive?",
+        None,  # rendered specially — see _build_blocks_hub_page
+    ),
+    (
+        "Preview",
+        "📺",
+        "Watch this channel like a viewer would.",
+        "Watch this channel like a viewer would.",
+        [("Live Channel Preview", "See what's currently playing, as a viewer would see it.")],
     ),
 ]
 
 
-class ChannelEditorPreviewDialog(QDialog):
-    """Friendly, card-based channel editor skeleton.
+def _build_mock_items_page(dialog, items):
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setSpacing(10)
+    for item_title, item_note in items:
+        layout.addWidget(
+            build_info_card(
+                item_title,
+                item_note,
+                buttons=[
+                    (
+                        "Preview",
+                        (
+                            lambda checked=False, t=item_title, n=item_note: show_preview_dialog(
+                                dialog, t, n
+                            )
+                        ),
+                    )
+                ],
+            )
+        )
+    layout.addStretch(1)
+    return page
 
-    Everything here is a mock — nothing is read from or written to the
-    real channel yet.
+
+def _build_watching_tonight_page(dialog, schedule):
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setSpacing(10)
+    if schedule is not None and schedule.has_data:
+        layout.addWidget(build_schedule_timeline(schedule.channel_name, schedule.slots))
+    else:
+        layout.addWidget(
+            build_info_card(
+                "No lineup yet",
+                "Once this channel is playing, tonight's lineup will show up here.",
+            )
+        )
+    layout.addStretch(1)
+    return page
+
+
+def _build_blocks_hub_page(dialog):
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setSpacing(10)
+    cards = [
+        build_block_card(
+            block,
+            on_edit=lambda b: show_preview_dialog(
+                dialog, f"Edit {b.title}", "Block editing isn't wired up yet — this is a preview."
+            ),
+            on_preview=lambda b: show_preview_dialog(
+                dialog, f"Preview {b.title}", "This will eventually simulate a night of this block."
+            ),
+        )
+        for block in DEFAULT_PROGRAMMING_BLOCKS
+    ]
+    layout.addWidget(build_card_grid(cards, columns=2))
+    layout.addStretch(1)
+    return page
+
+
+def _build_identity_text(summary):
+    """A friendly one-line identity blurb, not a stats dump."""
+    if summary is None:
+        return "A folder channel, ready to play."
+    bits = [summary.headline]
+    if summary.playback_order_label:
+        bits.append(f"{summary.playback_order_label} order")
+    return " · ".join(bits)
+
+
+class ChannelEditorPreviewDialog(QDialog):
+    """A friendly, card-based television-station hub for one channel.
+
+    Opening a channel feels like walking into its studio: a handful of
+    big cards (Watching Tonight, Programming, Commercials, Branding,
+    Blocks, Preview) rather than a wall of settings tabs. Everything
+    here is a mock — nothing is read from or written to the real
+    channel yet, aside from the optional read-only `summary` and
+    `schedule` used to make Watching Tonight and the identity line
+    feel real when the data is available.
     """
 
-    def __init__(self, channel_info, parent=None):
+    def __init__(self, channel_info, summary=None, schedule=None, parent=None):
         super().__init__(parent)
-        self.setWindowTitle(
-            f"Channel Studio (Preview) — {channel_info.get('name', 'Channel')}"
-        )
-        self.resize(620, 480)
+        channel_name = channel_info.get("name", "Channel")
+        self.setWindowTitle(f"Channel Studio (Preview) — {channel_name}")
+        self.resize(680, 520)
 
         outer = QVBoxLayout(self)
-        header = QLabel(
-            f"{channel_info.get('name', 'Channel')} · "
-            f"Channel {channel_info.get('default_number', '')}"
-        )
+        header = QLabel(f"{channel_name} · Channel {channel_info.get('default_number', '')}")
         header.setObjectName("sectionHeader")
         outer.addWidget(header)
+
+        identity = QLabel(_build_identity_text(summary))
+        identity.setObjectName("sectionNote")
+        identity.setWordWrap(True)
+        outer.addWidget(identity)
 
         badge = QLabel("Preview only — nothing here saves yet")
         badge.setObjectName("fieldHelp")
         outer.addWidget(badge)
 
-        tabs = QTabWidget()
-        for section_title, section_note, mock_items in _EDITOR_SECTIONS:
-            page = QWidget()
-            page_layout = QVBoxLayout(page)
-            page_layout.setSpacing(10)
+        self._stack = QStackedWidget()
+
+        landing = QWidget()
+        landing_layout = QVBoxLayout(landing)
+        landing_layout.setSpacing(10)
+        prompt = QLabel("What do you want to work on?")
+        prompt.setObjectName("sectionNote")
+        landing_layout.addWidget(prompt)
+
+        hub_cards = []
+        for title, icon, blurb, section_note, items in _EDITOR_CARDS:
+            hub_cards.append(
+                build_info_card(
+                    f"{icon} {title}",
+                    blurb,
+                    buttons=[
+                        (
+                            "Open",
+                            (
+                                lambda checked=False, t=title: self._open_section(t)
+                            ),
+                        )
+                    ],
+                )
+            )
+        landing_layout.addWidget(build_card_grid(hub_cards, columns=2))
+        landing_layout.addStretch(1)
+        self._stack.addWidget(landing)
+
+        self._section_index_by_title = {}
+        for title, icon, blurb, section_note, items in _EDITOR_CARDS:
+            section = QWidget()
+            section_layout = QVBoxLayout(section)
+            section_layout.setSpacing(10)
+
+            back_btn = QPushButton(f"←  Back to {channel_name}")
+            back_btn.clicked.connect(lambda: self._stack.setCurrentIndex(0))
+            section_layout.addWidget(back_btn, 0, Qt.AlignLeft)
+
             note = QLabel(section_note)
             note.setObjectName("sectionNote")
             note.setWordWrap(True)
-            page_layout.addWidget(note)
-            for item_title, item_note in mock_items:
-                page_layout.addWidget(
-                    build_info_card(
-                        item_title,
-                        item_note,
-                        buttons=[
-                            (
-                                "Preview",
-                                (
-                                    lambda checked=False, t=item_title, n=item_note: show_preview_dialog(
-                                        self, t, n
-                                    )
-                                ),
-                            )
-                        ],
-                    )
-                )
-            page_layout.addStretch(1)
-            tabs.addTab(page, section_title)
-        outer.addWidget(tabs, 1)
+            section_layout.addWidget(note)
+
+            if title == "Watching Tonight":
+                section_layout.addWidget(_build_watching_tonight_page(self, schedule))
+            elif title == "Blocks":
+                section_layout.addWidget(_build_blocks_hub_page(self))
+            else:
+                section_layout.addWidget(_build_mock_items_page(self, items))
+
+            self._section_index_by_title[title] = self._stack.addWidget(section)
+
+        outer.addWidget(self._stack, 1)
 
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         outer.addWidget(close_btn, 0, Qt.AlignRight)
+
+    def _open_section(self, title):
+        index = self._section_index_by_title.get(title)
+        if index is not None:
+            self._stack.setCurrentIndex(index)
 
 
 def build_block_card(block, on_edit, on_preview):
