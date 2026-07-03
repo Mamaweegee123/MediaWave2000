@@ -17,8 +17,9 @@ from .channel_studio_widgets import (
     build_card_grid,
     build_empty_state,
     build_info_card,
+    build_schedule_timeline,
 )
-from .programming_blocks import DEFAULT_PROGRAMMING_BLOCKS
+from .programming_blocks import DEFAULT_PROGRAMMING_BLOCKS, QUICK_ACTION_SUGGESTIONS
 
 
 def _page(dialog, title_text, note_text=None):
@@ -44,8 +45,7 @@ def _build_tonight_schedule_card(schedule):
             "No lineup detected yet for tonight — once this channel is playing, "
             "its lineup will show up here.",
         )
-    meta_lines = [f"{slot.time_label} — {slot.title}" for slot in schedule.slots]
-    return build_info_card(schedule.channel_name, meta_lines=meta_lines)
+    return build_schedule_timeline(schedule.channel_name, schedule.slots)
 
 
 def build_tonight_schedule_page(dialog):
@@ -74,6 +74,26 @@ def build_tonight_schedule_page(dialog):
         cards = [_build_tonight_schedule_card(schedule) for schedule in schedules]
         list_layout.addWidget(build_card_grid(cards, columns=1))
     layout.addWidget(list_card)
+
+    actions_card, actions_layout = dialog.build_section_card(
+        "Quick Actions", "A few fun ways to shake up tonight's lineup."
+    )
+    action_cards = [
+        build_info_card(
+            f"{suggestion.icon} {suggestion.title}",
+            suggestion.description,
+            buttons=[
+                (
+                    "Try It",
+                    lambda checked=False, s=suggestion: _preview(dialog, s.title, s.description),
+                )
+            ],
+        )
+        for suggestion in QUICK_ACTION_SUGGESTIONS
+    ]
+    actions_layout.addWidget(build_card_grid(action_cards))
+    layout.addWidget(actions_card)
+
     layout.addStretch(1)
     return content
 

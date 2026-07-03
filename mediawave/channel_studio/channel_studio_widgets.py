@@ -102,6 +102,47 @@ def build_info_card(title_text, subtitle_text=None, meta_lines=None, buttons=Non
     return card
 
 
+def build_schedule_timeline(channel_name, slots):
+    """A vertical "tonight on <channel>" timeline, arrows between slots.
+
+    `slots` is a list of objects with `.time_label` and `.title` (see
+    `ScheduleSlot` in channel_studio_model.py). Display only — nothing
+    here reads or writes real schedule data.
+    """
+    card = QFrame()
+    card.setObjectName("sectionCard")
+    card.setFrameShape(QFrame.NoFrame)
+    layout = QVBoxLayout(card)
+    layout.setContentsMargins(16, 14, 16, 14)
+    layout.setSpacing(4)
+
+    heading = QLabel(f"Tonight on {channel_name}")
+    heading.setObjectName("sectionHeader")
+    layout.addWidget(heading)
+
+    for index, slot in enumerate(slots):
+        row = QHBoxLayout()
+        row.setSpacing(10)
+        time_lbl = QLabel(slot.time_label)
+        time_lbl.setObjectName("statusBadge")
+        time_lbl.setFixedWidth(84)
+        time_lbl.setAlignment(Qt.AlignCenter)
+        row.addWidget(time_lbl)
+        title_lbl = QLabel(slot.title)
+        title_lbl.setObjectName("sectionNote")
+        row.addWidget(title_lbl, 1)
+        layout.addLayout(row)
+
+        if index < len(slots) - 1:
+            arrow = QLabel("↓")
+            arrow.setObjectName("fieldHelp")
+            arrow.setAlignment(Qt.AlignCenter)
+            arrow.setFixedWidth(84)
+            layout.addWidget(arrow, 0, Qt.AlignLeft)
+
+    return card
+
+
 def build_card_grid(cards, columns=3):
     """Lay out already-built card widgets in a grid."""
     grid_widget = QWidget()
