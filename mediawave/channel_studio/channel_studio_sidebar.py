@@ -10,14 +10,15 @@ from PySide6.QtWidgets import QButtonGroup, QLabel, QPushButton, QVBoxLayout, QW
 
 CHANNEL_STUDIO_SECTIONS = [
     ("📺  Channels", 0),
-    ("📁  Library", 1),
-    ("🕒  Programming", 2),
-    ("🎬  Blocks", 3),
-    ("📢  Commercials", 4),
-    ("🎞  Bumpers", 5),
-    ("⭐  Branding", 6),
-    ("🎨  Appearance", 7),
-    ("⚙  Advanced", 8),
+    ("🌙  Tonight's Schedule", 1),
+    ("📁  Library", 2),
+    ("🕒  Programming", 3),
+    ("🎬  Blocks", 4),
+    ("📢  Commercials", 5),
+    ("🎞  Bumpers", 6),
+    ("⭐  Branding", 7),
+    ("🎨  Appearance", 8),
+    ("⚙  Advanced", 9),
 ]
 
 

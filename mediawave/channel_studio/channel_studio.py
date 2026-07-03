@@ -15,6 +15,7 @@ from .channel_studio_sidebar import build_channel_studio_sidebar
 
 _PAGE_BUILDERS = [
     pages.build_channels_page,
+    pages.build_tonight_schedule_page,
     pages.build_library_page,
     pages.build_programming_page,
     pages.build_blocks_page,

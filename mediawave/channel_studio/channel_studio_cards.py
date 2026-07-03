@@ -27,7 +27,11 @@ _LOGO_CANDIDATE_NAMES = ("logo.png", "logo.jpg", "logo.jpeg", "bug.png", "channe
 
 
 def _find_channel_logo_path(root_path):
-    """Best-effort, read-only lookup of a channel logo image. Never raises."""
+    """Best-effort, read-only fallback logo lookup. Never raises.
+
+    Only used when the caller couldn't supply a pre-resolved logo path
+    (e.g. `ChannelStudioSummary.logo_path` from the adapter).
+    """
     if not root_path:
         return ""
     logos_dir = os.path.join(root_path, "Logos")
@@ -44,8 +48,8 @@ def _find_channel_logo_path(root_path):
     return ""
 
 
-def _build_channel_logo_widget(channel_info):
-    logo_path = _find_channel_logo_path(channel_info.get("root_path", ""))
+def _build_channel_logo_widget(summary):
+    logo_path = summary.logo_path or _find_channel_logo_path(summary.root_path)
     if logo_path:
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
@@ -56,14 +60,15 @@ def _build_channel_logo_widget(channel_info):
             logo_lbl.setFixedSize(36, 36)
             logo_lbl.setAlignment(Qt.AlignCenter)
             return logo_lbl
-    monogram = QLabel((channel_info.get("name") or "?")[:1].upper())
+    monogram = QLabel((summary.name or "?")[:1].upper())
     monogram.setObjectName("statusBadge")
     monogram.setFixedSize(36, 36)
     monogram.setAlignment(Qt.AlignCenter)
     return monogram
 
 
-def build_channel_card(channel_info, on_open_studio, on_preview, on_edit_basics):
+def build_channel_card(summary, on_open_studio, on_preview, on_edit_basics):
+    """Build a channel card from a `ChannelStudioSummary` (read-only)."""
     card = QFrame()
     card.setObjectName("sectionCard")
     card.setFrameShape(QFrame.NoFrame)
@@ -71,24 +76,35 @@ def build_channel_card(channel_info, on_open_studio, on_preview, on_edit_basics)
     layout.setContentsMargins(14, 10, 14, 10)
     layout.setSpacing(14)
 
-    number_lbl = QLabel(str(channel_info.get("default_number", "")))
+    number_lbl = QLabel(str(summary.number or ""))
     number_lbl.setObjectName("statusBadge")
     number_lbl.setFixedWidth(32)
     number_lbl.setAlignment(Qt.AlignCenter)
     layout.addWidget(number_lbl)
 
-    layout.addWidget(_build_channel_logo_widget(channel_info))
+    layout.addWidget(_build_channel_logo_widget(summary))
 
     text_col = QVBoxLayout()
     text_col.setSpacing(2)
-    name_lbl = QLabel(channel_info.get("name", "Channel"))
+    name_lbl = QLabel(summary.name)
     name_lbl.setObjectName("sectionHeader")
     text_col.addWidget(name_lbl)
-    summary_lbl = QLabel("No programming planned yet — this channel is ready when you are.")
+    summary_lbl = QLabel(summary.headline)
     summary_lbl.setObjectName("sectionNote")
     summary_lbl.setWordWrap(True)
     text_col.addWidget(summary_lbl)
+    if summary.has_hints:
+        hint_bits = []
+        if summary.airing_rule_count:
+            hint_bits.append(f"{summary.airing_rule_count} airing rule" + ("s" if summary.airing_rule_count != 1 else ""))
+        if summary.seasonal_rule_count:
+            hint_bits.append(f"{summary.seasonal_rule_count} seasonal event" + ("s" if summary.seasonal_rule_count != 1 else ""))
+        hint_lbl = QLabel(" · ".join(hint_bits))
+        hint_lbl.setObjectName("fieldHelp")
+        text_col.addWidget(hint_lbl)
     layout.addLayout(text_col, 1)
+
+    channel_info = {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
 
     btn_row = QHBoxLayout()
     btn_row.setSpacing(6)

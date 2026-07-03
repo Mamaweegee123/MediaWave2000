@@ -19987,7 +19987,8 @@ def _clear_layout(layout):
 
 class AdvancedConfigDialog(QDialog):
     def __init__(self, settings, channel_names=None, parent=None, channel_infos=None,
-                 airing_rules_config=None, channel_shows_lookup=None, channel_genre_lookup=None):
+                 airing_rules_config=None, channel_shows_lookup=None, channel_genre_lookup=None,
+                 channel_logo_lookup=None, studio_channels_by_id=None):
         super().__init__(parent)
         self._init_settings = dict(settings or {})
         self.review_requested = False
@@ -20009,6 +20010,8 @@ class AdvancedConfigDialog(QDialog):
         self._airing_rules_config = airing_rules_config if isinstance(airing_rules_config, dict) else airing_rules_config_defaults()
         self._channel_shows_lookup = channel_shows_lookup if isinstance(channel_shows_lookup, dict) else {}
         self._channel_genre_lookup = channel_genre_lookup if isinstance(channel_genre_lookup, dict) else {}
+        self._channel_logo_lookup = channel_logo_lookup if isinstance(channel_logo_lookup, dict) else {}
+        self._studio_channels_by_id = studio_channels_by_id if isinstance(studio_channels_by_id, dict) else {}
         self.commercials_settings = normalize_commercials_config((settings or {}).get("commercials", {}))
         self.advanced_commercials_settings = json.loads(json.dumps(self.commercials_settings))
         self.channel_commercial_overrides = json.loads(json.dumps(self.commercials_settings.get("channel_overrides", {})))
@@ -23817,19 +23820,26 @@ class ChannelSurfer(QWidget):
         # Build per-channel show and genre lookups for the Airing Rules editor.
         channel_shows_lookup = {}
         channel_genre_lookup = {}
+        channel_logo_lookup = {}
+        studio_channels_by_id = {}
         catalog_settings = normalize_catalog_channel_settings(
             self.app_settings.get("catalog_channel_settings", {})
         )
         for channel in getattr(self, "channels", []):
+            cid = self.catalog_channel_id(channel)
+            studio_channels_by_id[cid] = channel
             if getattr(channel, "channel_type", "media") != "media":
                 continue
-            cid = self.catalog_channel_id(channel)
             root_path = getattr(channel, "root_path", "")
             show_files = getattr(channel, "shows", [])
             try:
                 channel_shows_lookup[cid] = gather_channel_shows(root_path, show_files)
             except Exception:
                 channel_shows_lookup[cid] = []
+            try:
+                channel_logo_lookup[cid] = find_channel_bug_logo(root_path, getattr(channel, "name", ""))
+            except Exception:
+                channel_logo_lookup[cid] = ""
             tags_str = catalog_settings.get(cid, {}).get("vault_genre_tags", "")
             channel_genre_lookup[cid] = [
                 t.strip() for t in tags_str.split(",") if t.strip()
@@ -23843,6 +23853,8 @@ class ChannelSurfer(QWidget):
             airing_rules_config=self.airing_rules_config,
             channel_shows_lookup=channel_shows_lookup,
             channel_genre_lookup=channel_genre_lookup,
+            channel_logo_lookup=channel_logo_lookup,
+            studio_channels_by_id=studio_channels_by_id,
         )
         if dialog.exec() != QDialog.Accepted:
             return

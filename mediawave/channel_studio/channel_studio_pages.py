@@ -9,6 +9,7 @@ See channel_studio.py for the shell that wires these into the sidebar.
 
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
+from .channel_studio_adapter import build_channel_studio_summaries, build_tonight_schedules
 from .channel_studio_cards import ChannelEditorPreviewDialog, build_block_card, build_channel_card
 from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_widgets import (
@@ -31,6 +32,49 @@ def _page(dialog, title_text, note_text=None):
 
 def _preview(dialog, title, description):
     show_preview_dialog(dialog, title, description)
+
+
+# ── Tonight's Schedule ───────────────────────────────────────────────────
+
+def _build_tonight_schedule_card(schedule):
+    if not schedule.has_data:
+        return build_info_card(
+            schedule.channel_name,
+            "No lineup detected yet for tonight — once this channel is playing, "
+            "its lineup will show up here.",
+        )
+    meta_lines = [f"{slot.time_label} — {slot.title}" for slot in schedule.slots]
+    return build_info_card(schedule.channel_name, meta_lines=meta_lines)
+
+
+def build_tonight_schedule_page(dialog):
+    content, layout, hero_layout = _page(
+        dialog,
+        "Tonight's Schedule",
+        "Here's what your channel feels like tonight. This is a read-only "
+        "preview, built from your channel's current lineup — nothing here "
+        "changes what plays.",
+    )
+    infos = list(getattr(dialog, "catalog_channel_infos", None) or [])
+    list_card, list_layout = dialog.build_section_card("Tonight's Lineup")
+    if not infos:
+        list_layout.addWidget(
+            build_empty_state(
+                "No channels yet, so there's no lineup to preview. Once you have a "
+                "channel, tonight's schedule will show up here.",
+                icon="🌙",
+            )
+        )
+    else:
+        schedules = build_tonight_schedules(
+            infos,
+            channels_by_id=getattr(dialog, "_studio_channels_by_id", None),
+        )
+        cards = [_build_tonight_schedule_card(schedule) for schedule in schedules]
+        list_layout.addWidget(build_card_grid(cards, columns=1))
+    layout.addWidget(list_card)
+    layout.addStretch(1)
+    return content
 
 
 # ── Channels ─────────────────────────────────────────────────────────────
@@ -61,6 +105,15 @@ def build_channels_page(dialog):
             )
         )
     else:
+        summaries = build_channel_studio_summaries(
+            infos,
+            shows_lookup=getattr(dialog, "_channel_shows_lookup", None),
+            catalog_channel_settings=getattr(dialog, "catalog_channel_settings", None),
+            commercials_config=getattr(dialog, "commercials_settings", None),
+            airing_rules_config=getattr(dialog, "_airing_rules_config", None),
+            logo_lookup=getattr(dialog, "_channel_logo_lookup", None),
+        )
+
         def _open_studio(channel_info):
             ChannelEditorPreviewDialog(channel_info, parent=dialog).exec()
 
@@ -80,8 +133,8 @@ def build_channels_page(dialog):
                 "without opening the full Studio editor.",
             )
 
-        for info in sorted(infos, key=lambda i: i.get("default_number", 0)):
-            list_layout.addWidget(build_channel_card(info, _open_studio, _open_preview, _open_edit_basics))
+        for summary in sorted(summaries, key=lambda s: s.number):
+            list_layout.addWidget(build_channel_card(summary, _open_studio, _open_preview, _open_edit_basics))
     layout.addWidget(list_card)
 
     layout.addStretch(1)
@@ -96,6 +149,13 @@ def build_library_page(dialog):
         "Library",
         "Your files stay where they are. MediaWave builds channels from "
         "references — no folders to reorganize, no symlinks to manage.",
+    )
+    card_layout.addWidget(
+        build_info_card(
+            "Folder channels still work automatically",
+            "Nothing is moved or reorganized. Drop a folder in and it plays as a "
+            "channel — Channel Studio can customize it later, but it never has to.",
+        )
     )
     action_row, _buttons = build_action_button_row(
         ["Add Library Location", "Create Collection", "Scan Library", "Explain How This Works"],
