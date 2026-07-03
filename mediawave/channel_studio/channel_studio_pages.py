@@ -7,7 +7,8 @@ scheduling, library, or settings data is read or written. Buttons open
 See channel_studio.py for the shell that wires these into the sidebar.
 """
 
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from .channel_studio_adapter import build_channel_studio_summaries, build_tonight_schedules
 from .channel_studio_cards import ChannelEditorPreviewDialog, build_block_card, build_channel_card
@@ -19,7 +20,11 @@ from .channel_studio_widgets import (
     build_info_card,
     build_schedule_timeline,
 )
+from .drafts import delete_draft, load_drafts
+from .programming_block_wizard import open_programming_block_wizard
 from .programming_blocks import DEFAULT_PROGRAMMING_BLOCKS, QUICK_ACTION_SUGGESTIONS
+
+_CREATE_PROGRAMMING_BLOCK = "Create Programming Block"
 
 
 def _page(dialog, title_text, note_text=None):
@@ -34,6 +39,24 @@ def _page(dialog, title_text, note_text=None):
 
 def _preview(dialog, title, description):
     show_preview_dialog(dialog, title, description)
+
+
+def _drafts_path(dialog):
+    return getattr(dialog, "_channel_studio_drafts_file", None)
+
+
+def _start_create_block(dialog, on_saved=None):
+    open_programming_block_wizard(dialog, _drafts_path(dialog), on_saved=on_saved)
+
+
+def _trigger(dialog, title, description, on_saved=None):
+    """Route a Channel Studio action button: the real wizard for "Create
+    Programming Block", a "Preview only" dialog for everything else.
+    """
+    if title == _CREATE_PROGRAMMING_BLOCK:
+        _start_create_block(dialog, on_saved=on_saved)
+    else:
+        _preview(dialog, title, description)
 
 
 # ── Tonight's Schedule ───────────────────────────────────────────────────
@@ -85,7 +108,7 @@ def build_tonight_schedule_page(dialog):
             buttons=[
                 (
                     "Try It",
-                    lambda checked=False, s=suggestion: _preview(dialog, s.title, s.description),
+                    lambda checked=False, s=suggestion: _trigger(dialog, s.title, s.description),
                 )
             ],
         )
@@ -232,7 +255,7 @@ def build_programming_page(dialog):
         build_info_card(
             title,
             note,
-            buttons=[("Start", lambda checked=False, t=title, n=note: _preview(dialog, t, n))],
+            buttons=[("Start", lambda checked=False, t=title, n=note: _trigger(dialog, t, n))],
         )
         for title, note in _PROGRAMMING_ACTIONS
     ]
@@ -243,6 +266,95 @@ def build_programming_page(dialog):
 
 # ── Blocks ───────────────────────────────────────────────────────────────
 
+def _preview_draft_dialog(parent, draft):
+    from PySide6.QtWidgets import QDialog, QPushButton
+
+    from .schedule_preview import build_draft_preview_slots
+
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(f"Preview — {draft.title}")
+    dlg.resize(420, 420)
+    layout = QVBoxLayout(dlg)
+    layout.setSpacing(10)
+    note = QLabel("A made-up preview of this draft — nothing here is scheduled yet.")
+    note.setObjectName("sectionNote")
+    note.setWordWrap(True)
+    layout.addWidget(note)
+    layout.addWidget(build_schedule_timeline(draft.title, build_draft_preview_slots(draft.media_selections)))
+    layout.addStretch(1)
+    close_btn = QPushButton("Close")
+    close_btn.clicked.connect(dlg.accept)
+    layout.addWidget(close_btn, 0, Qt.AlignRight)
+    dlg.exec()
+
+
+def _build_draft_card(dialog, draft, refresh):
+    def _preview_draft(checked=False):
+        _preview_draft_dialog(dialog, draft)
+
+    def _edit_draft(checked=False):
+        open_programming_block_wizard(dialog, _drafts_path(dialog), existing_draft=draft, on_saved=refresh)
+
+    def _delete_draft(checked=False):
+        delete_draft(_drafts_path(dialog), draft.key)
+        refresh()
+
+    meta_lines = [f"🗓 {draft.time_preset_label}"] if draft.time_preset_label else []
+    if draft.playback_style_label:
+        meta_lines.append(f"🎛 {draft.playback_style_label}")
+    return build_info_card(
+        draft.title,
+        f"{len(draft.media_selections)} item(s) selected" if draft.media_selections else "No content selected yet",
+        meta_lines=meta_lines,
+        badge_text="Draft",
+        buttons=[
+            ("Preview", _preview_draft),
+            ("Edit", _edit_draft),
+            ("Delete", _delete_draft),
+        ],
+    )
+
+
+def _build_drafts_section(dialog):
+    section = QWidget()
+    section_layout = QVBoxLayout(section)
+    section_layout.setContentsMargins(0, 0, 0, 0)
+    section_layout.setSpacing(10)
+
+    body = QWidget()
+    body_layout = QVBoxLayout(body)
+    body_layout.setContentsMargins(0, 0, 0, 0)
+    body_layout.setSpacing(10)
+    section_layout.addWidget(body)
+
+    def refresh():
+        while body_layout.count():
+            item = body_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        action_row, _buttons = build_action_button_row(
+            [(_CREATE_PROGRAMMING_BLOCK, lambda checked=False: _start_create_block(dialog, on_saved=refresh))]
+        )
+        body_layout.addWidget(action_row)
+
+        drafts = load_drafts(_drafts_path(dialog))
+        if not drafts:
+            body_layout.addWidget(
+                build_empty_state(
+                    "No draft blocks yet. Create one to design a recurring lineup like Nick at Nite.",
+                    icon="🧩",
+                )
+            )
+        else:
+            cards = [_build_draft_card(dialog, draft, refresh) for draft in drafts]
+            body_layout.addWidget(build_card_grid(cards, columns=2))
+
+    refresh()
+    return section
+
+
 def build_blocks_page(dialog):
     content, layout, card_layout = _page(
         dialog,
@@ -251,6 +363,13 @@ def build_blocks_page(dialog):
         "that make up a broadcast day — like a network's own dayparts. "
         "These are example blocks — building your own comes later.",
     )
+
+    drafts_card, drafts_card_layout = dialog.build_section_card(
+        "Your Draft Blocks", "Blocks you've created with the wizard — draft only, nothing plays yet."
+    )
+    drafts_card_layout.addWidget(_build_drafts_section(dialog))
+    layout.addWidget(drafts_card)
+
     cards = [
         build_block_card(
             block,

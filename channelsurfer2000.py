@@ -605,6 +605,7 @@ ON_DEMAND_CACHE_FILE = os.path.join(DATA_DIR, "on_demand_catalog.json")
 VAULT_DEBUG_LOG_FILE = os.path.join(DATA_DIR, "vault_debug.log")
 COMMERCIAL_LIBRARY_CACHE_FILE = os.path.join(DATA_DIR, "commercial_library_cache.json")
 MEDIAWAVE_ALERTS_FILE = os.path.join(DATA_DIR, "mediawave_alerts.json")
+CHANNEL_STUDIO_DRAFTS_FILE = os.path.join(DATA_DIR, "channel_studio_drafts.json")
 SMART_BREAK_CACHE_FILE = os.path.join(DATA_DIR, "smart_break_cache.json")
 SPOTIFY_LYRICS_CACHE_FILE = os.path.join(DATA_DIR, "spotify_lyrics_cache.json")
 SPOTIFY_TRACK_CACHE_FILE = os.path.join(DATA_DIR, "spotify_track_cache.json")
@@ -20012,6 +20013,7 @@ class AdvancedConfigDialog(QDialog):
         self._channel_genre_lookup = channel_genre_lookup if isinstance(channel_genre_lookup, dict) else {}
         self._channel_logo_lookup = channel_logo_lookup if isinstance(channel_logo_lookup, dict) else {}
         self._studio_channels_by_id = studio_channels_by_id if isinstance(studio_channels_by_id, dict) else {}
+        self._channel_studio_drafts_file = CHANNEL_STUDIO_DRAFTS_FILE
         self.commercials_settings = normalize_commercials_config((settings or {}).get("commercials", {}))
         self.advanced_commercials_settings = json.loads(json.dumps(self.commercials_settings))
         self.channel_commercial_overrides = json.loads(json.dumps(self.commercials_settings.get("channel_overrides", {})))
