@@ -21,7 +21,12 @@ from PySide6.QtWidgets import (
 )
 
 from .channel_studio_dialogs import show_preview_dialog
-from .channel_studio_widgets import build_card_grid, build_info_card, build_schedule_timeline
+from .channel_studio_widgets import (
+    FlowLayout,
+    build_card_grid,
+    build_info_card,
+    build_schedule_timeline,
+)
 from .programming_blocks import DEFAULT_PROGRAMMING_BLOCKS
 
 _LOGO_CANDIDATE_NAMES = ("logo.png", "logo.jpg", "logo.jpeg", "bug.png", "channel.png")
@@ -69,21 +74,29 @@ def _build_channel_logo_widget(summary):
 
 
 def build_channel_card(summary, on_open_studio, on_preview, on_edit_basics):
-    """Build a channel card from a `ChannelStudioSummary` (read-only)."""
+    """Build a channel card from a `ChannelStudioSummary` (read-only).
+
+    Buttons sit in their own wrapping row below the name/logo, so at
+    narrow widths they stack onto a new line instead of clipping off
+    the right edge.
+    """
     card = QFrame()
     card.setObjectName("sectionCard")
     card.setFrameShape(QFrame.NoFrame)
-    layout = QHBoxLayout(card)
-    layout.setContentsMargins(14, 10, 14, 10)
-    layout.setSpacing(14)
+    outer = QVBoxLayout(card)
+    outer.setContentsMargins(14, 10, 14, 10)
+    outer.setSpacing(8)
+
+    top_row = QHBoxLayout()
+    top_row.setSpacing(14)
 
     number_lbl = QLabel(str(summary.number or ""))
     number_lbl.setObjectName("statusBadge")
     number_lbl.setFixedWidth(32)
     number_lbl.setAlignment(Qt.AlignCenter)
-    layout.addWidget(number_lbl)
+    top_row.addWidget(number_lbl)
 
-    layout.addWidget(_build_channel_logo_widget(summary))
+    top_row.addWidget(_build_channel_logo_widget(summary))
 
     text_col = QVBoxLayout()
     text_col.setSpacing(2)
@@ -103,12 +116,12 @@ def build_channel_card(summary, on_open_studio, on_preview, on_edit_basics):
         hint_lbl = QLabel(" · ".join(hint_bits))
         hint_lbl.setObjectName("fieldHelp")
         text_col.addWidget(hint_lbl)
-    layout.addLayout(text_col, 1)
+    top_row.addLayout(text_col, 1)
+    outer.addLayout(top_row)
 
     channel_info = {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
 
-    btn_row = QHBoxLayout()
-    btn_row.setSpacing(6)
+    btn_row = FlowLayout(h_spacing=6, v_spacing=6)
     open_btn = QPushButton("Open Studio")
     open_btn.clicked.connect(lambda: on_open_studio(channel_info))
     btn_row.addWidget(open_btn)
@@ -118,7 +131,7 @@ def build_channel_card(summary, on_open_studio, on_preview, on_edit_basics):
     edit_btn = QPushButton("Edit Basics")
     edit_btn.clicked.connect(lambda: on_edit_basics(channel_info))
     btn_row.addWidget(edit_btn)
-    layout.addLayout(btn_row)
+    outer.addLayout(btn_row)
 
     return card
 
