@@ -54,6 +54,20 @@ queue.clear()
 assert queue.clips == ()
 assert queue.remove_last() is None
 
+smart = queue.add(
+    10,
+    40,
+    origin="Smart suggestion",
+    confidence=0.82,
+    reasons=("black frame", "audio dip"),
+)
+updated = queue.update_range(0, 11, 39)
+assert updated.origin == "Smart suggestion"
+assert updated.confidence == 0.82
+assert updated.reasons == smart.reasons
+assert queue.remove_at(0) == updated
+assert len(queue) == 0
+
 assert_raises(InvalidClipRange, queue.add, 10, 10)
 assert_raises(InvalidClipRange, queue.add, 12, 10)
 assert_raises(InvalidClipRange, queue.add, -1, 2)

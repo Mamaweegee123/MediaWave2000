@@ -32,6 +32,9 @@ class TinyClipError(InvalidClipRange):
 class ClipSegment:
     start_seconds: float
     end_seconds: float
+    origin: str = "Manual"
+    confidence: float | None = None
+    reasons: tuple[str, ...] = ()
 
     @property
     def duration(self) -> float:
@@ -57,6 +60,9 @@ class ClipQueue:
         end_seconds: float,
         *,
         allow_tiny: bool = False,
+        origin: str = "Manual",
+        confidence: float | None = None,
+        reasons: tuple[str, ...] = (),
     ) -> ClipSegment:
         if not math.isfinite(start_seconds) or not math.isfinite(end_seconds):
             raise InvalidClipRange("Clip times must be finite numbers.")
@@ -64,7 +70,13 @@ class ClipQueue:
             raise InvalidClipRange("Clip start cannot be negative.")
         if end_seconds <= start_seconds:
             raise InvalidClipRange("Clip end must be after clip start.")
-        clip = ClipSegment(float(start_seconds), float(end_seconds))
+        clip = ClipSegment(
+            float(start_seconds),
+            float(end_seconds),
+            origin=origin,
+            confidence=confidence,
+            reasons=tuple(reasons),
+        )
         if clip.duration < MIN_CLIP_SECONDS and not allow_tiny:
             raise TinyClipError("This clip is under 1 second long.")
         self._clips.append(clip)
@@ -72,6 +84,25 @@ class ClipQueue:
 
     def remove_last(self) -> ClipSegment | None:
         return self._clips.pop() if self._clips else None
+
+    def remove_at(self, index: int) -> ClipSegment:
+        return self._clips.pop(index)
+
+    def update_range(self, index: int, start_seconds: float, end_seconds: float) -> ClipSegment:
+        existing = self._clips[index]
+        if start_seconds < 0 or end_seconds <= start_seconds:
+            raise InvalidClipRange("Clip end must be after clip start.")
+        updated = ClipSegment(
+            float(start_seconds),
+            float(end_seconds),
+            origin=existing.origin,
+            confidence=existing.confidence,
+            reasons=existing.reasons,
+        )
+        if updated.duration < MIN_CLIP_SECONDS:
+            raise TinyClipError("This clip is under 1 second long.")
+        self._clips[index] = updated
+        return updated
 
     def remove_first(self, count: int) -> None:
         if count > 0:
