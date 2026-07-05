@@ -42,14 +42,12 @@ class ProgrammingPreset:
 class ProgrammingSuggestion:
     """A friendly, one-click "quick action" idea shown to the user.
 
-    `icon` is an emoji shown alongside the title. Nothing about a
-    suggestion is executable on its own — the UI layer decides what
-    (if anything) happens when one is chosen.
+    Nothing about a suggestion is executable on its own — the UI layer
+    decides what (if anything) happens when one is chosen.
     """
 
     title: str
     description: str
-    icon: str = "✨"
 
 
 DEFAULT_PROGRAMMING_BLOCKS = [
@@ -128,34 +126,28 @@ DEFAULT_PROGRAMMING_PRESETS = [
 
 QUICK_ACTION_SUGGESTIONS = [
     ProgrammingSuggestion(
-        title="Make Tonight More Random",
+        title="Shuffle Tonight",
         description="Shuffle tonight's lineup for a little more surprise.",
-        icon="✨",
     ),
     ProgrammingSuggestion(
         title="Add Movie Night",
         description="Drop a feature presentation into tonight's schedule.",
-        icon="🎬",
     ),
     ProgrammingSuggestion(
         title="Start Night Block Earlier",
         description="Pull your late-night lineup up to an earlier start.",
-        icon="🌙",
     ),
     ProgrammingSuggestion(
         title="Add More Cartoons",
         description="Give the daytime lineup a few more animated picks.",
-        icon="📺",
     ),
     ProgrammingSuggestion(
         title="Add Seasonal Event",
         description="Plan a holiday or seasonal takeover ahead of time.",
-        icon="🎃",
     ),
     ProgrammingSuggestion(
         title="Create Programming Block",
         description="Group content into a new recurring block, like Nick at Nite.",
-        icon="🧩",
     ),
 ]
 
@@ -180,7 +172,6 @@ class BlockTypeOption:
     """Step 1 card: "What kind of block are you creating?" """
 
     key: str
-    icon: str
     title: str
     description: str
     typical_airtime: str
@@ -190,7 +181,6 @@ class BlockTypeOption:
 WIZARD_BLOCK_TYPES = [
     BlockTypeOption(
         key="morning_cartoons",
-        icon="☀",
         title="Morning Cartoons",
         description="A bright, bouncy start to the day.",
         typical_airtime="6:00 AM – 10:00 AM",
@@ -198,7 +188,6 @@ WIZARD_BLOCK_TYPES = [
     ),
     BlockTypeOption(
         key="after_school",
-        icon="🏫",
         title="After School",
         description="The lineup that's on the second backpacks hit the floor.",
         typical_airtime="3:00 PM – 6:00 PM",
@@ -206,7 +195,6 @@ WIZARD_BLOCK_TYPES = [
     ),
     BlockTypeOption(
         key="movie_night",
-        icon="🎬",
         title="Movie Night",
         description="A full feature presentation, trailers and all.",
         typical_airtime="8:00 PM – 11:00 PM",
@@ -214,7 +202,6 @@ WIZARD_BLOCK_TYPES = [
     ),
     BlockTypeOption(
         key="late_night",
-        icon="🌙",
         title="Late Night",
         description="Slower, moodier programming for the night owls still watching.",
         typical_airtime="12:00 AM – 6:00 AM",
@@ -222,7 +209,6 @@ WIZARD_BLOCK_TYPES = [
     ),
     BlockTypeOption(
         key="halloween_event",
-        icon="🎃",
         title="Halloween Event",
         description="A spooky seasonal takeover for the time of year.",
         typical_airtime="All Day, October",
@@ -230,7 +216,6 @@ WIZARD_BLOCK_TYPES = [
     ),
     BlockTypeOption(
         key="christmas_specials",
-        icon="🎄",
         title="Christmas Specials",
         description="Holiday favorites, back-to-back through December.",
         typical_airtime="All Day, December",
@@ -238,7 +223,6 @@ WIZARD_BLOCK_TYPES = [
     ),
     BlockTypeOption(
         key="variety",
-        icon="📺",
         title="Variety",
         description="A little bit of everything, mixed throughout the day.",
         typical_airtime="Varies",
@@ -246,7 +230,6 @@ WIZARD_BLOCK_TYPES = [
     ),
     BlockTypeOption(
         key="scratch",
-        icon="✨",
         title="Start From Scratch",
         description="Build a block with your own name, timing, and content.",
         typical_airtime="You decide",
@@ -281,18 +264,17 @@ class PlaybackStyleOption:
     """Step 4 card: "How should it feel?" """
 
     key: str
-    icon: str
     title: str
     description: str
 
 
 WIZARD_PLAYBACK_STYLES = [
-    PlaybackStyleOption("random", "🔀", "Random", "Shuffle everything for a little surprise."),
-    PlaybackStyleOption("sequential", "➡", "Sequential", "Play episodes in order, like a real season."),
-    PlaybackStyleOption("marathon", "🏁", "Marathon", "Back-to-back binge-style viewing."),
-    PlaybackStyleOption("comfort_tv", "🛋", "Comfort TV", "Familiar favorites on repeat."),
-    PlaybackStyleOption("movie_marathon", "🎥", "Movie Marathon", "A run of features, back-to-back."),
-    PlaybackStyleOption("background_tv", "🔉", "Background TV", "Low-key programming for on in the background."),
+    PlaybackStyleOption("random", "Random", "Shuffle everything for a little surprise."),
+    PlaybackStyleOption("sequential", "Sequential", "Play episodes in order, like a real season."),
+    PlaybackStyleOption("marathon", "Marathon", "Back-to-back binge-style viewing."),
+    PlaybackStyleOption("comfort_tv", "Comfort TV", "Familiar favorites on repeat."),
+    PlaybackStyleOption("movie_marathon", "Movie Marathon", "A run of features, back-to-back."),
+    PlaybackStyleOption("background_tv", "Background TV", "Low-key programming for on in the background."),
 ]
 
 

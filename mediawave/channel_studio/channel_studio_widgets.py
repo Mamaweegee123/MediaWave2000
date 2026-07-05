@@ -102,7 +102,7 @@ def build_placeholder_note(text="This section is under construction."):
     return label
 
 
-def build_empty_state(text, icon="🗂️"):
+def build_empty_state(text):
     """A friendly, non-scary "nothing here yet" block."""
     box = QFrame()
     box.setObjectName("sectionCard")
@@ -110,13 +110,6 @@ def build_empty_state(text, icon="🗂️"):
     layout = QVBoxLayout(box)
     layout.setContentsMargins(20, 24, 20, 24)
     layout.setSpacing(6)
-
-    icon_lbl = QLabel(icon)
-    icon_lbl.setAlignment(Qt.AlignCenter)
-    icon_font = icon_lbl.font()
-    icon_font.setPointSize(icon_font.pointSize() + 12)
-    icon_lbl.setFont(icon_font)
-    layout.addWidget(icon_lbl)
 
     text_lbl = QLabel(text)
     text_lbl.setObjectName("sectionNote")

@@ -9,16 +9,16 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QButtonGroup, QLabel, QPushButton, QVBoxLayout, QWidget
 
 CHANNEL_STUDIO_SECTIONS = [
-    ("📺  Channels", 0),
-    ("🌙  Tonight's Schedule", 1),
-    ("📁  Library", 2),
-    ("🕒  Programming", 3),
-    ("🎬  Blocks", 4),
-    ("📢  Commercials", 5),
-    ("🎞  Bumpers", 6),
-    ("⭐  Branding", 7),
-    ("🎨  Appearance", 8),
-    ("⚙  Advanced", 9),
+    ("Channels", 0),
+    ("Tonight's Schedule", 1),
+    ("Library", 2),
+    ("Programming", 3),
+    ("Blocks", 4),
+    ("Commercials", 5),
+    ("Bumpers", 6),
+    ("Branding", 7),
+    ("Appearance", 8),
+    ("Advanced", 9),
 ]
 
 

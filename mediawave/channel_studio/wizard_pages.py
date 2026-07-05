@@ -36,11 +36,11 @@ def build_step1_block_type(on_select):
     for option in WIZARD_BLOCK_TYPES:
         cards.append(
             build_info_card(
-                f"{option.icon} {option.title}",
+                option.title,
                 option.description,
                 meta_lines=[
-                    f"⏰ Typically airs {option.typical_airtime}",
-                    f"🎞 Example: {option.example_content}",
+                    f"Typically airs {option.typical_airtime}",
+                    f"Example: {option.example_content}",
                 ],
                 buttons=[("Choose", lambda checked=False, o=option: on_select(o))],
             )
@@ -131,8 +131,7 @@ def build_step3_content(dialog, on_continue, initial_selections=None):
     movies_list = _build_checkable_list(movie_titles, "No movies detected yet.")
     collections_panel = build_empty_state(
         "No collections yet. Once you create one from the Library page, "
-        "it'll show up here to add to a block.",
-        icon="📁",
+        "it'll show up here to add to a block."
     )
     channels_list = _build_checkable_list(channel_names, "No channels yet.")
 
@@ -196,7 +195,7 @@ def build_step4_playback_style(on_select):
     for option in WIZARD_PLAYBACK_STYLES:
         cards.append(
             build_info_card(
-                f"{option.icon} {option.title}",
+                option.title,
                 option.description,
                 buttons=[("Choose", lambda checked=False, o=option: on_select(o))],
             )
@@ -208,7 +207,7 @@ def build_step4_playback_style(on_select):
 
 # ── Step 5: preview ──────────────────────────────────────────────────────
 
-def build_step5_preview(draft_title, media_selections, example_content, on_save, on_discard):
+def build_step5_preview(draft_title, media_selections, example_content, on_save):
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setSpacing(14)
@@ -230,10 +229,7 @@ def build_step5_preview(draft_title, media_selections, example_content, on_save,
 
     btn_row = QHBoxLayout()
     btn_row.addStretch(1)
-    discard_btn = QPushButton("Discard")
-    discard_btn.clicked.connect(on_discard)
-    btn_row.addWidget(discard_btn)
-    save_btn = QPushButton("Save Draft")
+    save_btn = QPushButton("Create Draft")
     save_btn.clicked.connect(on_save)
     btn_row.addWidget(save_btn)
     layout.addLayout(btn_row)

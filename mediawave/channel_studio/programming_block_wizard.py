@@ -162,7 +162,7 @@ class ProgrammingBlockWizardDialog(QDialog):
         title = self._draft_title()
         example_content = self._block_type.example_content if self._block_type else ""
         widget = build_step5_preview(
-            title, self._media_selections, example_content, self._on_save, self._on_discard
+            title, self._media_selections, example_content, self._on_save
         )
         self._push_step(4, widget)
 
@@ -176,9 +176,6 @@ class ProgrammingBlockWizardDialog(QDialog):
         if self._block_type.key == "scratch":
             return "New Programming Block"
         return self._block_type.title
-
-    def _on_discard(self):
-        self.reject()
 
     def _on_save(self):
         now = time.time()
