@@ -7,6 +7,7 @@ Channel Studio inherits the same look without any new QSS.
 
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QFrame,
     QGridLayout,
     QHBoxLayout,
@@ -230,6 +231,30 @@ def build_mock_card_grid(items, columns=3):
         title_text, subtitle_text = item if isinstance(item, tuple) else (item, None)
         cards.append(build_info_card(title_text, subtitle_text))
     return build_card_grid(cards, columns=columns)
+
+
+def build_tab_row(labels, on_select):
+    """A flat, single-row set of exclusive tabs — not a sidebar.
+
+    Used to switch between a handful of top-level views (e.g. Tonight,
+    Programming, Commercials, Identity, Preview) without any drill-down
+    or nested navigation. `on_select(index)` is called whenever the
+    selected tab changes.
+    """
+    row = QWidget()
+    layout = FlowLayout(row, margin=0, h_spacing=6, v_spacing=6)
+    group = QButtonGroup(row)
+    group.setExclusive(True)
+    for index, label in enumerate(labels):
+        btn = QPushButton(label)
+        btn.setObjectName("advNavItem")
+        btn.setCheckable(True)
+        btn.setChecked(index == 0)
+        btn.setCursor(Qt.PointingHandCursor)
+        group.addButton(btn, index)
+        layout.addWidget(btn)
+    group.idClicked.connect(on_select)
+    return row, group
 
 
 def build_action_button_row(items, fallback=None):

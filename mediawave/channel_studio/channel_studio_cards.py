@@ -22,16 +22,16 @@ from PySide6.QtWidgets import (
 
 from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_widgets import (
-    FlowLayout,
     build_action_button_row,
     build_card_grid,
     build_empty_state,
     build_info_card,
     build_schedule_timeline,
+    build_tab_row,
 )
 from .drafts import delete_draft, load_drafts
 from .programming_block_wizard import open_programming_block_wizard
-from .programming_blocks import DEFAULT_PROGRAMMING_BLOCKS
+from .programming_blocks import QUICK_ACTION_SUGGESTIONS
 from .schedule_preview import build_draft_preview_slots
 
 _CREATE_PROGRAMMING_BLOCK = "Create Programming Block"
@@ -80,12 +80,12 @@ def _build_channel_logo_widget(summary):
     return monogram
 
 
-def build_channel_card(summary, on_open_studio, on_preview, on_edit_basics):
+def build_channel_card(summary, on_open_channel):
     """Build a channel card from a `ChannelStudioSummary` (read-only).
 
-    Buttons sit in their own wrapping row below the name/logo, so at
-    narrow widths they stack onto a new line instead of clipping off
-    the right edge.
+    One primary action — open the channel. Renaming, live preview, and
+    everything else live inside the channel's own tabs now, so the
+    picker itself stays to a single, obvious next step.
     """
     card = QFrame()
     card.setObjectName("sectionCard")
@@ -128,103 +128,23 @@ def build_channel_card(summary, on_open_studio, on_preview, on_edit_basics):
 
     channel_info = {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
 
-    btn_row = FlowLayout(h_spacing=6, v_spacing=6)
-    open_btn = QPushButton("Open Studio")
-    open_btn.clicked.connect(lambda: on_open_studio(channel_info))
-    btn_row.addWidget(open_btn)
-    preview_btn = QPushButton("Preview")
-    preview_btn.clicked.connect(lambda: on_preview(channel_info))
-    btn_row.addWidget(preview_btn)
-    edit_btn = QPushButton("Edit Basics")
-    edit_btn.clicked.connect(lambda: on_edit_basics(channel_info))
-    btn_row.addWidget(edit_btn)
-    outer.addLayout(btn_row)
+    open_btn = QPushButton("Open Channel")
+    open_btn.clicked.connect(lambda: on_open_channel(channel_info))
+    outer.addWidget(open_btn, 0, Qt.AlignLeft)
 
     return card
 
 
-# (card title, one-line blurb shown on the landing hub,
-#  friendly section note, [(mock item title, mock item note), ...])
-_EDITOR_CARDS = [
-    (
-        "Watching Tonight",
-        "See what's playing on this channel right now.",
-        "Here's what this channel feels like tonight.",
-        None,  # rendered specially — see _build_watching_tonight_page
-    ),
-    (
-        "Programming",
-        "What plays on this channel, and when.",
-        "What plays on this channel, and when?",
-        [
-            ("Shows & Movies", "Pick what plays on this channel."),
-            ("Programming Blocks", "Group shows into recurring blocks like Nick at Nite."),
-            ("Weekly Grid", "See a full week of programming at a glance."),
-            ("Marathons & Events", "Plan one-off marathons or seasonal takeovers."),
-        ],
-    ),
-    (
-        "Commercials",
-        "What kind of commercials belong here?",
-        "What kind of commercials belong here?",
-        [
-            ("Commercial Profile", "Choose which commercial mix plays on this channel."),
-            ("Promos", "Cross-promote your other channels."),
-        ],
-    ),
-    (
-        "Branding",
-        "How should this channel look and feel?",
-        "How should this channel look and feel?",
-        [
-            ("Logo & Bug", "Set the on-screen channel logo."),
-            ("Station IDs", "Short idents that play between programs."),
-        ],
-    ),
-    (
-        "Blocks",
-        "When should this channel come alive?",
-        "When should this channel come alive?",
-        None,  # rendered specially — see _build_blocks_hub_page
-    ),
-    (
-        "Preview",
-        "Watch this channel like a viewer would.",
-        "Watch this channel like a viewer would.",
-        [("Live Channel Preview", "See what's currently playing, as a viewer would see it.")],
-    ),
-]
+# Five tabs, five questions. No drill-down, no landing hub of cards —
+# picking a tab shows its answer immediately.
+_TAB_TITLES = ["Tonight", "Programming", "Commercials", "Identity", "Preview"]
 
 
-def _build_mock_items_page(dialog, items):
+def _build_tonight_tab(dialog, schedule):
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setSpacing(10)
-    for item_title, item_note in items:
-        layout.addWidget(
-            build_info_card(
-                item_title,
-                item_note,
-                buttons=[
-                    (
-                        "Preview",
-                        (
-                            lambda checked=False, t=item_title, n=item_note: show_preview_dialog(
-                                dialog, t, n
-                            )
-                        ),
-                    )
-                ],
-            )
-        )
-    layout.addStretch(1)
-    return page
 
-
-def _build_watching_tonight_page(dialog, schedule):
-    page = QWidget()
-    layout = QVBoxLayout(page)
-    layout.setSpacing(10)
     if schedule is not None and schedule.has_data:
         layout.addWidget(build_schedule_timeline(schedule.channel_name, schedule.slots))
     else:
@@ -234,6 +154,128 @@ def _build_watching_tonight_page(dialog, schedule):
                 "Once this channel is playing, tonight's lineup will show up here.",
             )
         )
+
+    quick_row = QLabel("Quick Actions")
+    quick_row.setObjectName("sectionHeader")
+    layout.addWidget(quick_row)
+    action_cards = [
+        build_info_card(
+            suggestion.title,
+            suggestion.description,
+            buttons=[
+                (
+                    "Try It",
+                    lambda checked=False, s=suggestion: show_preview_dialog(
+                        dialog, s.title, s.description
+                    ),
+                )
+            ],
+        )
+        for suggestion in QUICK_ACTION_SUGGESTIONS
+    ]
+    layout.addWidget(build_card_grid(action_cards))
+
+    layout.addStretch(1)
+    return page
+
+
+def _build_commercials_tab(dialog, summary):
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setSpacing(10)
+
+    is_on = bool(summary and summary.commercials_enabled)
+    status_label = summary.commercials_label if summary else "Commercials off"
+    toggle_label = "Turn Off" if is_on else "Turn On"
+
+    layout.addWidget(
+        build_info_card(
+            status_label,
+            "Commercials play between programs on this channel when they're on."
+            if is_on
+            else "This channel plays straight through, with no commercial breaks.",
+            buttons=[
+                (
+                    toggle_label,
+                    lambda checked=False: show_preview_dialog(
+                        dialog,
+                        "Commercials",
+                        "Turning commercials on or off for this channel isn't wired up yet — "
+                        "this is a preview.",
+                    ),
+                ),
+                (
+                    "Change Mix",
+                    lambda checked=False: show_preview_dialog(
+                        dialog,
+                        "Commercial Mix",
+                        "Choosing which commercials play here isn't wired up yet — this is a preview.",
+                    ),
+                ),
+            ],
+        )
+    )
+
+    layout.addStretch(1)
+    return page
+
+
+_IDENTITY_ITEMS = [
+    ("Channel Logo", "The bug shown on screen for this channel.", None),
+    ("Station IDs", "Short idents that play between programs.", None),
+    (
+        "Channel Look",
+        "Future colors, on-screen style, popups, and era themes for this "
+        "channel — layered on top of your app's own look, not a replacement for it.",
+        "Later",
+    ),
+]
+
+
+def _build_identity_tab(dialog):
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setSpacing(10)
+    cards = [
+        build_info_card(
+            title,
+            note,
+            badge_text=badge,
+            buttons=[
+                (
+                    "Preview",
+                    lambda checked=False, t=title, n=note: show_preview_dialog(dialog, t, n),
+                )
+            ],
+        )
+        for title, note, badge in _IDENTITY_ITEMS
+    ]
+    layout.addWidget(build_card_grid(cards))
+    layout.addStretch(1)
+    return page
+
+
+def _build_preview_tab(dialog, channel_name):
+    page = QWidget()
+    layout = QVBoxLayout(page)
+    layout.setSpacing(10)
+    layout.addWidget(
+        build_info_card(
+            "Live Channel Preview",
+            f"See what's currently playing on {channel_name}, as a viewer would see it.",
+            buttons=[
+                (
+                    "Preview",
+                    lambda checked=False: show_preview_dialog(
+                        dialog,
+                        "Live Channel Preview",
+                        "This will eventually show a live preview of what's currently "
+                        "playing on this channel.",
+                    ),
+                )
+            ],
+        )
+    )
     layout.addStretch(1)
     return page
 
@@ -337,34 +379,6 @@ def build_drafts_section(parent, studio_dialog, drafts_path):
     return section
 
 
-def _build_blocks_hub_page(dialog, studio_dialog=None, drafts_path=None):
-    page = QWidget()
-    layout = QVBoxLayout(page)
-    layout.setSpacing(10)
-
-    if studio_dialog is not None and drafts_path:
-        drafts_heading = QLabel("Your Draft Blocks")
-        drafts_heading.setObjectName("sectionHeader")
-        layout.addWidget(drafts_heading)
-        layout.addWidget(build_drafts_section(dialog, studio_dialog, drafts_path))
-
-    cards = [
-        build_block_card(
-            block,
-            on_edit=lambda b: show_preview_dialog(
-                dialog, f"Edit {b.title}", "Block editing isn't wired up yet — this is a preview."
-            ),
-            on_preview=lambda b: show_preview_dialog(
-                dialog, f"Preview {b.title}", "This will eventually simulate a night of this block."
-            ),
-        )
-        for block in DEFAULT_PROGRAMMING_BLOCKS
-    ]
-    layout.addWidget(build_card_grid(cards, columns=2))
-    layout.addStretch(1)
-    return page
-
-
 def _build_identity_text(summary):
     """A friendly one-line identity blurb, not a stats dump."""
     if summary is None:
@@ -376,15 +390,12 @@ def _build_identity_text(summary):
 
 
 class ChannelEditorPreviewDialog(QDialog):
-    """A friendly, card-based television-station hub for one channel.
+    """Running one channel: five flat tabs, no drill-down.
 
-    Opening a channel feels like walking into its studio: a handful of
-    big cards (Watching Tonight, Programming, Commercials, Branding,
-    Blocks, Preview) rather than a wall of settings tabs. Everything
-    here is a mock — nothing is read from or written to the real
-    channel yet, aside from the optional read-only `summary` and
-    `schedule` used to make Watching Tonight and the identity line
-    feel real when the data is available.
+    Tonight, Programming, Commercials, Identity, and Preview each answer
+    one question about this channel. Everything here is a mock aside
+    from Programming's draft blocks, which read and write Channel
+    Studio's own isolated drafts file — never the real schedule.
     """
 
     def __init__(self, channel_info, summary=None, schedule=None, parent=None, studio_dialog=None, drafts_path=None):
@@ -392,7 +403,7 @@ class ChannelEditorPreviewDialog(QDialog):
         self._studio_dialog = studio_dialog
         self._drafts_path = drafts_path
         channel_name = channel_info.get("name", "Channel")
-        self.setWindowTitle(f"Channel Studio (Preview) — {channel_name}")
+        self.setWindowTitle(channel_name)
         self.resize(680, 520)
 
         outer = QVBoxLayout(self)
@@ -405,91 +416,20 @@ class ChannelEditorPreviewDialog(QDialog):
         identity.setWordWrap(True)
         outer.addWidget(identity)
 
-        badge = QLabel("Preview only — nothing here saves yet")
-        badge.setObjectName("fieldHelp")
-        outer.addWidget(badge)
+        tab_row, _group = build_tab_row(_TAB_TITLES, self._show_tab)
+        outer.addWidget(tab_row)
 
         self._stack = QStackedWidget()
-
-        landing = QWidget()
-        landing_layout = QVBoxLayout(landing)
-        landing_layout.setSpacing(10)
-        prompt = QLabel("What do you want to work on?")
-        prompt.setObjectName("sectionNote")
-        landing_layout.addWidget(prompt)
-
-        hub_cards = []
-        for title, blurb, section_note, items in _EDITOR_CARDS:
-            hub_cards.append(
-                build_info_card(
-                    title,
-                    blurb,
-                    buttons=[
-                        (
-                            "Open",
-                            (
-                                lambda checked=False, t=title: self._open_section(t)
-                            ),
-                        )
-                    ],
-                )
-            )
-        landing_layout.addWidget(build_card_grid(hub_cards, columns=2))
-        landing_layout.addStretch(1)
-        self._stack.addWidget(landing)
-
-        self._section_index_by_title = {}
-        for title, blurb, section_note, items in _EDITOR_CARDS:
-            section = QWidget()
-            section_layout = QVBoxLayout(section)
-            section_layout.setSpacing(10)
-
-            back_btn = QPushButton(f"←  Back to {channel_name}")
-            back_btn.clicked.connect(lambda: self._stack.setCurrentIndex(0))
-            section_layout.addWidget(back_btn, 0, Qt.AlignLeft)
-
-            note = QLabel(section_note)
-            note.setObjectName("sectionNote")
-            note.setWordWrap(True)
-            section_layout.addWidget(note)
-
-            if title == "Watching Tonight":
-                section_layout.addWidget(_build_watching_tonight_page(self, schedule))
-            elif title == "Blocks":
-                section_layout.addWidget(
-                    _build_blocks_hub_page(self, studio_dialog=self._studio_dialog, drafts_path=self._drafts_path)
-                )
-            else:
-                section_layout.addWidget(_build_mock_items_page(self, items))
-
-            self._section_index_by_title[title] = self._stack.addWidget(section)
-
+        self._stack.addWidget(_build_tonight_tab(self, schedule))
+        self._stack.addWidget(build_drafts_section(self, self._studio_dialog, self._drafts_path))
+        self._stack.addWidget(_build_commercials_tab(self, summary))
+        self._stack.addWidget(_build_identity_tab(self))
+        self._stack.addWidget(_build_preview_tab(self, channel_name))
         outer.addWidget(self._stack, 1)
 
         close_btn = QPushButton("Close")
         close_btn.clicked.connect(self.accept)
         outer.addWidget(close_btn, 0, Qt.AlignRight)
 
-    def _open_section(self, title):
-        index = self._section_index_by_title.get(title)
-        if index is not None:
-            self._stack.setCurrentIndex(index)
-
-
-def build_block_card(block, on_edit, on_preview):
-    """block: a `ProgrammingBlock` — a named identity, not a raw time range."""
-    meta_lines = [
-        f"Typically airs {block.typical_airtime}",
-        f"Commercials: {block.commercial_profile}",
-        f"Bumpers: {block.bumper_set}",
-        f"Branding: {block.branding_style}",
-    ]
-    return build_info_card(
-        block.title,
-        block.description,
-        meta_lines=meta_lines,
-        buttons=[
-            ("Edit Block", lambda: on_edit(block)),
-            ("Preview", lambda: on_preview(block)),
-        ],
-    )
+    def _show_tab(self, index):
+        self._stack.setCurrentIndex(index)
