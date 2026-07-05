@@ -23,11 +23,18 @@ from PySide6.QtWidgets import (
 from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_widgets import (
     FlowLayout,
+    build_action_button_row,
     build_card_grid,
+    build_empty_state,
     build_info_card,
     build_schedule_timeline,
 )
+from .drafts import delete_draft, load_drafts
+from .programming_block_wizard import open_programming_block_wizard
 from .programming_blocks import DEFAULT_PROGRAMMING_BLOCKS
+from .schedule_preview import build_draft_preview_slots
+
+_CREATE_PROGRAMMING_BLOCK = "Create Programming Block"
 
 _LOGO_CANDIDATE_NAMES = ("logo.png", "logo.jpg", "logo.jpeg", "bug.png", "channel.png")
 
@@ -136,19 +143,17 @@ def build_channel_card(summary, on_open_studio, on_preview, on_edit_basics):
     return card
 
 
-# (card title, icon, one-line blurb shown on the landing hub,
+# (card title, one-line blurb shown on the landing hub,
 #  friendly section note, [(mock item title, mock item note), ...])
 _EDITOR_CARDS = [
     (
         "Watching Tonight",
-        "🌙",
         "See what's playing on this channel right now.",
         "Here's what this channel feels like tonight.",
         None,  # rendered specially — see _build_watching_tonight_page
     ),
     (
         "Programming",
-        "🕒",
         "What plays on this channel, and when.",
         "What plays on this channel, and when?",
         [
@@ -160,7 +165,6 @@ _EDITOR_CARDS = [
     ),
     (
         "Commercials",
-        "📢",
         "What kind of commercials belong here?",
         "What kind of commercials belong here?",
         [
@@ -170,7 +174,6 @@ _EDITOR_CARDS = [
     ),
     (
         "Branding",
-        "⭐",
         "How should this channel look and feel?",
         "How should this channel look and feel?",
         [
@@ -180,14 +183,12 @@ _EDITOR_CARDS = [
     ),
     (
         "Blocks",
-        "🎬",
         "When should this channel come alive?",
         "When should this channel come alive?",
         None,  # rendered specially — see _build_blocks_hub_page
     ),
     (
         "Preview",
-        "📺",
         "Watch this channel like a viewer would.",
         "Watch this channel like a viewer would.",
         [("Live Channel Preview", "See what's currently playing, as a viewer would see it.")],
@@ -237,10 +238,116 @@ def _build_watching_tonight_page(dialog, schedule):
     return page
 
 
-def _build_blocks_hub_page(dialog):
+def _preview_draft_dialog(parent, draft):
+    dlg = QDialog(parent)
+    dlg.setWindowTitle(f"Preview — {draft.title}")
+    dlg.resize(420, 420)
+    layout = QVBoxLayout(dlg)
+    layout.setSpacing(10)
+    note = QLabel("A made-up preview of this draft — nothing here is scheduled yet.")
+    note.setObjectName("sectionNote")
+    note.setWordWrap(True)
+    layout.addWidget(note)
+    layout.addWidget(build_schedule_timeline(draft.title, build_draft_preview_slots(draft.media_selections)))
+    layout.addStretch(1)
+    close_btn = QPushButton("Close")
+    close_btn.clicked.connect(dlg.accept)
+    layout.addWidget(close_btn, 0, Qt.AlignRight)
+    dlg.exec()
+
+
+def _build_draft_card(parent, studio_dialog, drafts_path, draft, refresh):
+    def _preview_draft(checked=False):
+        _preview_draft_dialog(parent, draft)
+
+    def _edit_draft(checked=False):
+        open_programming_block_wizard(studio_dialog, drafts_path, existing_draft=draft, on_saved=refresh)
+
+    def _delete_draft(checked=False):
+        delete_draft(drafts_path, draft.key)
+        refresh()
+
+    meta_lines = [f"Airs {draft.time_preset_label}"] if draft.time_preset_label else []
+    if draft.playback_style_label:
+        meta_lines.append(f"Style: {draft.playback_style_label}")
+    return build_info_card(
+        draft.title,
+        f"{len(draft.media_selections)} item(s) selected" if draft.media_selections else "No content selected yet",
+        meta_lines=meta_lines,
+        badge_text="Not On Air Yet",
+        buttons=[
+            ("Preview", _preview_draft),
+            ("Edit", _edit_draft),
+            ("Delete", _delete_draft),
+        ],
+    )
+
+
+def build_drafts_section(parent, studio_dialog, drafts_path):
+    """Draft Programming Block cards, reusable from both the Blocks page
+    and a single channel's Blocks hub. `studio_dialog` is the main Channel
+    Studio dialog (used read-only by the wizard's content step);
+    `drafts_path` is where drafts are stored. Reads/writes only the
+    isolated drafts file — never the real schedule.
+    """
+    section = QWidget()
+    section_layout = QVBoxLayout(section)
+    section_layout.setContentsMargins(0, 0, 0, 0)
+    section_layout.setSpacing(10)
+
+    body = QWidget()
+    body_layout = QVBoxLayout(body)
+    body_layout.setContentsMargins(0, 0, 0, 0)
+    body_layout.setSpacing(10)
+    section_layout.addWidget(body)
+
+    def refresh():
+        while body_layout.count():
+            item = body_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+        action_row, _buttons = build_action_button_row(
+            [
+                (
+                    _CREATE_PROGRAMMING_BLOCK,
+                    lambda checked=False: open_programming_block_wizard(
+                        studio_dialog, drafts_path, on_saved=refresh
+                    ),
+                )
+            ]
+        )
+        body_layout.addWidget(action_row)
+
+        drafts = load_drafts(drafts_path)
+        if not drafts:
+            body_layout.addWidget(
+                build_empty_state(
+                    "No draft blocks yet. Create one to design a recurring lineup like Nick at Nite."
+                )
+            )
+        else:
+            cards = [
+                _build_draft_card(parent, studio_dialog, drafts_path, draft, refresh) for draft in drafts
+            ]
+            body_layout.addWidget(build_card_grid(cards, columns=2))
+
+    refresh()
+    return section
+
+
+def _build_blocks_hub_page(dialog, studio_dialog=None, drafts_path=None):
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setSpacing(10)
+
+    if studio_dialog is not None and drafts_path:
+        drafts_heading = QLabel("Your Draft Blocks")
+        drafts_heading.setObjectName("sectionHeader")
+        layout.addWidget(drafts_heading)
+        layout.addWidget(build_drafts_section(dialog, studio_dialog, drafts_path))
+
     cards = [
         build_block_card(
             block,
@@ -280,8 +387,10 @@ class ChannelEditorPreviewDialog(QDialog):
     feel real when the data is available.
     """
 
-    def __init__(self, channel_info, summary=None, schedule=None, parent=None):
+    def __init__(self, channel_info, summary=None, schedule=None, parent=None, studio_dialog=None, drafts_path=None):
         super().__init__(parent)
+        self._studio_dialog = studio_dialog
+        self._drafts_path = drafts_path
         channel_name = channel_info.get("name", "Channel")
         self.setWindowTitle(f"Channel Studio (Preview) — {channel_name}")
         self.resize(680, 520)
@@ -310,10 +419,10 @@ class ChannelEditorPreviewDialog(QDialog):
         landing_layout.addWidget(prompt)
 
         hub_cards = []
-        for title, icon, blurb, section_note, items in _EDITOR_CARDS:
+        for title, blurb, section_note, items in _EDITOR_CARDS:
             hub_cards.append(
                 build_info_card(
-                    f"{icon} {title}",
+                    title,
                     blurb,
                     buttons=[
                         (
@@ -330,7 +439,7 @@ class ChannelEditorPreviewDialog(QDialog):
         self._stack.addWidget(landing)
 
         self._section_index_by_title = {}
-        for title, icon, blurb, section_note, items in _EDITOR_CARDS:
+        for title, blurb, section_note, items in _EDITOR_CARDS:
             section = QWidget()
             section_layout = QVBoxLayout(section)
             section_layout.setSpacing(10)
@@ -347,7 +456,9 @@ class ChannelEditorPreviewDialog(QDialog):
             if title == "Watching Tonight":
                 section_layout.addWidget(_build_watching_tonight_page(self, schedule))
             elif title == "Blocks":
-                section_layout.addWidget(_build_blocks_hub_page(self))
+                section_layout.addWidget(
+                    _build_blocks_hub_page(self, studio_dialog=self._studio_dialog, drafts_path=self._drafts_path)
+                )
             else:
                 section_layout.addWidget(_build_mock_items_page(self, items))
 
@@ -368,10 +479,10 @@ class ChannelEditorPreviewDialog(QDialog):
 def build_block_card(block, on_edit, on_preview):
     """block: a `ProgrammingBlock` — a named identity, not a raw time range."""
     meta_lines = [
-        f"⏰ Typically airs {block.typical_airtime}",
-        f"📢 Commercials: {block.commercial_profile}",
-        f"🎬 Bumpers: {block.bumper_set}",
-        f"⭐ Branding: {block.branding_style}",
+        f"Typically airs {block.typical_airtime}",
+        f"Commercials: {block.commercial_profile}",
+        f"Bumpers: {block.bumper_set}",
+        f"Branding: {block.branding_style}",
     ]
     return build_info_card(
         block.title,
