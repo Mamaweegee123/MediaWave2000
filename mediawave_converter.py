@@ -18,7 +18,9 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import Qt, QThread, QTimer, QUrl, Signal, QPointF, QRectF
-from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient
+from PySide6.QtGui import QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QKeySequence, QLinearGradient, QPainter, QPen, QPixmap, QRadialGradient, QShortcut
+from PySide6.QtMultimedia import QAudioOutput, QMediaPlayer
+from PySide6.QtMultimediaWidgets import QVideoWidget
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QApplication,
@@ -44,6 +46,17 @@ from PySide6.QtWidgets import (
     QComboBox,
     QCheckBox,
     QSizePolicy,
+)
+
+from mediawave.clip_cutter import (
+    ClipQueue,
+    ClipSegment,
+    InvalidClipRange,
+    TinyClipError,
+    build_accurate_cut_command,
+    build_fast_cut_command,
+    format_timestamp,
+    plan_output_paths,
 )
 
 
@@ -2723,12 +2736,96 @@ class ImportWorker(QThread):
         )
 
 
+class ClipExportWorker(QThread):
+    status_changed = Signal(str)
+    finished_summary = Signal(dict)
+
+    def __init__(
+        self,
+        source_path: Path,
+        clips: tuple[ClipSegment, ...],
+        output_paths: list[Path],
+        mode: str,
+        safe_profile: dict[str, Any],
+    ):
+        super().__init__()
+        self.source_path = source_path
+        self.clips = clips
+        self.output_paths = output_paths
+        self.mode = mode
+        self.safe_profile = safe_profile
+
+    def run(self) -> None:
+        log_lines = [
+            "MediaWave Commercial Cutter export",
+            f"Source: {self.source_path}",
+            f"Mode: {self.mode}",
+            f"Queued clips: {len(self.clips)}",
+        ]
+        exported: list[str] = []
+        error = ""
+        failed_clip = 0
+
+        for index, (clip, output_path) in enumerate(zip(self.clips, self.output_paths), start=1):
+            self.status_changed.emit(f"Exporting clip {index} of {len(self.clips)}…")
+            if self.mode == "Fast Cut":
+                command = build_fast_cut_command(FFMPEG_PATH or "ffmpeg", self.source_path, output_path, clip)
+            else:
+                command = build_accurate_cut_command(
+                    FFMPEG_PATH or "ffmpeg",
+                    self.source_path,
+                    output_path,
+                    clip,
+                    preset=str(self.safe_profile["preset"]),
+                    crf=int(self.safe_profile["crf"]),
+                    audio_bitrate=str(self.safe_profile["audio_bitrate"]),
+                )
+            log_lines.extend(
+                [
+                    "",
+                    f"Clip {index:03d}: {format_timestamp(clip.start_seconds)} → "
+                    f"{format_timestamp(clip.end_seconds)}",
+                    f"Output: {output_path}",
+                    f"Command: {_command_for_log(command)}",
+                ]
+            )
+            try:
+                completed = subprocess.run(command, capture_output=True, text=True)
+            except OSError as exc:
+                error = str(exc)
+                failed_clip = index
+                log_lines.append(f"Error: {error}")
+                break
+            if completed.returncode != 0 or not output_path.is_file():
+                error = completed.stderr.strip() or "FFmpeg did not create the clip file."
+                failed_clip = index
+                log_lines.extend([f"FFmpeg return code: {completed.returncode}", f"Error: {error}"])
+                break
+            exported.append(str(output_path))
+            log_lines.append("Result: exported")
+
+        self.finished_summary.emit(
+            {
+                "exported": exported,
+                "failed_clip": failed_clip,
+                "error": error,
+                "log_lines": log_lines,
+                "output_folder": str(self.output_paths[0].parent) if self.output_paths else "",
+            }
+        )
+
+
 class MediaWaveConverterWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.primary_font_family, self.secondary_font_family = load_brand_fonts()
         self.worker: BatchWorker | None = None
         self.import_worker: ImportWorker | None = None
+        self.clip_export_worker: ClipExportWorker | None = None
+        self.clip_queue = ClipQueue()
+        self.clip_source_path: Path | None = None
+        self.clip_active_start: float | None = None
+        self._clip_shortcuts: list[QShortcut] = []
         self._import_cancel_in_progress = False
         self._close_after_import_cancel = False
         self._active_import_staging_root: Path | None = None
@@ -2817,11 +2914,13 @@ class MediaWaveConverterWindow(QMainWindow):
         sidebar_layout.addWidget(nav_sep)
 
         self.converter_nav = self.make_nav_button("converter", "📼  Converter")
+        self.clip_cutter_nav = self.make_nav_button("clip_cutter", "✂  Commercial Cutter")
         self.queue_nav = self.make_nav_button("queue", "📋  Queue")
         self.rename_nav = self.make_nav_button("rename", "✨  Rename your Files!")
         self.import_nav = self.make_nav_button("import", "🔗  Import from URL")
         self.advanced_nav = self.make_nav_button("advanced", "⚙  Advanced Settings")
         sidebar_layout.addWidget(self.converter_nav)
+        sidebar_layout.addWidget(self.clip_cutter_nav)
         sidebar_layout.addWidget(self.queue_nav)
         sidebar_layout.addWidget(self.rename_nav)
         sidebar_layout.addWidget(self.import_nav)
@@ -2861,11 +2960,13 @@ class MediaWaveConverterWindow(QMainWindow):
         content_layout.addWidget(self.page_stack, 1)
 
         self.converter_page = self.build_converter_page()
+        self.clip_cutter_page = self.build_clip_cutter_page()
         self.queue_page = self.build_queue_page()
         self.rename_page = self.build_rename_page()
         self.import_page = self.build_import_page()
         self.advanced_page = self.build_advanced_page()
         self.page_stack.addWidget(self.converter_page)
+        self.page_stack.addWidget(self.clip_cutter_page)
         self.page_stack.addWidget(self.queue_page)
         self.page_stack.addWidget(self.rename_page)
         self.page_stack.addWidget(self.import_page)
@@ -3100,6 +3201,456 @@ class MediaWaveConverterWindow(QMainWindow):
         layout.addWidget(ready_panel, 1)
         layout.addStretch()
         return page
+
+    def build_clip_cutter_page(self) -> QWidget:
+        page = QWidget()
+        page.setObjectName("pageBody")
+        layout = QVBoxLayout(page)
+        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setSpacing(12)
+
+        source_panel = QFrame()
+        source_panel.setObjectName("panel")
+        source_layout = QVBoxLayout(source_panel)
+        source_layout.setContentsMargins(18, 14, 18, 14)
+        source_layout.setSpacing(8)
+        source_layout.addWidget(self.panel_heading("Commercial Cutter"))
+        help_label = QLabel(
+            "Play the video and tap Space to mark each commercial's start and end. "
+            "No timeline editing or typed timestamps needed."
+        )
+        help_label.setObjectName("fieldHelp")
+        help_label.setWordWrap(True)
+        source_layout.addWidget(help_label)
+
+        self.clip_source_edit = QLineEdit()
+        self.clip_source_edit.setReadOnly(True)
+        self.clip_source_edit.setPlaceholderText("Choose a source video")
+        self.clip_choose_video_button = QPushButton("Choose Video")
+        self.clip_choose_video_button.clicked.connect(self.choose_clip_video)
+        source_layout.addLayout(
+            self.form_row("Source video", self.clip_source_edit, self.clip_choose_video_button)
+        )
+
+        self.clip_output_edit = QLineEdit()
+        self.clip_output_edit.setReadOnly(True)
+        self.clip_output_edit.setPlaceholderText("Choose where individual clips will be saved")
+        self.clip_choose_output_button = QPushButton("Choose Output Folder")
+        self.clip_choose_output_button.clicked.connect(self.choose_clip_output_folder)
+        source_layout.addLayout(
+            self.form_row("Output folder", self.clip_output_edit, self.clip_choose_output_button)
+        )
+        layout.addWidget(source_panel)
+
+        work_row = QHBoxLayout()
+        work_row.setSpacing(12)
+
+        preview_panel = QFrame()
+        preview_panel.setObjectName("panel")
+        preview_layout = QVBoxLayout(preview_panel)
+        preview_layout.setContentsMargins(14, 12, 14, 12)
+        preview_layout.setSpacing(8)
+        preview_layout.addWidget(self.panel_heading("Preview"))
+
+        self.clip_video_widget = QVideoWidget()
+        self.clip_video_widget.setObjectName("clipVideo")
+        self.clip_video_widget.setMinimumSize(430, 250)
+        self.clip_video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+        preview_layout.addWidget(self.clip_video_widget, 1)
+
+        self.clip_audio_output = QAudioOutput(self)
+        self.clip_audio_output.setVolume(0.8)
+        self.clip_player = QMediaPlayer(self)
+        self.clip_player.setAudioOutput(self.clip_audio_output)
+        self.clip_player.setVideoOutput(self.clip_video_widget)
+        self.clip_player.positionChanged.connect(self.update_clip_position)
+        self.clip_player.durationChanged.connect(self.update_clip_duration)
+        self.clip_player.playbackStateChanged.connect(self.update_clip_play_button)
+        self.clip_player.errorOccurred.connect(self.handle_clip_player_error)
+
+        time_row = QHBoxLayout()
+        time_row.setSpacing(8)
+        self.clip_time_label = QLabel("00:00:00 / 00:00:00")
+        self.clip_time_label.setObjectName("activityDescription")
+        self.clip_position_slider = QSlider(Qt.Horizontal)
+        self.clip_position_slider.setRange(0, 0)
+        self.clip_position_slider.sliderMoved.connect(self.clip_player.setPosition)
+        time_row.addWidget(self.clip_time_label)
+        time_row.addWidget(self.clip_position_slider, 1)
+        preview_layout.addLayout(time_row)
+
+        self.clip_marker_label = QLabel("Press Space to start a clip")
+        self.clip_marker_label.setObjectName("clipMarker")
+        self.clip_marker_label.setWordWrap(True)
+        preview_layout.addWidget(self.clip_marker_label)
+
+        control_row = QHBoxLayout()
+        control_row.setSpacing(8)
+        self.clip_play_button = QPushButton("Play")
+        self.clip_play_button.clicked.connect(self.toggle_clip_playback)
+        self.clip_play_button.setEnabled(False)
+        self.clip_mark_button = QPushButton("Mark Start/End")
+        self.clip_mark_button.setObjectName("saveButton")
+        self.clip_mark_button.clicked.connect(self.mark_clip_boundary)
+        self.clip_mark_button.setEnabled(False)
+        self.clip_undo_button = QPushButton("Undo")
+        self.clip_undo_button.clicked.connect(self.undo_clip_marker)
+        self.clip_undo_button.setEnabled(False)
+        control_row.addWidget(self.clip_play_button)
+        control_row.addWidget(self.clip_mark_button, 1)
+        control_row.addWidget(self.clip_undo_button)
+        preview_layout.addLayout(control_row)
+        work_row.addWidget(preview_panel, 3)
+
+        queue_panel = QFrame()
+        queue_panel.setObjectName("panel")
+        queue_layout = QVBoxLayout(queue_panel)
+        queue_layout.setContentsMargins(14, 12, 14, 12)
+        queue_layout.setSpacing(8)
+        queue_layout.addWidget(self.panel_heading("Clip Queue"))
+        self.clip_queue_table = QTableWidget(0, 1)
+        self.clip_queue_table.setHorizontalHeaderLabels(["Marked clips"])
+        self.clip_queue_table.horizontalHeader().setStretchLastSection(True)
+        self.clip_queue_table.verticalHeader().setVisible(False)
+        self.clip_queue_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.clip_queue_table.setSelectionMode(QAbstractItemView.NoSelection)
+        queue_layout.addWidget(self.clip_queue_table, 1)
+
+        self.clip_mode_combo = QComboBox()
+        self.clip_mode_combo.addItems(["Accurate Cut", "Fast Cut"])
+        self.clip_mode_combo.currentTextChanged.connect(self.update_clip_mode_help)
+        queue_layout.addLayout(self.form_row("Export mode", self.clip_mode_combo))
+        self.clip_mode_help = QLabel()
+        self.clip_mode_help.setObjectName("fieldHelp")
+        self.clip_mode_help.setWordWrap(True)
+        queue_layout.addWidget(self.clip_mode_help)
+        self.update_clip_mode_help(self.clip_mode_combo.currentText())
+
+        self.clip_export_button = QPushButton("Export Clips")
+        self.clip_export_button.setObjectName("saveButton")
+        self.clip_export_button.clicked.connect(self.export_clips)
+        self.clip_export_button.setEnabled(False)
+        queue_layout.addWidget(self.clip_export_button)
+        work_row.addWidget(queue_panel, 2)
+        layout.addLayout(work_row, 1)
+
+        log_panel = QFrame()
+        log_panel.setObjectName("panel")
+        log_layout = QVBoxLayout(log_panel)
+        log_layout.setContentsMargins(14, 10, 14, 10)
+        log_layout.setSpacing(5)
+        self.clip_export_status = QLabel("Ready when you are.")
+        self.clip_export_status.setObjectName("activityDescription")
+        log_layout.addWidget(self.clip_export_status)
+        self.clip_log_output = QPlainTextEdit()
+        self.clip_log_output.setReadOnly(True)
+        self.clip_log_output.setMaximumHeight(78)
+        log_layout.addWidget(self.clip_log_output)
+        layout.addWidget(log_panel)
+
+        shortcuts = [
+            ("Space", self.mark_clip_boundary),
+            ("Backspace", self.undo_clip_marker),
+            ("Left", lambda: self.seek_clip_player(-5)),
+            ("Right", lambda: self.seek_clip_player(10)),
+            ("Return", self.export_clips),
+            ("Enter", self.export_clips),
+            ("Esc", self.cancel_active_clip_marker),
+        ]
+        for key, handler in shortcuts:
+            shortcut = QShortcut(QKeySequence(key), page)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.setAutoRepeat(False)
+            shortcut.activated.connect(handler)
+            self._clip_shortcuts.append(shortcut)
+
+        return page
+
+    def choose_clip_video(self) -> None:
+        if self.clip_export_worker and self.clip_export_worker.isRunning():
+            return
+        extensions = " ".join(f"*{ext}" for ext in sorted(SUPPORTED_VIDEO_EXTENSIONS))
+        start = str(self.clip_source_path.parent) if self.clip_source_path else str(Path.home())
+        path_text, _ = QFileDialog.getOpenFileName(
+            self,
+            "Choose a Video to Cut",
+            start,
+            f"Video Files ({extensions});;All Files (*)",
+        )
+        if not path_text:
+            return
+        path = Path(path_text)
+        if self.clip_active_start is not None or len(self.clip_queue):
+            answer = QMessageBox.question(
+                self,
+                "Start a New Cut?",
+                "Choosing another video will clear the current marker and clip queue. Continue?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+        self.clip_player.stop()
+        self.clip_queue.clear()
+        self.clip_active_start = None
+        self.clip_source_path = path
+        self.clip_source_edit.setText(str(path))
+        self.clip_position_slider.setRange(0, 0)
+        self.clip_time_label.setText("00:00:00 / 00:00:00")
+        self.clip_player.setSource(QUrl.fromLocalFile(str(path)))
+        self.clip_export_status.setText(f"Loaded {path.name}. Press Play when you're ready.")
+        self.clip_log_output.clear()
+        self.refresh_clip_queue_ui()
+
+    def choose_clip_output_folder(self) -> None:
+        if self.clip_export_worker and self.clip_export_worker.isRunning():
+            return
+        current = self.clip_output_edit.text().strip()
+        start = current or (str(self.clip_source_path.parent) if self.clip_source_path else str(Path.home()))
+        folder = QFileDialog.getExistingDirectory(self, "Choose Clip Output Folder", start)
+        if folder:
+            self.clip_output_edit.setText(folder)
+            self.save_settings()
+            self.refresh_clip_queue_ui()
+
+    def update_clip_position(self, position_ms: int) -> None:
+        if not self.clip_position_slider.isSliderDown():
+            self.clip_position_slider.setValue(position_ms)
+        duration_ms = max(0, self.clip_player.duration())
+        self.clip_time_label.setText(
+            f"{format_timestamp(position_ms / 1000.0)} / {format_timestamp(duration_ms / 1000.0)}"
+        )
+
+    def update_clip_duration(self, duration_ms: int) -> None:
+        self.clip_position_slider.setRange(0, max(0, duration_ms))
+        self.update_clip_position(self.clip_player.position())
+
+    def update_clip_play_button(self, state: QMediaPlayer.PlaybackState) -> None:
+        playing = state == QMediaPlayer.PlaybackState.PlayingState
+        self.clip_play_button.setText("Pause" if playing else "Play")
+
+    def handle_clip_player_error(self, error: QMediaPlayer.Error, message: str) -> None:
+        if error == QMediaPlayer.Error.NoError or not self.clip_source_path:
+            return
+        detail = message or "This video could not be opened for preview."
+        self.clip_export_status.setText(f"Preview error: {detail}")
+        QMessageBox.warning(self, "Video Preview Problem", detail)
+
+    def toggle_clip_playback(self) -> None:
+        if not self.clip_source_path or not self.clip_source_path.is_file():
+            QMessageBox.information(self, "Choose a Video", "Choose a source video first.")
+            return
+        if self.clip_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.clip_player.pause()
+        else:
+            self.clip_player.play()
+
+    def seek_clip_player(self, seconds: int) -> None:
+        if not self.clip_source_path:
+            return
+        duration = max(0, self.clip_player.duration())
+        target = max(0, min(duration, self.clip_player.position() + (seconds * 1000)))
+        self.clip_player.setPosition(target)
+
+    def mark_clip_boundary(self) -> None:
+        if self.clip_export_worker and self.clip_export_worker.isRunning():
+            return
+        if not self.clip_source_path or not self.clip_source_path.is_file():
+            QMessageBox.information(self, "Choose a Video", "Choose a source video first.")
+            return
+        current_seconds = self.clip_player.position() / 1000.0
+        if self.clip_active_start is None:
+            self.clip_active_start = current_seconds
+            self.clip_export_status.setText(
+                f"Clip started at {format_timestamp(current_seconds)}. Keep watching and press Space to end it."
+            )
+            self.refresh_clip_queue_ui()
+            return
+
+        try:
+            self.clip_queue.add(self.clip_active_start, current_seconds)
+        except TinyClipError:
+            answer = QMessageBox.question(
+                self,
+                "Very Short Clip",
+                "This clip is under 1 second long. Add it anyway?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+            self.clip_queue.add(self.clip_active_start, current_seconds, allow_tiny=True)
+        except InvalidClipRange as exc:
+            QMessageBox.warning(self, "Clip End Needed", str(exc))
+            return
+        self.clip_active_start = None
+        self.clip_export_status.setText(
+            f"Added Clip {len(self.clip_queue):03d}. Keep watching and press Space for the next one."
+        )
+        self.refresh_clip_queue_ui()
+
+    def undo_clip_marker(self) -> None:
+        if self.clip_export_worker and self.clip_export_worker.isRunning():
+            return
+        if self.clip_active_start is not None:
+            self.clip_active_start = None
+            self.clip_export_status.setText("Canceled the active start marker.")
+        else:
+            removed = self.clip_queue.remove_last()
+            if removed is None:
+                return
+            self.clip_export_status.setText("Removed the last queued clip.")
+        self.refresh_clip_queue_ui()
+
+    def cancel_active_clip_marker(self) -> None:
+        if self.clip_active_start is None:
+            return
+        self.clip_active_start = None
+        self.clip_export_status.setText("Canceled the active start marker.")
+        self.refresh_clip_queue_ui()
+
+    def refresh_clip_queue_ui(self) -> None:
+        self.clip_queue_table.setRowCount(len(self.clip_queue))
+        for row, clip in enumerate(self.clip_queue.clips):
+            text = (
+                f"Clip {row + 1:03d}: {format_timestamp(clip.start_seconds)} → "
+                f"{format_timestamp(clip.end_seconds)}"
+            )
+            self.clip_queue_table.setItem(row, 0, QTableWidgetItem(text))
+        if len(self.clip_queue):
+            self.clip_queue_table.scrollToBottom()
+
+        if self.clip_active_start is None:
+            self.clip_marker_label.setText("Press Space to start a clip")
+        else:
+            self.clip_marker_label.setText(
+                f"Clip started at {format_timestamp(self.clip_active_start)} — press Space to end"
+            )
+
+        exporting = bool(self.clip_export_worker and self.clip_export_worker.isRunning())
+        has_source = bool(self.clip_source_path and self.clip_source_path.is_file())
+        self.clip_choose_video_button.setEnabled(not exporting)
+        self.clip_choose_output_button.setEnabled(not exporting)
+        self.clip_play_button.setEnabled(has_source and not exporting)
+        self.clip_mark_button.setEnabled(has_source and not exporting)
+        self.clip_undo_button.setEnabled(
+            not exporting and (self.clip_active_start is not None or len(self.clip_queue) > 0)
+        )
+        self.clip_mode_combo.setEnabled(not exporting)
+        self.clip_export_button.setEnabled(
+            not exporting
+            and has_source
+            and len(self.clip_queue) > 0
+            and bool(self.clip_output_edit.text().strip())
+            and bool(FFMPEG_PATH)
+        )
+
+    def update_clip_mode_help(self, mode: str) -> None:
+        if mode == "Fast Cut":
+            self.clip_mode_help.setText(
+                "Very fast stream copy. Cuts may begin on the nearest keyframe, and some source codecs may not fit MP4."
+            )
+        else:
+            self.clip_mode_help.setText(
+                "Recommended. Re-encodes each clip as MediaWave Safe MP4 (H.264, yuv420p, AAC, faststart)."
+            )
+
+    def export_clips(self) -> None:
+        if self.clip_export_worker and self.clip_export_worker.isRunning():
+            return
+        if not FFMPEG_PATH:
+            QMessageBox.warning(self, "FFmpeg Missing", "FFmpeg is required to export clips.")
+            return
+        if not self.clip_source_path or not self.clip_source_path.is_file():
+            QMessageBox.warning(self, "Source Video Missing", "Choose an existing source video first.")
+            return
+        if self.clip_active_start is not None:
+            QMessageBox.information(
+                self,
+                "Finish the Active Clip",
+                "Press Space to finish this clip, or Escape to cancel its start marker, before exporting.",
+            )
+            return
+        if not len(self.clip_queue):
+            QMessageBox.information(self, "No Clips Yet", "Mark at least one clip before exporting.")
+            return
+        output_text = self.clip_output_edit.text().strip()
+        if not output_text:
+            QMessageBox.information(self, "Choose an Output Folder", "Choose where the clips should be saved.")
+            return
+        output_folder = Path(output_text).expanduser()
+        if output_folder.exists() and not output_folder.is_dir():
+            QMessageBox.warning(self, "Output Folder Problem", "That output path is not a folder.")
+            return
+        if not output_folder.exists():
+            answer = QMessageBox.question(
+                self,
+                "Create Output Folder?",
+                f"The selected output folder does not exist. Create it now?\n\n{output_folder}",
+            )
+            if answer != QMessageBox.Yes:
+                return
+            try:
+                output_folder.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                QMessageBox.warning(self, "Output Folder Problem", f"Could not create that folder: {exc}")
+                return
+        if not os.access(output_folder, os.W_OK):
+            QMessageBox.warning(self, "Output Folder Problem", "That folder is not writable.")
+            return
+
+        output_paths = plan_output_paths(
+            output_folder,
+            self.clip_source_path.stem,
+            len(self.clip_queue),
+        )
+        self.clip_player.pause()
+        self.clip_log_output.clear()
+        self.clip_log_output.appendPlainText(
+            f"Exporting {len(self.clip_queue)} clip(s) with {self.clip_mode_combo.currentText()}…"
+        )
+        self.clip_export_worker = ClipExportWorker(
+            self.clip_source_path,
+            self.clip_queue.clips,
+            output_paths,
+            self.clip_mode_combo.currentText(),
+            QUALITY_PRESETS[SAFE_MEDIA_PRESET],
+        )
+        self.clip_export_worker.status_changed.connect(self.clip_export_status.setText)
+        self.clip_export_worker.finished_summary.connect(self.handle_clip_export_finished)
+        self.clip_export_worker.start()
+        self.refresh_clip_queue_ui()
+
+    def handle_clip_export_finished(self, summary: dict[str, Any]) -> None:
+        exported = [Path(path) for path in summary.get("exported", [])]
+        error = str(summary.get("error") or "")
+        source = self.clip_source_path or Path("clip-export")
+        log_path = write_conversion_log(source, list(summary.get("log_lines", [])))
+        for path in exported:
+            self.clip_log_output.appendPlainText(f"Exported: {path.name}")
+        self.clip_log_output.appendPlainText(f"Log: {log_path}")
+        self.clip_queue.remove_first(len(exported))
+
+        if error:
+            failed_clip = int(summary.get("failed_clip") or (len(exported) + 1))
+            self.clip_export_status.setText(
+                f"Export stopped at clip {failed_clip:03d}. {len(exported)} clip(s) finished."
+            )
+            self.clip_log_output.appendPlainText(f"Error: {error}")
+            QMessageBox.critical(
+                self,
+                "Clip Export Failed",
+                f"FFmpeg could not export clip {failed_clip:03d}.\n\n{error[-1800:]}\n\n"
+                f"A full log was saved at:\n{log_path}",
+            )
+        else:
+            self.clip_export_status.setText(f"Finished exporting {len(exported)} clip(s).")
+            QMessageBox.information(
+                self,
+                "Clips Exported",
+                f"Exported {len(exported)} clip(s) to:\n{summary.get('output_folder', '')}",
+            )
+        if self.clip_export_worker:
+            self.clip_export_worker.wait()
+            self.clip_export_worker.deleteLater()
+        self.clip_export_worker = None
+        self.refresh_clip_queue_ui()
 
     def build_queue_page(self) -> QWidget:
         page = QWidget()
@@ -3605,12 +4156,15 @@ class MediaWaveConverterWindow(QMainWindow):
     def switch_page(self, page_key: str) -> None:
         page_map = {
             "converter": self.converter_page,
+            "clip_cutter": self.clip_cutter_page,
             "queue": self.queue_page,
             "rename": self.rename_page,
             "import": self.import_page,
             "advanced": self.advanced_page,
         }
         target = page_map.get(page_key, self.converter_page)
+        if target is not self.clip_cutter_page and hasattr(self, "clip_player"):
+            self.clip_player.pause()
         self.page_stack.setCurrentWidget(target)
         for key, button in self._nav_buttons.items():
             button.setChecked(key == page_key)
@@ -3734,6 +4288,20 @@ class MediaWaveConverterWindow(QMainWindow):
                 font-size: 12px;
                 font-weight: 600;
                 background: transparent;
+            }
+            QLabel#clipMarker {
+                color: rgba(255,218,96,255);
+                font-size: 13px;
+                font-weight: 700;
+                background: rgba(16,20,50,210);
+                border: 1px solid rgba(255,188,10,90);
+                border-radius: 6px;
+                padding: 7px 9px;
+            }
+            QVideoWidget#clipVideo {
+                background: black;
+                border: 1px solid rgba(68,108,235,110);
+                border-radius: 6px;
             }
             QLabel#finishTimer {
                 color: rgba(255,196,36,255);
@@ -4034,6 +4602,11 @@ class MediaWaveConverterWindow(QMainWindow):
         self.import_cookies_browser_combo.setCurrentIndex(browser_index)
         self.import_cookies_enabled.setChecked(bool(saved_cookies_browser))
         self.import_cookies_file_edit.setText((settings.get("import_cookies_file") or "").strip())
+        self.clip_output_edit.setText((settings.get("clip_output_root") or "").strip())
+        clip_mode = settings.get("clip_export_mode", "Accurate Cut")
+        if clip_mode in {"Accurate Cut", "Fast Cut"}:
+            self.clip_mode_combo.setCurrentText(clip_mode)
+        self.refresh_clip_queue_ui()
         self.refresh_main_summary()
 
     def connect_settings_autosave(self) -> None:
@@ -4052,6 +4625,7 @@ class MediaWaveConverterWindow(QMainWindow):
             self.import_dest_edit,
             self.import_preset_combo,
             self.import_cookies_browser_combo,
+            self.clip_mode_combo,
         ]
         for widget in widgets:
             if isinstance(widget, QLineEdit):
@@ -4094,10 +4668,20 @@ class MediaWaveConverterWindow(QMainWindow):
                 else ""
             ),
             "import_cookies_file": self.import_cookies_file_edit.text().strip(),
+            "clip_output_root": self.clip_output_edit.text().strip(),
+            "clip_export_mode": self.clip_mode_combo.currentText(),
         }
         save_json(SETTINGS_FILE, payload)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self.clip_export_worker and self.clip_export_worker.isRunning():
+            QMessageBox.information(
+                self,
+                "Clip Export In Progress",
+                "Please wait for the current clip export to finish before closing MediaWave Converter.",
+            )
+            event.ignore()
+            return
         if self.worker and self.worker.isRunning():
             if self._close_after_cancel:
                 event.ignore()
