@@ -117,7 +117,7 @@ def merge_nearby_boundaries(
         return []
     clusters: list[list[DetectionEvent]] = [[valid[0]]]
     for event in valid[1:]:
-        if event.time_seconds - clusters[-1][-1].time_seconds <= within_seconds:
+        if event.time_seconds - clusters[-1][0].time_seconds <= within_seconds:
             clusters[-1].append(event)
         else:
             clusters.append([event])
