@@ -38,6 +38,7 @@ from PySide6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSlider,
+    QSpinBox,
     QStackedWidget,
     QTableWidget,
     QTableWidgetItem,
@@ -57,6 +58,13 @@ from mediawave.clip_cutter import (
     build_fast_cut_command,
     format_timestamp,
     plan_output_paths,
+)
+from mediawave.commercial_cutter_smart_detect import (
+    PRESETS as SMART_DETECT_PRESETS,
+    SmartDetectError,
+    SmartDetectResult,
+    confidence_label,
+    detect_commercial_suggestions,
 )
 
 
@@ -2815,6 +2823,85 @@ class ClipExportWorker(QThread):
         )
 
 
+class SmartDetectWorker(QThread):
+    progress_changed = Signal(int)
+    status_changed = Signal(str)
+    finished_summary = Signal(object)
+
+    def __init__(
+        self,
+        source_path: Path,
+        preset_name: str,
+        minimum_seconds: float,
+        maximum_seconds: float,
+    ):
+        super().__init__()
+        self.source_path = source_path
+        self.preset_name = preset_name
+        self.minimum_seconds = minimum_seconds
+        self.maximum_seconds = maximum_seconds
+        self._cancel_requested = False
+        self._active_process: subprocess.Popen | None = None
+
+    def request_cancel(self) -> None:
+        self._cancel_requested = True
+        process = self._active_process
+        if process is not None and process.poll() is None:
+            try:
+                process.terminate()
+            except OSError:
+                pass
+
+    def force_kill_active_process(self) -> None:
+        process = self._active_process
+        if process is not None and process.poll() is None:
+            try:
+                process.kill()
+            except OSError:
+                pass
+
+    def _run_command(self, command: list[str], **_kwargs: Any) -> subprocess.CompletedProcess:
+        if self._cancel_requested:
+            return subprocess.CompletedProcess(command, -15, stdout="", stderr="Smart Detect canceled.")
+        self._active_process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            stdout, stderr = self._active_process.communicate()
+            return subprocess.CompletedProcess(command, self._active_process.returncode, stdout, stderr)
+        finally:
+            self._active_process = None
+
+    def _report_status(self, percent: int, message: str) -> None:
+        self.progress_changed.emit(percent)
+        self.status_changed.emit(message)
+
+    def run(self) -> None:
+        try:
+            result = detect_commercial_suggestions(
+                self.source_path,
+                self.preset_name,
+                ffmpeg_path=FFMPEG_PATH or "ffmpeg",
+                ffprobe_path=FFPROBE_PATH or "ffprobe",
+                minimum_seconds=self.minimum_seconds,
+                maximum_seconds=self.maximum_seconds,
+                status_callback=self._report_status,
+                runner=self._run_command,
+            )
+        except (SmartDetectError, OSError, ValueError) as exc:
+            self.finished_summary.emit(
+                {"canceled": self._cancel_requested, "error": str(exc), "result": None}
+            )
+            return
+        if self._cancel_requested:
+            self.finished_summary.emit({"canceled": True, "error": "", "result": None})
+            return
+        self.finished_summary.emit({"canceled": False, "error": "", "result": result})
+
+
 class MediaWaveConverterWindow(QMainWindow):
     def __init__(self):
         super().__init__()
@@ -2822,10 +2909,13 @@ class MediaWaveConverterWindow(QMainWindow):
         self.worker: BatchWorker | None = None
         self.import_worker: ImportWorker | None = None
         self.clip_export_worker: ClipExportWorker | None = None
+        self.smart_detect_worker: SmartDetectWorker | None = None
         self.clip_queue = ClipQueue()
         self.clip_source_path: Path | None = None
         self.clip_active_start: float | None = None
         self._clip_shortcuts: list[QShortcut] = []
+        self._replace_smart_suggestions = False
+        self._close_after_smart_cancel = False
         self._import_cancel_in_progress = False
         self._close_after_import_cancel = False
         self._active_import_staging_root: Path | None = None
@@ -3240,6 +3330,42 @@ class MediaWaveConverterWindow(QMainWindow):
         source_layout.addLayout(
             self.form_row("Output folder", self.clip_output_edit, self.clip_choose_output_button)
         )
+
+        smart_controls = QWidget()
+        smart_controls_layout = QHBoxLayout(smart_controls)
+        smart_controls_layout.setContentsMargins(0, 0, 0, 0)
+        smart_controls_layout.setSpacing(7)
+        self.smart_detect_preset_combo = QComboBox()
+        self.smart_detect_preset_combo.addItems(list(SMART_DETECT_PRESETS.keys()))
+        self.smart_detect_preset_combo.setCurrentText("Normal")
+        self.smart_detect_preset_combo.currentTextChanged.connect(self.update_smart_detect_help)
+        smart_controls_layout.addWidget(self.smart_detect_preset_combo, 1)
+        smart_controls_layout.addWidget(QLabel("Min"))
+        self.smart_detect_min_spin = QSpinBox()
+        self.smart_detect_min_spin.setRange(1, 60)
+        self.smart_detect_min_spin.setValue(5)
+        self.smart_detect_min_spin.setSuffix(" sec")
+        smart_controls_layout.addWidget(self.smart_detect_min_spin)
+        smart_controls_layout.addWidget(QLabel("Max"))
+        self.smart_detect_max_spin = QSpinBox()
+        self.smart_detect_max_spin.setRange(5, 1800)
+        self.smart_detect_max_spin.setValue(300)
+        self.smart_detect_max_spin.setSuffix(" sec")
+        smart_controls_layout.addWidget(self.smart_detect_max_spin)
+        self.smart_detect_button = QPushButton("Smart Detect")
+        self.smart_detect_button.clicked.connect(self.toggle_smart_detect)
+        smart_controls_layout.addWidget(self.smart_detect_button)
+        source_layout.addLayout(self.form_row("Smart Detect", smart_controls))
+        self.smart_detect_help = QLabel()
+        self.smart_detect_help.setObjectName("fieldHelp")
+        self.smart_detect_help.setWordWrap(True)
+        source_layout.addWidget(self.smart_detect_help)
+        self.update_smart_detect_help(self.smart_detect_preset_combo.currentText())
+        self.smart_detect_progress = QProgressBar()
+        self.smart_detect_progress.setRange(0, 100)
+        self.smart_detect_progress.setValue(0)
+        self.smart_detect_progress.hide()
+        source_layout.addWidget(self.smart_detect_progress)
         layout.addWidget(source_panel)
 
         work_row = QHBoxLayout()
@@ -3254,7 +3380,7 @@ class MediaWaveConverterWindow(QMainWindow):
 
         self.clip_video_widget = QVideoWidget()
         self.clip_video_widget.setObjectName("clipVideo")
-        self.clip_video_widget.setMinimumSize(430, 250)
+        self.clip_video_widget.setMinimumSize(380, 220)
         self.clip_video_widget.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
         preview_layout.addWidget(self.clip_video_widget, 1)
 
@@ -3308,13 +3434,37 @@ class MediaWaveConverterWindow(QMainWindow):
         queue_layout.setContentsMargins(14, 12, 14, 12)
         queue_layout.setSpacing(8)
         queue_layout.addWidget(self.panel_heading("Clip Queue"))
-        self.clip_queue_table = QTableWidget(0, 1)
-        self.clip_queue_table.setHorizontalHeaderLabels(["Marked clips"])
+        self.clip_queue_table = QTableWidget(0, 3)
+        self.clip_queue_table.setHorizontalHeaderLabels(["Clip", "Review", "Why"])
         self.clip_queue_table.horizontalHeader().setStretchLastSection(True)
         self.clip_queue_table.verticalHeader().setVisible(False)
         self.clip_queue_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
-        self.clip_queue_table.setSelectionMode(QAbstractItemView.NoSelection)
+        self.clip_queue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.clip_queue_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.clip_queue_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.clip_queue_table.setColumnWidth(0, 145)
+        self.clip_queue_table.setColumnWidth(1, 95)
+        self.clip_queue_table.setMinimumHeight(175)
+        self.clip_queue_table.itemSelectionChanged.connect(self.refresh_clip_review_buttons)
+        self.clip_queue_table.cellDoubleClicked.connect(lambda _row, _column: self.preview_selected_clip())
         queue_layout.addWidget(self.clip_queue_table, 1)
+
+        review_row = QGridLayout()
+        review_row.setSpacing(5)
+        self.clip_preview_selected_button = QPushButton("Preview")
+        self.clip_preview_selected_button.clicked.connect(self.preview_selected_clip)
+        self.clip_set_start_button = QPushButton("Set Start Here")
+        self.clip_set_start_button.clicked.connect(lambda: self.adjust_selected_clip("start"))
+        self.clip_set_end_button = QPushButton("Set End Here")
+        self.clip_set_end_button.clicked.connect(lambda: self.adjust_selected_clip("end"))
+        self.clip_remove_selected_button = QPushButton("Remove")
+        self.clip_remove_selected_button.clicked.connect(self.remove_selected_clip)
+        review_row.addWidget(self.clip_preview_selected_button, 0, 0)
+        review_row.addWidget(self.clip_remove_selected_button, 0, 1)
+        review_row.addWidget(self.clip_set_start_button, 1, 0)
+        review_row.addWidget(self.clip_set_end_button, 1, 1)
+        queue_layout.addLayout(review_row)
+        self.refresh_clip_review_buttons()
 
         self.clip_mode_combo = QComboBox()
         self.clip_mode_combo.addItems(["Accurate Cut", "Fast Cut"])
@@ -3367,7 +3517,10 @@ class MediaWaveConverterWindow(QMainWindow):
         return page
 
     def choose_clip_video(self) -> None:
-        if self.clip_export_worker and self.clip_export_worker.isRunning():
+        if (
+            (self.clip_export_worker and self.clip_export_worker.isRunning())
+            or (self.smart_detect_worker and self.smart_detect_worker.isRunning())
+        ):
             return
         extensions = " ".join(f"*{ext}" for ext in sorted(SUPPORTED_VIDEO_EXTENSIONS))
         start = str(self.clip_source_path.parent) if self.clip_source_path else str(Path.home())
@@ -3401,7 +3554,10 @@ class MediaWaveConverterWindow(QMainWindow):
         self.refresh_clip_queue_ui()
 
     def choose_clip_output_folder(self) -> None:
-        if self.clip_export_worker and self.clip_export_worker.isRunning():
+        if (
+            (self.clip_export_worker and self.clip_export_worker.isRunning())
+            or (self.smart_detect_worker and self.smart_detect_worker.isRunning())
+        ):
             return
         current = self.clip_output_edit.text().strip()
         start = current or (str(self.clip_source_path.parent) if self.clip_source_path else str(Path.home()))
@@ -3410,6 +3566,179 @@ class MediaWaveConverterWindow(QMainWindow):
             self.clip_output_edit.setText(folder)
             self.save_settings()
             self.refresh_clip_queue_ui()
+
+    def update_smart_detect_help(self, preset_name: str) -> None:
+        descriptions = {
+            "Lax": "Fewer suggestions with stronger evidence. Best when the compilation has clear breaks.",
+            "Normal": "Balanced black-frame, audio-dip, and scene-change evidence. Recommended starting point.",
+            "Aggressive": "More suggestions, including low-confidence scene or audio clues. Expect false positives.",
+        }
+        self.smart_detect_help.setText(
+            f"{descriptions.get(preset_name, descriptions['Normal'])} Suggestions are drafts—review them before export."
+        )
+
+    def toggle_smart_detect(self) -> None:
+        if self.smart_detect_worker and self.smart_detect_worker.isRunning():
+            self.smart_detect_button.setEnabled(False)
+            self.clip_export_status.setText("Canceling Smart Detect…")
+            worker = self.smart_detect_worker
+            worker.request_cancel()
+            QTimer.singleShot(2000, worker.force_kill_active_process)
+            return
+        if self.clip_export_worker and self.clip_export_worker.isRunning():
+            return
+        if not FFMPEG_PATH or not FFPROBE_PATH:
+            QMessageBox.warning(
+                self,
+                "Video Tools Missing",
+                "Smart Detect needs FFmpeg and FFprobe. Install or bundle both tools first.",
+            )
+            return
+        if not self.clip_source_path or not self.clip_source_path.is_file():
+            QMessageBox.information(self, "Choose a Video", "Choose a source video before running Smart Detect.")
+            return
+        minimum_seconds = self.smart_detect_min_spin.value()
+        maximum_seconds = self.smart_detect_max_spin.value()
+        if maximum_seconds < minimum_seconds:
+            QMessageBox.warning(self, "Duration Range Problem", "Maximum clip length must be at least the minimum.")
+            return
+
+        existing_smart = sum(clip.origin == "Smart suggestion" for clip in self.clip_queue.clips)
+        self._replace_smart_suggestions = existing_smart > 0
+        if existing_smart:
+            answer = QMessageBox.question(
+                self,
+                "Replace Smart Suggestions?",
+                f"This scan will replace {existing_smart} earlier Smart suggestion(s). "
+                "Your manually marked clips will stay. Continue?",
+            )
+            if answer != QMessageBox.Yes:
+                return
+
+        self.clip_player.pause()
+        self.smart_detect_progress.setValue(0)
+        self.smart_detect_progress.show()
+        self.clip_log_output.appendPlainText(
+            f"Smart Detect started: {self.smart_detect_preset_combo.currentText()} preset, "
+            f"{minimum_seconds}–{maximum_seconds} second clips."
+        )
+        self.smart_detect_worker = SmartDetectWorker(
+            self.clip_source_path,
+            self.smart_detect_preset_combo.currentText(),
+            minimum_seconds,
+            maximum_seconds,
+        )
+        self.smart_detect_worker.progress_changed.connect(self.smart_detect_progress.setValue)
+        self.smart_detect_worker.status_changed.connect(self.clip_export_status.setText)
+        self.smart_detect_worker.finished_summary.connect(self.handle_smart_detect_finished)
+        self.smart_detect_worker.start()
+        self.refresh_clip_queue_ui()
+
+    def handle_smart_detect_finished(self, summary: dict[str, Any]) -> None:
+        worker = self.smart_detect_worker
+        if worker:
+            worker.wait()
+            worker.deleteLater()
+        self.smart_detect_worker = None
+        self.smart_detect_button.setEnabled(True)
+        self.smart_detect_button.setText("Smart Detect")
+
+        canceled = bool(summary.get("canceled"))
+        error = str(summary.get("error") or "")
+        result = summary.get("result")
+        if canceled:
+            self.smart_detect_progress.hide()
+            self.clip_export_status.setText("Smart Detect canceled. Existing clips were not changed.")
+            self.clip_log_output.appendPlainText("Smart Detect canceled.")
+        elif error:
+            self.smart_detect_progress.hide()
+            self.clip_export_status.setText("Smart Detect could not finish.")
+            self.clip_log_output.appendPlainText(f"Smart Detect error: {error}")
+            QMessageBox.warning(self, "Smart Detect Problem", error)
+        elif isinstance(result, SmartDetectResult):
+            if self._replace_smart_suggestions:
+                for index in range(len(self.clip_queue.clips) - 1, -1, -1):
+                    if self.clip_queue.clips[index].origin == "Smart suggestion":
+                        self.clip_queue.remove_at(index)
+            for suggestion in result.suggestions:
+                self.clip_queue.add(
+                    suggestion.start_seconds,
+                    suggestion.end_seconds,
+                    origin="Smart suggestion",
+                    confidence=suggestion.confidence,
+                    reasons=suggestion.reasons,
+                )
+            found = len(result.suggestions)
+            self.smart_detect_progress.setValue(100)
+            self.clip_export_status.setText(f"Found {found} possible clips. Review Smart suggestions before export.")
+            self.clip_log_output.appendPlainText(
+                f"Smart Detect found {found} possible clip(s) from {result.event_count} detection event(s)."
+            )
+            QMessageBox.information(
+                self,
+                "Smart Detect Finished",
+                f"Found {found} possible clips.\n\n"
+                "These are suggestions, not final cuts. Preview, adjust, or remove any row before exporting.",
+            )
+        self._replace_smart_suggestions = False
+        self.refresh_clip_queue_ui()
+        if self._close_after_smart_cancel:
+            self._close_after_smart_cancel = False
+            QTimer.singleShot(0, self.close)
+
+    def selected_clip_index(self) -> int | None:
+        rows = self.clip_queue_table.selectionModel().selectedRows()
+        return rows[0].row() if rows else None
+
+    def refresh_clip_review_buttons(self) -> None:
+        selected = self.selected_clip_index() if hasattr(self, "clip_queue_table") else None
+        detecting = bool(self.smart_detect_worker and self.smart_detect_worker.isRunning())
+        exporting = bool(self.clip_export_worker and self.clip_export_worker.isRunning())
+        enabled = selected is not None and not detecting and not exporting
+        for button_name in (
+            "clip_preview_selected_button",
+            "clip_set_start_button",
+            "clip_set_end_button",
+            "clip_remove_selected_button",
+        ):
+            if hasattr(self, button_name):
+                getattr(self, button_name).setEnabled(enabled)
+
+    def preview_selected_clip(self) -> None:
+        index = self.selected_clip_index()
+        if index is None or index >= len(self.clip_queue.clips) or not self.clip_source_path:
+            return
+        clip = self.clip_queue.clips[index]
+        self.clip_player.setPosition(int(clip.start_seconds * 1000))
+        self.clip_player.play()
+        self.clip_export_status.setText(f"Previewing Clip {index + 1:03d} from its suggested start.")
+
+    def adjust_selected_clip(self, boundary: str) -> None:
+        index = self.selected_clip_index()
+        if index is None or index >= len(self.clip_queue.clips):
+            return
+        clip = self.clip_queue.clips[index]
+        current_seconds = self.clip_player.position() / 1000.0
+        start = current_seconds if boundary == "start" else clip.start_seconds
+        end = current_seconds if boundary == "end" else clip.end_seconds
+        try:
+            self.clip_queue.update_range(index, start, end)
+        except InvalidClipRange as exc:
+            QMessageBox.warning(self, "Adjustment Not Applied", str(exc))
+            return
+        self.clip_export_status.setText(
+            f"Adjusted Clip {index + 1:03d} {boundary} to {format_timestamp(current_seconds)}."
+        )
+        self.refresh_clip_queue_ui(select_row=index)
+
+    def remove_selected_clip(self) -> None:
+        index = self.selected_clip_index()
+        if index is None or index >= len(self.clip_queue.clips):
+            return
+        self.clip_queue.remove_at(index)
+        self.clip_export_status.setText(f"Removed Clip {index + 1:03d} from the queue.")
+        next_row = min(index, len(self.clip_queue) - 1)
+        self.refresh_clip_queue_ui(select_row=next_row if next_row >= 0 else None)
 
     def update_clip_position(self, position_ms: int) -> None:
         if not self.clip_position_slider.isSliderDown():
@@ -3451,7 +3780,10 @@ class MediaWaveConverterWindow(QMainWindow):
         self.clip_player.setPosition(target)
 
     def mark_clip_boundary(self) -> None:
-        if self.clip_export_worker and self.clip_export_worker.isRunning():
+        if (
+            (self.clip_export_worker and self.clip_export_worker.isRunning())
+            or (self.smart_detect_worker and self.smart_detect_worker.isRunning())
+        ):
             return
         if not self.clip_source_path or not self.clip_source_path.is_file():
             QMessageBox.information(self, "Choose a Video", "Choose a source video first.")
@@ -3486,7 +3818,10 @@ class MediaWaveConverterWindow(QMainWindow):
         self.refresh_clip_queue_ui()
 
     def undo_clip_marker(self) -> None:
-        if self.clip_export_worker and self.clip_export_worker.isRunning():
+        if (
+            (self.clip_export_worker and self.clip_export_worker.isRunning())
+            or (self.smart_detect_worker and self.smart_detect_worker.isRunning())
+        ):
             return
         if self.clip_active_start is not None:
             self.clip_active_start = None
@@ -3499,22 +3834,38 @@ class MediaWaveConverterWindow(QMainWindow):
         self.refresh_clip_queue_ui()
 
     def cancel_active_clip_marker(self) -> None:
+        if self.smart_detect_worker and self.smart_detect_worker.isRunning():
+            return
         if self.clip_active_start is None:
             return
         self.clip_active_start = None
         self.clip_export_status.setText("Canceled the active start marker.")
         self.refresh_clip_queue_ui()
 
-    def refresh_clip_queue_ui(self) -> None:
+    def refresh_clip_queue_ui(self, *, select_row: int | None = None) -> None:
+        prior_selection = self.selected_clip_index() if hasattr(self, "clip_queue_table") else None
         self.clip_queue_table.setRowCount(len(self.clip_queue))
         for row, clip in enumerate(self.clip_queue.clips):
-            text = (
+            range_text = (
                 f"Clip {row + 1:03d}: {format_timestamp(clip.start_seconds)} → "
                 f"{format_timestamp(clip.end_seconds)}"
             )
-            self.clip_queue_table.setItem(row, 0, QTableWidgetItem(text))
+            if clip.origin == "Smart suggestion":
+                review_text = f"Smart suggestion • {confidence_label(clip.confidence or 0.0)}"
+                reason_text = ", ".join(clip.reasons) or "possible boundary"
+            else:
+                review_text = "Manual"
+                reason_text = "Marked by you"
+            self.clip_queue_table.setItem(row, 0, QTableWidgetItem(range_text))
+            review_item = QTableWidgetItem(review_text)
+            review_item.setToolTip(review_text)
+            self.clip_queue_table.setItem(row, 1, review_item)
+            self.clip_queue_table.setItem(row, 2, QTableWidgetItem(reason_text))
         if len(self.clip_queue):
-            self.clip_queue_table.scrollToBottom()
+            target_row = select_row if select_row is not None else prior_selection
+            if target_row is not None and 0 <= target_row < len(self.clip_queue):
+                self.clip_queue_table.selectRow(target_row)
+                self.clip_queue_table.scrollToItem(self.clip_queue_table.item(target_row, 0))
 
         if self.clip_active_start is None:
             self.clip_marker_label.setText("Press Space to start a clip")
@@ -3524,22 +3875,32 @@ class MediaWaveConverterWindow(QMainWindow):
             )
 
         exporting = bool(self.clip_export_worker and self.clip_export_worker.isRunning())
+        detecting = bool(self.smart_detect_worker and self.smart_detect_worker.isRunning())
+        busy = exporting or detecting
         has_source = bool(self.clip_source_path and self.clip_source_path.is_file())
-        self.clip_choose_video_button.setEnabled(not exporting)
-        self.clip_choose_output_button.setEnabled(not exporting)
-        self.clip_play_button.setEnabled(has_source and not exporting)
-        self.clip_mark_button.setEnabled(has_source and not exporting)
+        self.clip_choose_video_button.setEnabled(not busy)
+        self.clip_choose_output_button.setEnabled(not busy)
+        self.clip_play_button.setEnabled(has_source and not busy)
+        self.clip_mark_button.setEnabled(has_source and not busy)
         self.clip_undo_button.setEnabled(
-            not exporting and (self.clip_active_start is not None or len(self.clip_queue) > 0)
+            not busy and (self.clip_active_start is not None or len(self.clip_queue) > 0)
         )
-        self.clip_mode_combo.setEnabled(not exporting)
+        self.clip_mode_combo.setEnabled(not busy)
         self.clip_export_button.setEnabled(
-            not exporting
+            not busy
             and has_source
             and len(self.clip_queue) > 0
             and bool(self.clip_output_edit.text().strip())
             and bool(FFMPEG_PATH)
         )
+        self.smart_detect_preset_combo.setEnabled(not detecting and not exporting)
+        self.smart_detect_min_spin.setEnabled(not detecting and not exporting)
+        self.smart_detect_max_spin.setEnabled(not detecting and not exporting)
+        self.smart_detect_button.setText("Cancel Scan" if detecting else "Smart Detect")
+        self.smart_detect_button.setEnabled(
+            (detecting or (has_source and bool(FFMPEG_PATH) and bool(FFPROBE_PATH))) and not exporting
+        )
+        self.refresh_clip_review_buttons()
 
     def update_clip_mode_help(self, mode: str) -> None:
         if mode == "Fast Cut":
@@ -3553,6 +3914,8 @@ class MediaWaveConverterWindow(QMainWindow):
 
     def export_clips(self) -> None:
         if self.clip_export_worker and self.clip_export_worker.isRunning():
+            return
+        if self.smart_detect_worker and self.smart_detect_worker.isRunning():
             return
         if not FFMPEG_PATH:
             QMessageBox.warning(self, "FFmpeg Missing", "FFmpeg is required to export clips.")
@@ -4363,7 +4726,7 @@ class MediaWaveConverterWindow(QMainWindow):
                 font-weight: 700;
                 background: transparent;
             }
-            QLineEdit, QComboBox, QPlainTextEdit {
+            QLineEdit, QComboBox, QSpinBox, QPlainTextEdit {
                 min-height: 30px;
                 padding: 4px 9px;
                 border-radius: 6px;
@@ -4372,7 +4735,7 @@ class MediaWaveConverterWindow(QMainWindow):
                 color: rgba(188,205,248,255);
                 font-size: 13px;
             }
-            QLineEdit:focus, QComboBox:focus, QPlainTextEdit:focus {
+            QLineEdit:focus, QComboBox:focus, QSpinBox:focus, QPlainTextEdit:focus {
                 border: 1px solid rgba(68,108,235,220);
             }
             QComboBox::drop-down {
@@ -4606,6 +4969,12 @@ class MediaWaveConverterWindow(QMainWindow):
         clip_mode = settings.get("clip_export_mode", "Accurate Cut")
         if clip_mode in {"Accurate Cut", "Fast Cut"}:
             self.clip_mode_combo.setCurrentText(clip_mode)
+        smart_preset = settings.get("smart_detect_preset", "Normal")
+        if smart_preset in SMART_DETECT_PRESETS:
+            self.smart_detect_preset_combo.setCurrentText(smart_preset)
+        self.smart_detect_min_spin.setValue(int(settings.get("smart_detect_min_seconds", 5)))
+        self.smart_detect_max_spin.setValue(int(settings.get("smart_detect_max_seconds", 300)))
+        self.update_smart_detect_help(self.smart_detect_preset_combo.currentText())
         self.refresh_clip_queue_ui()
         self.refresh_main_summary()
 
@@ -4626,6 +4995,7 @@ class MediaWaveConverterWindow(QMainWindow):
             self.import_preset_combo,
             self.import_cookies_browser_combo,
             self.clip_mode_combo,
+            self.smart_detect_preset_combo,
         ]
         for widget in widgets:
             if isinstance(widget, QLineEdit):
@@ -4633,6 +5003,8 @@ class MediaWaveConverterWindow(QMainWindow):
             elif isinstance(widget, QComboBox):
                 widget.currentTextChanged.connect(lambda _text: self.save_settings())
         self.crop_slider.valueChanged.connect(lambda _value: self.save_settings())
+        self.smart_detect_min_spin.valueChanged.connect(lambda _value: self.save_settings())
+        self.smart_detect_max_spin.valueChanged.connect(lambda _value: self.save_settings())
         for checkbox in (
             self.recursive_checkbox,
             self.skip_checkbox,
@@ -4670,10 +5042,31 @@ class MediaWaveConverterWindow(QMainWindow):
             "import_cookies_file": self.import_cookies_file_edit.text().strip(),
             "clip_output_root": self.clip_output_edit.text().strip(),
             "clip_export_mode": self.clip_mode_combo.currentText(),
+            "smart_detect_preset": self.smart_detect_preset_combo.currentText(),
+            "smart_detect_min_seconds": self.smart_detect_min_spin.value(),
+            "smart_detect_max_seconds": self.smart_detect_max_spin.value(),
         }
         save_json(SETTINGS_FILE, payload)
 
     def closeEvent(self, event) -> None:  # type: ignore[override]
+        if self.smart_detect_worker and self.smart_detect_worker.isRunning():
+            if self._close_after_smart_cancel:
+                event.ignore()
+                return
+            answer = QMessageBox.question(
+                self,
+                "Smart Detect In Progress",
+                "Stop the Smart Detect scan and close MediaWave Converter?",
+            )
+            if answer != QMessageBox.Yes:
+                event.ignore()
+                return
+            self._close_after_smart_cancel = True
+            worker = self.smart_detect_worker
+            worker.request_cancel()
+            QTimer.singleShot(2000, worker.force_kill_active_process)
+            event.ignore()
+            return
         if self.clip_export_worker and self.clip_export_worker.isRunning():
             QMessageBox.information(
                 self,
