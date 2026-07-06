@@ -1,30 +1,22 @@
-"""Channel list card + friendly channel editor for Channel Studio (Preview).
+"""Channel editor dialog for Channel Studio (Preview).
 
-Reads existing channel info (number, name, root path) for display
-only, plus a best-effort read-only logo lookup. No scheduling, logo,
-or settings data is written from here.
+The Choose Channel grid/card themselves live in channel_grid.py and
+channel_card.py — this module is the per-channel detail view they
+open into. No scheduling, library, or settings data is written from
+here, aside from the isolated Programming Block drafts file.
 """
 
-import os
-
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import (
     QDialog,
-    QFrame,
-    QHBoxLayout,
     QLabel,
-    QMessageBox,
     QPushButton,
-    QScrollArea,
-    QStackedWidget,
     QVBoxLayout,
     QWidget,
 )
 
 from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_widgets import (
-    FlowLayout,
     build_action_button_row,
     build_card_grid,
     build_empty_state,
@@ -36,129 +28,9 @@ from .drafts import delete_draft, load_drafts
 from .programming_block_wizard import open_programming_block_wizard
 from .programming_blocks import QUICK_ACTION_SUGGESTIONS
 from .schedule_preview import build_draft_preview_slots
+from .studio_styles import SinglePageStackedWidget, build_scroll_area
 
 _CREATE_PROGRAMMING_BLOCK = "Create Programming Block"
-
-_LOGO_CANDIDATE_NAMES = ("logo.png", "logo.jpg", "logo.jpeg", "bug.png", "channel.png")
-
-
-def _find_channel_logo_path(root_path):
-    """Best-effort, read-only fallback logo lookup. Never raises.
-
-    Only used when the caller couldn't supply a pre-resolved logo path
-    (e.g. `ChannelStudioSummary.logo_path` from the adapter).
-    """
-    if not root_path:
-        return ""
-    logos_dir = os.path.join(root_path, "Logos")
-    if not os.path.isdir(logos_dir):
-        return ""
-    try:
-        entries = {name.lower(): name for name in os.listdir(logos_dir)}
-    except OSError:
-        return ""
-    for candidate in _LOGO_CANDIDATE_NAMES:
-        actual = entries.get(candidate)
-        if actual:
-            return os.path.join(logos_dir, actual)
-    return ""
-
-
-def _build_channel_logo_widget(summary):
-    logo_path = summary.logo_path or _find_channel_logo_path(summary.root_path)
-    if logo_path:
-        pixmap = QPixmap(logo_path)
-        if not pixmap.isNull():
-            logo_lbl = QLabel()
-            logo_lbl.setPixmap(
-                pixmap.scaled(36, 36, Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            )
-            logo_lbl.setFixedSize(36, 36)
-            logo_lbl.setAlignment(Qt.AlignCenter)
-            return logo_lbl
-    monogram = QLabel((summary.name or "?")[:1].upper())
-    monogram.setObjectName("statusBadge")
-    monogram.setFixedSize(36, 36)
-    monogram.setAlignment(Qt.AlignCenter)
-    return monogram
-
-
-def _confirm_remove_channel(parent, channel_name):
-    box = QMessageBox(parent)
-    box.setWindowTitle(f"Remove {channel_name}?")
-    box.setText(
-        "This will eventually remove the channel from Channel Studio, not delete your media."
-    )
-    box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
-    box.setDefaultButton(QMessageBox.Cancel)
-    if box.exec() == QMessageBox.Yes:
-        show_preview_dialog(
-            parent,
-            "Remove Channel",
-            "Removing channels from Channel Studio isn't wired up yet — nothing changed.",
-        )
-
-
-def build_channel_card(summary, on_open_channel):
-    """Build a channel card from a `ChannelStudioSummary` (read-only).
-
-    Open Channel is the primary action; Remove sits beside it, safe —
-    it only ever asks for confirmation, and never touches real media
-    or channel files. Renaming, live preview, and everything else live
-    inside the channel's own tabs now.
-    """
-    card = QFrame()
-    card.setObjectName("sectionCard")
-    card.setFrameShape(QFrame.NoFrame)
-    outer = QVBoxLayout(card)
-    outer.setContentsMargins(14, 10, 14, 10)
-    outer.setSpacing(8)
-
-    top_row = QHBoxLayout()
-    top_row.setSpacing(14)
-
-    number_lbl = QLabel(str(summary.number or ""))
-    number_lbl.setObjectName("statusBadge")
-    number_lbl.setFixedWidth(32)
-    number_lbl.setAlignment(Qt.AlignCenter)
-    top_row.addWidget(number_lbl)
-
-    top_row.addWidget(_build_channel_logo_widget(summary))
-
-    text_col = QVBoxLayout()
-    text_col.setSpacing(2)
-    name_lbl = QLabel(summary.name)
-    name_lbl.setObjectName("sectionHeader")
-    text_col.addWidget(name_lbl)
-    summary_lbl = QLabel(summary.headline)
-    summary_lbl.setObjectName("sectionNote")
-    summary_lbl.setWordWrap(True)
-    text_col.addWidget(summary_lbl)
-    if summary.has_hints:
-        hint_bits = []
-        if summary.airing_rule_count:
-            hint_bits.append(f"{summary.airing_rule_count} airing rule" + ("s" if summary.airing_rule_count != 1 else ""))
-        if summary.seasonal_rule_count:
-            hint_bits.append(f"{summary.seasonal_rule_count} seasonal event" + ("s" if summary.seasonal_rule_count != 1 else ""))
-        hint_lbl = QLabel(" · ".join(hint_bits))
-        hint_lbl.setObjectName("fieldHelp")
-        text_col.addWidget(hint_lbl)
-    top_row.addLayout(text_col, 1)
-    outer.addLayout(top_row)
-
-    channel_info = {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
-
-    btn_row = FlowLayout(h_spacing=8, v_spacing=6)
-    open_btn = QPushButton("Open Channel")
-    open_btn.clicked.connect(lambda: on_open_channel(channel_info))
-    btn_row.addWidget(open_btn)
-    remove_btn = QPushButton("Remove")
-    remove_btn.clicked.connect(lambda: _confirm_remove_channel(card, summary.name))
-    btn_row.addWidget(remove_btn)
-    outer.addLayout(btn_row)
-
-    return card
-
 
 # Five tabs, five questions. No drill-down, no landing hub of cards —
 # picking a tab shows its answer immediately. Icons are small markers
@@ -169,6 +41,7 @@ _TAB_TITLES = ["🌙 Tonight", "🕒 Programming", "📢 Commercials", "⭐ Iden
 def _build_tonight_tab(dialog, schedule):
     page = QWidget()
     layout = QVBoxLayout(page)
+    layout.setContentsMargins(2, 4, 2, 4)
     layout.setSpacing(10)
 
     if schedule is not None and schedule.has_data:
@@ -208,6 +81,7 @@ def _build_tonight_tab(dialog, schedule):
 def _build_commercials_tab(dialog, summary):
     page = QWidget()
     layout = QVBoxLayout(page)
+    layout.setContentsMargins(2, 4, 2, 4)
     layout.setSpacing(10)
 
     is_on = bool(summary and summary.commercials_enabled)
@@ -256,6 +130,7 @@ _IDENTITY_ITEMS = [
 def _build_identity_tab(dialog):
     page = QWidget()
     layout = QVBoxLayout(page)
+    layout.setContentsMargins(2, 4, 2, 4)
     layout.setSpacing(10)
     cards = [
         build_info_card(
@@ -279,6 +154,7 @@ def _build_identity_tab(dialog):
 def _build_preview_tab(dialog, channel_name):
     page = QWidget()
     layout = QVBoxLayout(page)
+    layout.setContentsMargins(2, 4, 2, 4)
     layout.setSpacing(10)
     layout.addWidget(
         build_info_card(
@@ -419,7 +295,16 @@ class ChannelEditorPreviewDialog(QDialog):
     Studio's own isolated drafts file — never the real schedule.
     """
 
-    def __init__(self, channel_info, summary=None, schedule=None, parent=None, studio_dialog=None, drafts_path=None):
+    def __init__(
+        self,
+        channel_info,
+        summary=None,
+        schedule=None,
+        parent=None,
+        studio_dialog=None,
+        drafts_path=None,
+        initial_tab=0,
+    ):
         super().__init__(parent)
         self._studio_dialog = studio_dialog
         self._drafts_path = drafts_path
@@ -428,6 +313,9 @@ class ChannelEditorPreviewDialog(QDialog):
         self.resize(820, 500)
 
         outer = QVBoxLayout(self)
+        outer.setContentsMargins(20, 18, 20, 16)
+        outer.setSpacing(12)
+
         header = QLabel(f"{channel_name} · Channel {channel_info.get('default_number', '')}")
         header.setObjectName("sectionHeader")
         outer.addWidget(header)
@@ -437,21 +325,18 @@ class ChannelEditorPreviewDialog(QDialog):
         identity.setWordWrap(True)
         outer.addWidget(identity)
 
-        tab_row, _group = build_tab_row(_TAB_TITLES, self._show_tab)
+        tab_row, _group = build_tab_row(_TAB_TITLES, self._show_tab, initial_index=initial_tab)
         outer.addWidget(tab_row)
 
-        self._stack = QStackedWidget()
+        self._stack = SinglePageStackedWidget()
         self._stack.addWidget(_build_tonight_tab(self, schedule))
         self._stack.addWidget(build_drafts_section(self, self._studio_dialog, self._drafts_path))
         self._stack.addWidget(_build_commercials_tab(self, summary))
         self._stack.addWidget(_build_identity_tab(self))
         self._stack.addWidget(_build_preview_tab(self, channel_name))
+        self._stack.setCurrentIndex(initial_tab)
 
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.NoFrame)
-        scroll.setWidget(self._stack)
-        outer.addWidget(scroll, 1)
+        outer.addWidget(build_scroll_area(self._stack), 1)
 
         back_btn = QPushButton("←  Back")
         back_btn.clicked.connect(self.accept)

@@ -10,9 +10,14 @@ is read or written from this page.
 from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from .channel_studio_adapter import build_channel_studio_summaries, build_tonight_schedules
-from .channel_studio_cards import ChannelEditorPreviewDialog, build_channel_card
+from .channel_studio_cards import ChannelEditorPreviewDialog
 from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_widgets import build_action_button_row, build_empty_state
+from .channel_card import build_dashboard_channel_card
+from .channel_grid import build_channel_grid
+
+_COMMERCIALS_TAB_INDEX = 2
+_IDENTITY_TAB_INDEX = 3
 
 
 def _page(dialog, title_text, note_text=None):
@@ -67,11 +72,13 @@ def build_channels_page(dialog):
         )
         summaries_by_id = {summary.channel_id: summary for summary in summaries}
         channels_by_id = getattr(dialog, "_studio_channels_by_id", None) or {}
+        schedules = build_tonight_schedules(infos, channels_by_id=channels_by_id)
+        schedules_by_id = {schedule.channel_id: schedule for schedule in schedules}
 
-        def _open_channel(channel_info):
+        def _open_channel(channel_info, initial_tab=0):
             channel_id = channel_info.get("id", "")
             summary = summaries_by_id.get(channel_id)
-            schedule = build_tonight_schedules([channel_info], channels_by_id=channels_by_id)[0]
+            schedule = schedules_by_id.get(channel_id)
             ChannelEditorPreviewDialog(
                 channel_info,
                 summary=summary,
@@ -79,10 +86,32 @@ def build_channels_page(dialog):
                 parent=dialog,
                 studio_dialog=dialog,
                 drafts_path=_drafts_path(dialog),
+                initial_tab=initial_tab,
             ).exec()
 
+        def _open_commercials(channel_info):
+            _open_channel(channel_info, initial_tab=_COMMERCIALS_TAB_INDEX)
+
+        def _open_identity(channel_info):
+            _open_channel(channel_info, initial_tab=_IDENTITY_TAB_INDEX)
+
+        cards = []
         for summary in sorted(summaries, key=lambda s: s.number):
-            list_layout.addWidget(build_channel_card(summary, _open_channel))
+            channel_info = {
+                "id": summary.channel_id,
+                "name": summary.name,
+                "default_number": summary.number,
+            }
+            cards.append(
+                build_dashboard_channel_card(
+                    summary,
+                    schedules_by_id.get(summary.channel_id),
+                    on_open=_open_channel,
+                    on_commercials=_open_commercials,
+                    on_set_logo=lambda checked=False, info=channel_info: _open_identity(info),
+                )
+            )
+        list_layout.addWidget(build_channel_grid(cards))
     layout.addWidget(list_card)
 
     layout.addStretch(1)
