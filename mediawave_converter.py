@@ -2,6 +2,7 @@ import hashlib
 import json
 import os
 import re
+import shlex
 import shutil
 import ssl
 import subprocess
@@ -329,18 +330,19 @@ QUALITY_PRESETS = {
     },
     SAFE_MEDIA_PRESET: {
         "crf": 20,
-        "preset": "medium",
+        "preset": "veryfast",
         "audio_bitrate": "192k",
         "tag": "safe",
-        "description": "Software-encoded H.264, yuv420p, AAC, constant frame rate, and faststart for difficult files.",
+        "description": "Software-encoded H.264, yuv420p, AAC, constant frame rate, and faststart, tuned for faster safe batches.",
         "vt_bitrate": "6M",
         "vt_maxrate": "9M",
         "safe_compatibility": True,
     },
 }
 FRAMING_CHOICES = {
-    "Keep More Picture": "Preserves more of the image when shapes do not match.",
-    "Fill Screen More": "Crops more aggressively to fill the target shape.",
+    "Keep More Picture": "Preserves the full frame; adds black bars when shapes do not match.",
+    "Fill Screen More": "Crops to fill the target shape.",
+    "Blurred Fill": "Preserves the full frame with a blurred background fill.",
 }
 IMPORT_NOTICE_TEXT = (
     "Only import content you own, have permission to use, or are otherwise legally "
@@ -412,7 +414,7 @@ SLIDER_LABELS = [
     (0.67, "Assertive"),
 ]
 ENCODER_CHOICES = {
-    "Automatic": "Pick the fastest safe option for this machine.",
+    "Automatic": "Prefer the Mac hardware encoder when available, with software fallback.",
     "Mac Speed Boost": "Use Apple's video engine when available for faster batches.",
     "Compatibility Mode": "Use classic software encoding for the most predictable results.",
 }
@@ -766,6 +768,115 @@ def seconds_from_progress(raw_value: str) -> float | None:
         hours, minutes, seconds = raw_value.split(":")
         return (int(hours) * 3600) + (int(minutes) * 60) + float(seconds)
     return None
+
+
+@dataclass
+class FfmpegProgressSnapshot:
+    seconds: float | None = None
+    percent: int | None = None
+    speed: str = ""
+    output_size: str = ""
+    stage: str = "Encoding video/audio"
+    elapsed_seconds: float = 0.0
+    remaining_seconds: float | None = None
+
+
+def shell_quote_command(command: list[str]) -> str:
+    return " ".join(shlex.quote(str(part)) for part in command)
+
+
+def parse_ffmpeg_progress_line(line: str, progress_data: dict[str, str]) -> FfmpegProgressSnapshot | None:
+    line = line.strip()
+    if not line or "=" not in line:
+        return None
+    key, value = line.split("=", 1)
+    progress_data[key] = value
+    return ffmpeg_progress_snapshot(progress_data)
+
+
+def ffmpeg_progress_snapshot(
+    progress_data: dict[str, str],
+    *,
+    duration: float = 0.0,
+    elapsed_seconds: float = 0.0,
+    completed_units: float = 0.0,
+    total_units: float = 0.0,
+) -> FfmpegProgressSnapshot:
+    seconds = seconds_from_progress(
+        progress_data.get("out_time")
+        or progress_data.get("out_time_us")
+        or progress_data.get("out_time_ms")
+        or ""
+    )
+    percent: int | None = None
+    if seconds is not None and duration > 0:
+        percent = int(clamp((seconds / duration) * 100.0, 0.0, 99.0))
+
+    total_size = progress_data.get("total_size", "").strip()
+    output_size = ""
+    if total_size and total_size.lstrip("-").isdigit() and int(total_size) >= 0:
+        output_size = human_size(int(total_size))
+
+    speed = progress_data.get("speed", "").strip()
+    if speed == "N/A":
+        speed = ""
+
+    stage = "Encoding video/audio"
+    if progress_data.get("progress") == "end":
+        stage = "Finalizing file"
+    elif seconds is not None and duration > 0 and seconds >= duration * 0.98:
+        stage = "Finalizing file"
+    elif seconds is not None and seconds > 0:
+        stage = "Writing output"
+
+    remaining: float | None = None
+    if elapsed_seconds > 0 and total_units > 0:
+        fraction = clamp(completed_units / total_units, 0.0, 1.0)
+        if fraction >= 1.0:
+            remaining = 0.0
+        elif fraction > 0.005:
+            remaining = elapsed_seconds * ((1.0 - fraction) / fraction)
+
+    return FfmpegProgressSnapshot(
+        seconds=seconds,
+        percent=percent,
+        speed=speed,
+        output_size=output_size,
+        stage=stage,
+        elapsed_seconds=elapsed_seconds,
+        remaining_seconds=remaining,
+    )
+
+
+def format_progress_detail(
+    snapshot: FfmpegProgressSnapshot,
+    *,
+    file_index: int,
+    total_files: int,
+    file_name: str,
+) -> str:
+    pct_text = f"{snapshot.percent}%" if snapshot.percent is not None else "Working"
+    bits = [pct_text]
+    if snapshot.speed:
+        bits.append(snapshot.speed)
+    if snapshot.output_size:
+        bits.append(snapshot.output_size)
+    if snapshot.remaining_seconds is not None and snapshot.remaining_seconds > 0:
+        bits.append(f"about {format_time_remaining(snapshot.remaining_seconds)} remaining")
+    if snapshot.elapsed_seconds > 0:
+        bits.append(f"elapsed {format_time_remaining(snapshot.elapsed_seconds)}")
+    detail = " · ".join(bits)
+    return f"Converting {file_index} of {total_files} — {file_name}\n{snapshot.stage}: {detail}"
+
+
+def audio_copy_is_safe(audio_codec: str, target_codec: str, *, audio_leveling: bool) -> bool:
+    if audio_leveling:
+        return False
+    source = (audio_codec or "").lower().strip()
+    target = (target_codec or "").lower().strip()
+    if not source or not target:
+        return False
+    return source == target
 
 
 def is_child_of(path: Path, parent: Path) -> bool:
@@ -1212,8 +1323,6 @@ _STARTUP_STARS = _make_startup_stars()
 
 
 def default_encoder_mode() -> str:
-    if sys.platform == "darwin" and "h264_videotoolbox" in AVAILABLE_ENCODERS:
-        return "Automatic"
     return "Compatibility Mode"
 
 
@@ -1635,6 +1744,7 @@ class BatchWorker(QThread):
     phase_changed = Signal(str)
     counters_changed = Signal(int, int, int, int)
     log_message = Signal(str)
+    command_ready = Signal(str)
     ffmpeg_missing = Signal(str)
     finished_summary = Signal(dict)
 
@@ -1648,6 +1758,9 @@ class BatchWorker(QThread):
         self._pending_paths: list[Path] = []
         self._known_sources: set[Path] = set()
         self._last_log_path: Path | None = None
+        self._batch_started_at: float = 0.0
+        self._current_index = 0
+        self._current_total = 0
 
     def request_cancel(self) -> None:
         self._cancel_requested = True
@@ -1726,6 +1839,7 @@ class BatchWorker(QThread):
             return
 
         index = 0
+        self._batch_started_at = time.monotonic()
         while True:
             self._drain_pending_sources(candidates)
             if self._cancel_requested:
@@ -1737,6 +1851,8 @@ class BatchWorker(QThread):
             source_path = candidates[index]
             index += 1
             total = len(candidates)
+            self._current_index = index
+            self._current_total = total
 
             output_path = self.output_path_for(source_path)
             row_key = str(source_path)
@@ -2111,7 +2227,7 @@ class BatchWorker(QThread):
         target_ratio = self.options.aspect_ratio
         current_ratio = width / height
         tolerance = 0.015
-        if self.options.framing_mode == "Keep More Picture":
+        if self.options.framing_mode in {"Keep More Picture", "Blurred Fill"}:
             return (x, y, even_floor(width), even_floor(height))
         if abs(current_ratio - target_ratio) <= tolerance:
             return (x, y, even_floor(width), even_floor(height))
@@ -2235,7 +2351,7 @@ class BatchWorker(QThread):
                 )
         raise RuntimeError(last_error)
 
-    def transcode_with_encoder(
+    def build_transcode_command(
         self,
         source_path: Path,
         output_path: Path,
@@ -2245,7 +2361,7 @@ class BatchWorker(QThread):
         chosen_audio: "AudioStreamInfo | None",
         chosen_subtitle: "SubtitleStreamInfo | None",
         subtitle_preference: str,
-    ) -> None:
+    ) -> list[str]:
         x, y, width, height = crop
         use_audio_leveling = (
             self.options.audio_leveling_enabled
@@ -2314,7 +2430,7 @@ class BatchWorker(QThread):
             command.extend(["-vf", video_filter])
 
         if video_encoder == "mpeg4":
-            command.extend(["-c:v", "mpeg4", "-q:v", "3"])
+            command.extend(["-c:v", "mpeg4", "-q:v", "3", "-threads", "0"])
         elif video_encoder == "h264_videotoolbox":
             command.extend(
                 [
@@ -2337,13 +2453,21 @@ class BatchWorker(QThread):
                     quality["preset"],
                     "-crf",
                     str(quality["crf"]),
+                    "-threads",
+                    "0",
                 ]
             )
 
         if chosen_audio is not None:
             if use_audio_leveling:
                 command.extend(["-af", AUDIO_LEVELING_FILTER])
-            if output_profile["audio_codec"] == "mp3":
+            if audio_copy_is_safe(
+                chosen_audio.codec,
+                str(output_profile["audio_codec"]),
+                audio_leveling=use_audio_leveling,
+            ):
+                command.extend(["-c:a", "copy"])
+            elif output_profile["audio_codec"] == "mp3":
                 command.extend(["-c:a", "mp3", "-b:a", "192k", "-ar", "48000"])
             else:
                 command.extend(
@@ -2356,6 +2480,32 @@ class BatchWorker(QThread):
             command.extend(["-c:s", str(output_profile["subtitle_codec"])])
 
         command.append(str(output_path))
+        return command
+
+    def transcode_with_encoder(
+        self,
+        source_path: Path,
+        output_path: Path,
+        probe: ProbeInfo,
+        crop: tuple[int, int, int, int],
+        video_encoder: str,
+        chosen_audio: "AudioStreamInfo | None",
+        chosen_subtitle: "SubtitleStreamInfo | None",
+        subtitle_preference: str,
+    ) -> None:
+        command = self.build_transcode_command(
+            source_path,
+            output_path,
+            probe,
+            crop,
+            video_encoder,
+            chosen_audio,
+            chosen_subtitle,
+            subtitle_preference,
+        )
+        quoted_command = shell_quote_command(command)
+        self.command_ready.emit(quoted_command)
+        self.log_message.emit(f"FFmpeg command for {source_path.name}: {quoted_command}")
 
         self._active_process = subprocess.Popen(
             command,
@@ -2366,6 +2516,7 @@ class BatchWorker(QThread):
         )
         progress_data: dict[str, str] = {}
         ffmpeg_messages: list[str] = []
+        last_progress_emit = 0.0
 
         try:
             assert self._active_process.stdout is not None
@@ -2381,17 +2532,43 @@ class BatchWorker(QThread):
                     continue
                 key, value = line.split("=", 1)
                 progress_data[key] = value
-                if key == "progress" and value == "end":
-                    self.phase_changed.emit(f"Finishing {source_path.name} — saving and checking the new file")
+                elapsed = max(0.0, time.monotonic() - self._batch_started_at)
                 seconds = seconds_from_progress(
                     progress_data.get("out_time")
                     or progress_data.get("out_time_us")
                     or progress_data.get("out_time_ms")
                     or ""
                 )
+                file_fraction = 0.0
                 if seconds is not None and probe.duration > 0:
-                    pct = int(clamp((seconds / probe.duration) * 100.0, 0.0, 99.0))
-                    self.file_progress.emit(pct)
+                    file_fraction = clamp(seconds / probe.duration, 0.0, 0.99)
+                completed_units = max(0, self._current_index - 1) + file_fraction
+                snapshot = ffmpeg_progress_snapshot(
+                    progress_data,
+                    duration=probe.duration,
+                    elapsed_seconds=elapsed,
+                    completed_units=completed_units,
+                    total_units=self._current_total,
+                )
+                if snapshot.percent is not None:
+                    self.file_progress.emit(snapshot.percent)
+                if self._current_total > 0:
+                    self.overall_progress.emit(
+                        int(clamp((completed_units / self._current_total) * 100.0, 0.0, 99.0))
+                    )
+                now = time.monotonic()
+                if key == "progress" and value == "end":
+                    self.phase_changed.emit(f"Finalizing {source_path.name} — saving and checking the new file")
+                elif now - last_progress_emit >= 0.75 and snapshot.percent is not None:
+                    last_progress_emit = now
+                    self.phase_changed.emit(
+                        format_progress_detail(
+                            snapshot,
+                            file_index=max(1, self._current_index),
+                            total_files=max(1, self._current_total),
+                            file_name=source_path.name,
+                        )
+                    )
 
             return_code = self._active_process.wait()
         finally:
@@ -2446,6 +2623,14 @@ class BatchWorker(QThread):
                 f",subtitles=filename='{escape_subtitle_filter_path(source_path)}':si={burned_subtitle.subtitle_index}"
             )
         if self.options.framing_mode == "Keep More Picture":
+            return (
+                f"{crop_filter},"
+                f"scale={target_w}:{target_h}:flags=lanczos:force_original_aspect_ratio=decrease,"
+                f"pad={target_w}:{target_h}:(ow-iw)/2:(oh-ih)/2:color=black,"
+                f"setsar=1{subtitle_filter}",
+                False,
+            )
+        if self.options.framing_mode == "Blurred Fill":
             return (
                 "[0:v]"
                 f"{crop_filter},split=2[bg][fg];"
@@ -2933,6 +3118,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self._eta_total = 0
         self._eta_completed = 0
         self._eta_file_progress = 0
+        self._last_ffmpeg_command = ""
         self._cancel_in_progress = False
         self._close_after_cancel = False
         self._settings_loaded = False
@@ -3176,7 +3362,12 @@ class MediaWaveConverterWindow(QMainWindow):
         self.framing_mode_combo = QComboBox()
         self.framing_mode_combo.addItems(list(FRAMING_CHOICES.keys()))
         self.framing_mode_combo.currentTextChanged.connect(self.sync_framing_to_advanced)
+        self.framing_mode_combo.currentTextChanged.connect(self.update_framing_help)
         setup_layout.addLayout(self.form_row("Framing", self.framing_mode_combo))
+        self.framing_help = QLabel(FRAMING_CHOICES["Keep More Picture"])
+        self.framing_help.setObjectName("fieldHelp")
+        self.framing_help.setWordWrap(True)
+        setup_layout.addWidget(self.framing_help)
 
         self.audio_pref_combo = QComboBox()
         self.audio_pref_combo.addItems(AUDIO_PREFERENCES)
@@ -4107,8 +4298,16 @@ class MediaWaveConverterWindow(QMainWindow):
         log_top.setSpacing(10)
         log_top.addWidget(self.panel_heading("Log"))
         log_top.addStretch()
+        self.show_command_button = QPushButton("Show Last FFmpeg Command")
+        self.show_command_button.clicked.connect(self.show_last_ffmpeg_command)
+        self.show_command_button.setEnabled(False)
+        self.copy_command_button = QPushButton("Copy Command")
+        self.copy_command_button.clicked.connect(self.copy_last_ffmpeg_command)
+        self.copy_command_button.setEnabled(False)
         clear_log_button = QPushButton("Clear Log")
         clear_log_button.clicked.connect(self.clear_log)
+        log_top.addWidget(self.show_command_button)
+        log_top.addWidget(self.copy_command_button)
         log_top.addWidget(clear_log_button)
         log_layout.addLayout(log_top)
 
@@ -4429,7 +4628,12 @@ class MediaWaveConverterWindow(QMainWindow):
         self.framing_combo = QComboBox()
         self.framing_combo.addItems(list(FRAMING_CHOICES.keys()))
         self.framing_combo.currentTextChanged.connect(self.sync_framing_from_advanced)
+        self.framing_combo.currentTextChanged.connect(self.update_framing_help)
         picture_layout.addLayout(self.form_row("Picture style", self.framing_combo))
+        self.advanced_framing_help = QLabel(FRAMING_CHOICES["Keep More Picture"])
+        self.advanced_framing_help.setObjectName("fieldHelp")
+        self.advanced_framing_help.setWordWrap(True)
+        picture_layout.addWidget(self.advanced_framing_help)
 
         self.crop_slider = QSlider(Qt.Horizontal)
         self.crop_slider.setRange(0, 100)
@@ -4490,6 +4694,13 @@ class MediaWaveConverterWindow(QMainWindow):
 
     def clear_log(self) -> None:
         self.log_output.clear()
+
+    def update_framing_help(self, label: str) -> None:
+        help_text = FRAMING_CHOICES.get(label, "")
+        if hasattr(self, "framing_help"):
+            self.framing_help.setText(help_text)
+        if hasattr(self, "advanced_framing_help"):
+            self.advanced_framing_help.setText(help_text)
 
     def update_crop_label(self, value: int) -> None:
         self.crop_label.setText(slider_text(value))
@@ -5377,6 +5588,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self.worker.phase_changed.connect(self.update_phase_status)
         self.worker.counters_changed.connect(self.update_counters)
         self.worker.log_message.connect(self.append_log)
+        self.worker.command_ready.connect(self.handle_command_ready)
         self.worker.ffmpeg_missing.connect(self.handle_import_convert_ffmpeg_missing)
         self.worker.finished_summary.connect(self.handle_import_convert_finished)
         self.worker.finished.connect(self.finish_close_after_worker)
@@ -6286,6 +6498,7 @@ class MediaWaveConverterWindow(QMainWindow):
         self.worker.phase_changed.connect(self.update_phase_status)
         self.worker.counters_changed.connect(self.update_counters)
         self.worker.log_message.connect(self.append_log)
+        self.worker.command_ready.connect(self.handle_command_ready)
         self.worker.ffmpeg_missing.connect(self.show_ffmpeg_warning)
         self.worker.finished_summary.connect(self.handle_finished_summary)
         self.worker.finished.connect(self.finish_close_after_worker)
@@ -6462,6 +6675,28 @@ class MediaWaveConverterWindow(QMainWindow):
     def append_log(self, message: str) -> None:
         stamp = time.strftime("%H:%M:%S")
         self.log_output.appendPlainText(f"[{stamp}] {message}")
+
+    def handle_command_ready(self, command: str) -> None:
+        self._last_ffmpeg_command = command
+        self.show_command_button.setEnabled(True)
+        self.copy_command_button.setEnabled(True)
+
+    def show_last_ffmpeg_command(self) -> None:
+        if not self._last_ffmpeg_command:
+            QMessageBox.information(self, "FFmpeg Command", "No conversion command has run yet.")
+            return
+        QMessageBox.information(
+            self,
+            "Last FFmpeg Command",
+            self._last_ffmpeg_command,
+        )
+
+    def copy_last_ffmpeg_command(self) -> None:
+        if not self._last_ffmpeg_command:
+            QMessageBox.information(self, "FFmpeg Command", "No conversion command has run yet.")
+            return
+        QApplication.clipboard().setText(self._last_ffmpeg_command)
+        self.append_log("Copied the last FFmpeg command to the clipboard.")
 
     def show_ffmpeg_warning(self, message: str) -> None:
         self._finish_timer.stop()
