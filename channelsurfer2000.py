@@ -629,6 +629,7 @@ FULL_APP_LOGO_PATH = resolve_resource_path(
 )
 APP_ICON_PATH = resolve_resource_path("logos/MW2K_appicon.png", "logos/MW2K.png")
 CLASSIC_APP_LOGO_PATH = resolve_resource_path("logos/mediawave80s.png")
+CHANNEL_STUDIO_LOGO_PATH = resolve_resource_path("logos/Channel-Studio.png")
 CLOCK_FONT_PATH = resolve_resource_path("Fonts/DS-Digital/DS-DIGIT.TTF")
 CRT_FONT_PATH = resolve_resource_path(
     "Fonts/Samsung CRT TV (extremely close to) 3x.ttf",
@@ -20493,7 +20494,10 @@ class AdvancedConfigDialog(QDialog):
         """
         from mediawave.channel_studio.channel_studio import build_channel_studio_tab
         return build_channel_studio_tab(
-            self, nav_panel_cls=_AdvNavPanel, on_back=self._exit_channel_studio_mode
+            self,
+            nav_panel_cls=_AdvNavPanel,
+            on_back=self._exit_channel_studio_mode,
+            logo_path=CHANNEL_STUDIO_LOGO_PATH,
         )
 
     def _on_adv_nav_clicked(self, idx):

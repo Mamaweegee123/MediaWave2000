@@ -7,12 +7,30 @@ for the per-channel view.
 """
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QPixmap
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from . import channel_studio_pages as pages
 
+_LOGO_HEIGHT = 40
 
-def build_channel_studio_tab(dialog, nav_panel_cls=None, on_back=None):
+
+def _build_header_title(logo_path):
+    """A small logo if the asset exists and loads, text otherwise."""
+    if logo_path:
+        pixmap = QPixmap(logo_path)
+        if not pixmap.isNull():
+            label = QLabel()
+            label.setPixmap(
+                pixmap.scaledToHeight(_LOGO_HEIGHT, Qt.SmoothTransformation)
+            )
+            return label
+    label = QLabel("Channel Studio")
+    label.setObjectName("advNavSubtitle")
+    return label
+
+
+def build_channel_studio_tab(dialog, nav_panel_cls=None, on_back=None, logo_path=None):
     """Build the Channel Studio (Preview) tab: just the channel picker.
 
     `dialog` is the owning AdvancedConfigDialog; used only to reuse its
@@ -20,7 +38,8 @@ def build_channel_studio_tab(dialog, nav_panel_cls=None, on_back=None):
     `nav_panel_cls` is accepted for backward compatibility with the
     caller but no longer used — Channel Studio has no side navigation.
     `on_back`, if given, is called when the header's "Back to Settings"
-    button is clicked.
+    button is clicked. `logo_path`, if given and it loads, replaces the
+    plain "Channel Studio" header text with that image.
     """
     container = QWidget()
     container.setObjectName("channelStudioRoot")
@@ -31,9 +50,7 @@ def build_channel_studio_tab(dialog, nav_panel_cls=None, on_back=None):
     if on_back is not None:
         header = QHBoxLayout()
         header.setContentsMargins(16, 12, 16, 0)
-        title = QLabel("Channel Studio")
-        title.setObjectName("advNavSubtitle")
-        header.addWidget(title)
+        header.addWidget(_build_header_title(logo_path))
         header.addStretch(1)
         back_btn = QPushButton("←  Back to Settings")
         back_btn.setObjectName("advNavItem")
