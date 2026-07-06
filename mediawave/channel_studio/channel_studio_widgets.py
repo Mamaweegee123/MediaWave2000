@@ -131,8 +131,8 @@ def build_info_card(title_text, subtitle_text=None, meta_lines=None, buttons=Non
     card.setObjectName("sectionCard")
     card.setFrameShape(QFrame.NoFrame)
     layout = QVBoxLayout(card)
-    layout.setContentsMargins(14, 12, 14, 12)
-    layout.setSpacing(6)
+    layout.setContentsMargins(16, 14, 16, 16)
+    layout.setSpacing(8)
 
     title_row = QHBoxLayout()
     title_row.setSpacing(8)
@@ -159,6 +159,7 @@ def build_info_card(title_text, subtitle_text=None, meta_lines=None, buttons=Non
             layout.addWidget(meta_lbl)
 
     if buttons:
+        layout.addSpacing(4)
         btn_row = FlowLayout(h_spacing=8, v_spacing=6)
         for label, callback in buttons:
             btn = QPushButton(label)
@@ -213,7 +214,7 @@ def build_schedule_timeline(channel_name, slots):
     return card
 
 
-def build_card_grid(cards, columns=3, total_width=640):
+def build_card_grid(cards, columns=3, total_width=760):
     """Lay out already-built card widgets in a grid.
 
     Word-wrapped labels inside each card are given an explicit width
@@ -233,7 +234,7 @@ def build_card_grid(cards, columns=3, total_width=640):
         for card in cards:
             for label in card.findChildren(QLabel):
                 if label.wordWrap():
-                    label.setFixedWidth(card_width - 28)
+                    label.setFixedWidth(card_width - 32)
     for index, card in enumerate(cards):
         row, col = divmod(index, columns)
         grid.addWidget(card, row, col)
@@ -249,13 +250,14 @@ def build_mock_card_grid(items, columns=3):
     return build_card_grid(cards, columns=columns)
 
 
-def build_tab_row(labels, on_select):
+def build_tab_row(labels, on_select, initial_index=0):
     """A flat, single-row set of exclusive tabs — not a sidebar.
 
     Used to switch between a handful of top-level views (e.g. Tonight,
     Programming, Commercials, Identity, Preview) without any drill-down
     or nested navigation. `on_select(index)` is called whenever the
-    selected tab changes.
+    selected tab changes. `initial_index` lets a caller open straight
+    to a specific tab (e.g. a channel card's "Commercials" shortcut).
     """
     row = QWidget()
     layout = FlowLayout(row, margin=0, h_spacing=6, v_spacing=6)
@@ -265,7 +267,7 @@ def build_tab_row(labels, on_select):
         btn = QPushButton(label)
         btn.setObjectName("advNavItem")
         btn.setCheckable(True)
-        btn.setChecked(index == 0)
+        btn.setChecked(index == initial_index)
         btn.setCursor(Qt.PointingHandCursor)
         group.addButton(btn, index)
         layout.addWidget(btn)
