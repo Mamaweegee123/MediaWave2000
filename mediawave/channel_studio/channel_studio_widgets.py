@@ -213,11 +213,27 @@ def build_schedule_timeline(channel_name, slots):
     return card
 
 
-def build_card_grid(cards, columns=3):
-    """Lay out already-built card widgets in a grid."""
+def build_card_grid(cards, columns=3, total_width=640):
+    """Lay out already-built card widgets in a grid.
+
+    Word-wrapped labels inside each card are given an explicit width
+    up front. QGridLayout sizes a row from each cell's `sizeHint()`,
+    but a QLabel's default sizeHint() reflects its *unconstrained*
+    width, not the narrower column width it will actually render at —
+    so a description that only needs to wrap once the grid squeezes it
+    reports a single-line height, and the wrapped second line is
+    clipped instead of growing the row. Fixing the label's width before
+    layout makes heightForWidth() correct from the start.
+    """
     grid_widget = QWidget()
     grid = QGridLayout(grid_widget)
     grid.setSpacing(12)
+    if columns > 1:
+        card_width = (total_width - (columns - 1) * 12) // columns
+        for card in cards:
+            for label in card.findChildren(QLabel):
+                if label.wordWrap():
+                    label.setFixedWidth(card_width - 28)
     for index, card in enumerate(cards):
         row, col = divmod(index, columns)
         grid.addWidget(card, row, col)
