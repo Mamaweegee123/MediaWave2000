@@ -14,7 +14,9 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
+    QScrollArea,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -22,6 +24,7 @@ from PySide6.QtWidgets import (
 
 from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_widgets import (
+    FlowLayout,
     build_action_button_row,
     build_card_grid,
     build_empty_state,
@@ -80,12 +83,29 @@ def _build_channel_logo_widget(summary):
     return monogram
 
 
+def _confirm_remove_channel(parent, channel_name):
+    box = QMessageBox(parent)
+    box.setWindowTitle(f"Remove {channel_name}?")
+    box.setText(
+        "This will eventually remove the channel from Channel Studio, not delete your media."
+    )
+    box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
+    box.setDefaultButton(QMessageBox.Cancel)
+    if box.exec() == QMessageBox.Yes:
+        show_preview_dialog(
+            parent,
+            "Remove Channel",
+            "Removing channels from Channel Studio isn't wired up yet — nothing changed.",
+        )
+
+
 def build_channel_card(summary, on_open_channel):
     """Build a channel card from a `ChannelStudioSummary` (read-only).
 
-    One primary action — open the channel. Renaming, live preview, and
-    everything else live inside the channel's own tabs now, so the
-    picker itself stays to a single, obvious next step.
+    Open Channel is the primary action; Remove sits beside it, safe —
+    it only ever asks for confirmation, and never touches real media
+    or channel files. Renaming, live preview, and everything else live
+    inside the channel's own tabs now.
     """
     card = QFrame()
     card.setObjectName("sectionCard")
@@ -128,16 +148,22 @@ def build_channel_card(summary, on_open_channel):
 
     channel_info = {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
 
+    btn_row = FlowLayout(h_spacing=8, v_spacing=6)
     open_btn = QPushButton("Open Channel")
     open_btn.clicked.connect(lambda: on_open_channel(channel_info))
-    outer.addWidget(open_btn, 0, Qt.AlignLeft)
+    btn_row.addWidget(open_btn)
+    remove_btn = QPushButton("Remove")
+    remove_btn.clicked.connect(lambda: _confirm_remove_channel(card, summary.name))
+    btn_row.addWidget(remove_btn)
+    outer.addLayout(btn_row)
 
     return card
 
 
 # Five tabs, five questions. No drill-down, no landing hub of cards —
-# picking a tab shows its answer immediately.
-_TAB_TITLES = ["Tonight", "Programming", "Commercials", "Identity", "Preview"]
+# picking a tab shows its answer immediately. Icons are small markers
+# next to each label, not decoration — labels stay short and plain.
+_TAB_TITLES = ["🌙 Tonight", "🕒 Programming", "📢 Commercials", "⭐ Identity", "▶ Preview"]
 
 
 def _build_tonight_tab(dialog, schedule):
@@ -221,14 +247,9 @@ def _build_commercials_tab(dialog, summary):
 
 
 _IDENTITY_ITEMS = [
-    ("Channel Logo", "The bug shown on screen for this channel.", None),
-    ("Station IDs", "Short idents that play between programs.", None),
-    (
-        "Channel Look",
-        "Future colors, on-screen style, popups, and era themes for this "
-        "channel — layered on top of your app's own look, not a replacement for it.",
-        "Later",
-    ),
+    ("Channel Logo", "The on-screen bug for this channel.", None),
+    ("Station IDs", "Short idents between programs.", None),
+    ("Channel Look", "Colors, style, and on-air extras.", "Later"),
 ]
 
 
@@ -404,7 +425,7 @@ class ChannelEditorPreviewDialog(QDialog):
         self._drafts_path = drafts_path
         channel_name = channel_info.get("name", "Channel")
         self.setWindowTitle(channel_name)
-        self.resize(680, 520)
+        self.resize(820, 500)
 
         outer = QVBoxLayout(self)
         header = QLabel(f"{channel_name} · Channel {channel_info.get('default_number', '')}")
@@ -425,11 +446,16 @@ class ChannelEditorPreviewDialog(QDialog):
         self._stack.addWidget(_build_commercials_tab(self, summary))
         self._stack.addWidget(_build_identity_tab(self))
         self._stack.addWidget(_build_preview_tab(self, channel_name))
-        outer.addWidget(self._stack, 1)
 
-        close_btn = QPushButton("Close")
-        close_btn.clicked.connect(self.accept)
-        outer.addWidget(close_btn, 0, Qt.AlignRight)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setWidget(self._stack)
+        outer.addWidget(scroll, 1)
+
+        back_btn = QPushButton("←  Back")
+        back_btn.clicked.connect(self.accept)
+        outer.addWidget(back_btn, 0, Qt.AlignLeft)
 
     def _show_tab(self, index):
         self._stack.setCurrentIndex(index)

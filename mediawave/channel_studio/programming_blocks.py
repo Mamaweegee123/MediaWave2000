@@ -21,26 +21,11 @@ class ProgrammingSuggestion:
 
 
 QUICK_ACTION_SUGGESTIONS = [
-    ProgrammingSuggestion(
-        title="Shuffle Tonight",
-        description="Shuffle tonight's lineup for a little more surprise.",
-    ),
-    ProgrammingSuggestion(
-        title="Add Movie Night",
-        description="Drop a feature presentation into tonight's schedule.",
-    ),
-    ProgrammingSuggestion(
-        title="Start Night Block Earlier",
-        description="Pull your late-night lineup up to an earlier start.",
-    ),
-    ProgrammingSuggestion(
-        title="Add More Cartoons",
-        description="Give the daytime lineup a few more animated picks.",
-    ),
-    ProgrammingSuggestion(
-        title="Add Seasonal Event",
-        description="Plan a holiday or seasonal takeover ahead of time.",
-    ),
+    ProgrammingSuggestion(title="Shuffle Tonight", description="Shuffle tonight's lineup."),
+    ProgrammingSuggestion(title="Add Movie Night", description="Add a movie to tonight's lineup."),
+    ProgrammingSuggestion(title="Start Night Block Earlier", description="Move late night up an hour."),
+    ProgrammingSuggestion(title="Add More Cartoons", description="Add cartoons to the daytime lineup."),
+    ProgrammingSuggestion(title="Add Seasonal Event", description="Plan a holiday takeover."),
 ]
 
 
@@ -66,56 +51,56 @@ WIZARD_BLOCK_TYPES = [
     BlockTypeOption(
         key="morning_cartoons",
         title="Morning Cartoons",
-        description="A bright, bouncy start to the day.",
+        description="Cartoons to start the day.",
         typical_airtime="6:00 AM – 10:00 AM",
         example_content="Saturday Morning Toons",
     ),
     BlockTypeOption(
         key="after_school",
         title="After School",
-        description="The lineup that's on the second backpacks hit the floor.",
+        description="Afternoon cartoons and reruns.",
         typical_airtime="3:00 PM – 6:00 PM",
         example_content="After School Special",
     ),
     BlockTypeOption(
         key="movie_night",
         title="Movie Night",
-        description="A full feature presentation, trailers and all.",
+        description="A featured movie, plus trailers.",
         typical_airtime="8:00 PM – 11:00 PM",
         example_content="Ghostbusters",
     ),
     BlockTypeOption(
         key="late_night",
         title="Late Night",
-        description="Slower, moodier programming for the night owls still watching.",
+        description="Reruns and late-night programming.",
         typical_airtime="12:00 AM – 6:00 AM",
         example_content="Late Night Rerun",
     ),
     BlockTypeOption(
         key="halloween_event",
         title="Halloween Event",
-        description="A spooky seasonal takeover for the time of year.",
+        description="A Halloween programming takeover.",
         typical_airtime="All Day, October",
         example_content="Halloween Special",
     ),
     BlockTypeOption(
         key="christmas_specials",
         title="Christmas Specials",
-        description="Holiday favorites, back-to-back through December.",
+        description="Holiday specials, back-to-back.",
         typical_airtime="All Day, December",
         example_content="Christmas Special",
     ),
     BlockTypeOption(
         key="variety",
         title="Variety",
-        description="A little bit of everything, mixed throughout the day.",
+        description="A mix of shows throughout the day.",
         typical_airtime="Varies",
         example_content="Variety Hour",
     ),
     BlockTypeOption(
         key="scratch",
         title="Start From Scratch",
-        description="Build a block with your own name, timing, and content.",
+        description="Build your own block.",
         typical_airtime="You decide",
         example_content="New Programming Block",
     ),
@@ -132,13 +117,13 @@ class TimePresetOption:
 
 
 WIZARD_TIME_PRESETS = [
-    TimePresetOption("every_day", "Every Day", "Airs every day of the week."),
+    TimePresetOption("every_day", "Every Day", "Airs every day."),
     TimePresetOption("weekdays", "Weekdays", "Monday through Friday."),
     TimePresetOption("weekends", "Weekends", "Saturday and Sunday."),
-    TimePresetOption("friday_nights", "Friday Nights", "A weekly Friday-night tradition."),
-    TimePresetOption("saturday_morning", "Saturday Morning", "The classic Saturday morning slot."),
-    TimePresetOption("october", "October", "A seasonal takeover for Halloween."),
-    TimePresetOption("december", "December", "A seasonal takeover for the holidays."),
+    TimePresetOption("friday_nights", "Friday Nights", "Friday nights only."),
+    TimePresetOption("saturday_morning", "Saturday Morning", "Saturday mornings only."),
+    TimePresetOption("october", "October", "A Halloween takeover."),
+    TimePresetOption("december", "December", "A holiday takeover."),
     TimePresetOption("custom", "Custom", "Pick your own days and times."),
 ]
 
@@ -153,12 +138,12 @@ class PlaybackStyleOption:
 
 
 WIZARD_PLAYBACK_STYLES = [
-    PlaybackStyleOption("random", "Random", "Shuffle everything for a little surprise."),
-    PlaybackStyleOption("sequential", "Sequential", "Play episodes in order, like a real season."),
-    PlaybackStyleOption("marathon", "Marathon", "Back-to-back binge-style viewing."),
+    PlaybackStyleOption("random", "Random", "Plays in random order."),
+    PlaybackStyleOption("sequential", "Sequential", "Plays episodes in order."),
+    PlaybackStyleOption("marathon", "Marathon", "Back-to-back episodes."),
     PlaybackStyleOption("comfort_tv", "Comfort TV", "Familiar favorites on repeat."),
     PlaybackStyleOption("movie_marathon", "Movie Marathon", "A run of features, back-to-back."),
-    PlaybackStyleOption("background_tv", "Background TV", "Low-key programming for on in the background."),
+    PlaybackStyleOption("background_tv", "Background TV", "Low-key programming for the background."),
 ]
 
 

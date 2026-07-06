@@ -36,7 +36,7 @@ def _drafts_path(dialog):
 def build_channels_page(dialog):
     content, layout, hero_layout = _page(
         dialog,
-        "CHANNEL STUDIO",
+        "Get Started",
         "Choose a channel to start running it.",
     )
     action_row, _buttons = build_action_button_row(
@@ -47,7 +47,7 @@ def build_channels_page(dialog):
     )
     hero_layout.addWidget(action_row)
 
-    list_card, list_layout = dialog.build_section_card("Your Channels")
+    list_card, list_layout = dialog.build_section_card("📺 Your Channels")
     infos = list(getattr(dialog, "catalog_channel_infos", None) or [])
     if not infos:
         list_layout.addWidget(
