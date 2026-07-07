@@ -606,6 +606,7 @@ VAULT_DEBUG_LOG_FILE = os.path.join(DATA_DIR, "vault_debug.log")
 COMMERCIAL_LIBRARY_CACHE_FILE = os.path.join(DATA_DIR, "commercial_library_cache.json")
 MEDIAWAVE_ALERTS_FILE = os.path.join(DATA_DIR, "mediawave_alerts.json")
 CHANNEL_STUDIO_DRAFTS_FILE = os.path.join(DATA_DIR, "channel_studio_drafts.json")
+CHANNEL_STUDIO_STATE_FILE = os.path.join(DATA_DIR, "channel_studio_state.json")
 SMART_BREAK_CACHE_FILE = os.path.join(DATA_DIR, "smart_break_cache.json")
 SPOTIFY_LYRICS_CACHE_FILE = os.path.join(DATA_DIR, "spotify_lyrics_cache.json")
 SPOTIFY_TRACK_CACHE_FILE = os.path.join(DATA_DIR, "spotify_track_cache.json")
@@ -20015,6 +20016,7 @@ class AdvancedConfigDialog(QDialog):
         self._channel_logo_lookup = channel_logo_lookup if isinstance(channel_logo_lookup, dict) else {}
         self._studio_channels_by_id = studio_channels_by_id if isinstance(studio_channels_by_id, dict) else {}
         self._channel_studio_drafts_file = CHANNEL_STUDIO_DRAFTS_FILE
+        self._channel_studio_state_file = CHANNEL_STUDIO_STATE_FILE
         self.commercials_settings = normalize_commercials_config((settings or {}).get("commercials", {}))
         self.advanced_commercials_settings = json.loads(json.dumps(self.commercials_settings))
         self.channel_commercial_overrides = json.loads(json.dumps(self.commercials_settings.get("channel_overrides", {})))
@@ -20251,13 +20253,22 @@ class AdvancedConfigDialog(QDialog):
 
         # Channel Studio (Preview) lives in its own full-width mode, not as
         # an _adv_stack page, so it doesn't share the main settings sidebar.
-        self._mode_stack.addWidget(self.build_channel_studio_tab())  # mode 1
+        channel_studio_content, channel_studio_footer = self.build_channel_studio_tab()
+        self._mode_stack.addWidget(channel_studio_content)  # mode 1
         self._adv_nav_group.idClicked.connect(self._on_adv_nav_clicked)
 
-        # ── Footer: Save / Close ─────────────────────────────────────────────
-        adv_footer = QWidget()
-        adv_footer.setObjectName("advFooter")
-        footer_row = QHBoxLayout(adv_footer)
+        # ── Footer: Save/Close (main settings) or Channel Studio's own
+        # (Total Channels / Reorder Channels) ───────────────────────────────
+        # A single QStackedWidget, swapped in lockstep with _mode_stack, so
+        # switching modes changes footer *content* rather than footer
+        # *presence*. A plain QStackedWidget reports the tallest child's
+        # sizeHint regardless of which page is current, so this holds a
+        # constant height across both pages — that's what keeps the
+        # crossfade in _animate_mode_switch from jittering; toggling a
+        # footer's visibility instead would resize the layout mid-fade.
+        self._adv_footer = QWidget()
+        self._adv_footer.setObjectName("advFooter")
+        footer_row = QHBoxLayout(self._adv_footer)
         footer_row.setContentsMargins(20, 10, 20, 16)
         footer_row.setSpacing(10)
         footer_row.addStretch(1)
@@ -20268,7 +20279,11 @@ class AdvancedConfigDialog(QDialog):
         save_btn.setObjectName("saveButton")
         save_btn.clicked.connect(self.accept)
         footer_row.addWidget(save_btn)
-        outer.addWidget(adv_footer)
+
+        self._footer_stack = QStackedWidget()
+        self._footer_stack.addWidget(self._adv_footer)        # index 0: main settings
+        self._footer_stack.addWidget(channel_studio_footer)   # index 1: Channel Studio
+        outer.addWidget(self._footer_stack)
 
         self.commercials_enabled.toggled.connect(self.sync_commercial_mode_enabled)
         self.commercials_mode_combo.currentTextChanged.connect(self.sync_commercial_mode_enabled)
@@ -20539,6 +20554,7 @@ class AdvancedConfigDialog(QDialog):
 
         def _swap_and_fade_in():
             self._mode_stack.setCurrentIndex(target_index)
+            self._footer_stack.setCurrentIndex(target_index)
             fade_in = QPropertyAnimation(effect, b"opacity", self)
             fade_in.setDuration(130)
             fade_in.setStartValue(0.0)

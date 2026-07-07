@@ -46,7 +46,7 @@ from .studio_styles import (
 
 _LOGO_CANDIDATE_NAMES = ("logo.png", "logo.jpg", "logo.jpeg", "bug.png", "channel.png")
 
-CARD_WIDTH = 390
+CARD_WIDTH = 430
 HERO_CARD_WIDTH = CARD_WIDTH * 2 + 16  # visually spans two normal cards, same gutter
 
 _SCHEDULE_ROW_KINDS = ("now", "next", "later")
@@ -64,7 +64,7 @@ _SCHEDULE_BADGE_WIDTH = 46
 _SCHEDULE_ROW_SPACING = 8
 _INFO_LABEL_WIDTH = 78
 _INFO_ROW_SPACING = 8
-_HERO_LEFT_COL_WIDTH = 190
+_HERO_LEFT_COL_WIDTH = 210
 _HERO_BODY_SPACING = 18
 
 _NORMAL_CONTENT_WIDTH = CARD_WIDTH - 2 * _CARD_MARGIN
@@ -127,7 +127,7 @@ def _apply_card_shadow(widget):
     widget.setGraphicsEffect(effect)
 
 
-def _build_logo_widget(summary, on_set_logo, size=72):
+def _build_logo_widget(summary, on_set_logo, size=88):
     """The channel's logo/bug — shown once per card, never duplicated.
 
     Falls back to an "Add Channel Logo" button (not blank space) when no
@@ -408,12 +408,15 @@ def build_hero_channel_card(summary, schedule, on_open, on_set_logo=None, enable
     """Build the more compact, visually special tile for the Choose
     Channel grid's hero slot.
 
-    Which channel gets this slot: for now, always the first channel
-    (see channel_studio_pages.py). TODO: once Channel Studio tracks
-    per-channel edit timestamps, feature the most-recently-edited
-    channel here instead — that's the whole reason for the
-    "Finished Customizing?" badge, which is written for a channel the
-    user was just working on, not a random favorite.
+    Callers only build this for the most-recently-customized channel
+    (tracked in studio_state.py and set whenever Setup is used — see
+    channel_studio_pages.py) — never a permanent "featured" pick, and
+    never shown at all until the user has opened Setup on something.
+    That's the whole reason for the "Finished Customizing?" badge: it's
+    written for a channel the user was just working on, not a favorite.
+    The same channel this card shows always still has its own tile in
+    the regular grid below — this is a contextual duplicate, not a
+    replacement.
     """
     card = QFrame()
     card.setObjectName("sectionCard")
@@ -451,7 +454,7 @@ def build_hero_channel_card(summary, schedule, on_open, on_set_logo=None, enable
     name_lbl.setObjectName("sectionHeader")
     _elide(name_lbl, summary.name, _HERO_LEFT_COL_WIDTH - 10)
     left_col.addWidget(name_lbl)
-    left_col.addWidget(_build_logo_widget(summary, on_set_logo, size=64))
+    left_col.addWidget(_build_logo_widget(summary, on_set_logo, size=78))
     left_col.addWidget(_build_enabled_checkbox(enabled))
     left_col.addStretch(1)
     body_row.addWidget(left_widget)

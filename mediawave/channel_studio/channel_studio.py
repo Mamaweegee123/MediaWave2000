@@ -40,6 +40,12 @@ def build_channel_studio_tab(dialog, nav_panel_cls=None, on_back=None, logo_path
     `on_back`, if given, is called when the header's "Back to Settings"
     button is clicked. `logo_path`, if given and it loads, replaces the
     plain "Channel Studio" header text with that image.
+
+    Returns `(content, footer)`. `footer` is built separately (not
+    inside `content`'s scroll area) so the caller can place it in a
+    fixed, always-visible spot — the same one the main Advanced
+    Configuration dialog's Close/Save footer occupies — instead of
+    letting it scroll away with the channel grid.
     """
     container = QWidget()
     container.setObjectName("channelStudioRoot")
@@ -62,4 +68,4 @@ def build_channel_studio_tab(dialog, nav_panel_cls=None, on_back=None, logo_path
 
     content = dialog.build_scroll_tab(pages.build_channels_page(dialog))
     outer.addWidget(content, 1)
-    return container
+    return container, pages.build_channels_footer(dialog)

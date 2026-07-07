@@ -43,6 +43,7 @@ spotify_track_cache.json
 radiowave_metadata_cache.json
 youtube_playlist_cache.json
 catalog_validation.json
+channel_studio_state.json
 vault_debug.log
 *.lock
 .mediawave_converter/

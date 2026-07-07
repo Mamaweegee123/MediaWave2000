@@ -276,14 +276,21 @@ def build_tab_row(labels, on_select, initial_index=0):
 
 
 def build_channel_studio_footer(total_count, on_reorder=None):
-    """The Choose Channel page's bottom bar: a live channel count and an
-    optional (preview-only) Reorder Channels action. Deliberately has no
-    On Air status here — this page is about picking a channel, not
-    showing what's currently airing.
+    """Channel Studio's own persistent footer bar: a live channel count
+    and an optional (preview-only) Reorder Channels action. Deliberately
+    has no On Air status here — this page is about picking a channel,
+    not showing what's currently airing.
+
+    Uses the same "advFooter" object name as the main Advanced
+    Configuration dialog's Close/Save bar so it picks up the identical
+    background/top-border styling — callers are expected to swap this
+    in for that bar (same fixed spot, same look), not stack it below
+    scrollable content.
     """
     footer = QWidget()
+    footer.setObjectName("advFooter")
     layout = QHBoxLayout(footer)
-    layout.setContentsMargins(4, 4, 4, 0)
+    layout.setContentsMargins(20, 10, 20, 16)
     layout.setSpacing(10)
 
     count_lbl = QLabel(f"📊  Total Channels: <b>{total_count}</b>")
