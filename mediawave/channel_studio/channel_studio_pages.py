@@ -28,6 +28,18 @@ def _drafts_path(dialog):
     return getattr(dialog, "_channel_studio_drafts_file", None)
 
 
+def _channel_enabled(channel_id, catalog_channel_settings):
+    """Read-only lookup of the channel's real enabled state (the same
+    setting My Catalog's Enable/Disable All controls) so the dashboard's
+    preview-only checkbox at least starts in the right position.
+    """
+    settings = catalog_channel_settings if isinstance(catalog_channel_settings, dict) else {}
+    row = settings.get(channel_id, {})
+    if not isinstance(row, dict):
+        return True
+    return bool(row.get("enabled", True))
+
+
 def build_channels_page(dialog):
     content = QWidget()
     layout = QVBoxLayout(content)
@@ -67,12 +79,13 @@ def build_channels_page(dialog):
 
     summaries_by_id = {}
     schedules_by_id = {}
+    catalog_channel_settings = getattr(dialog, "catalog_channel_settings", None)
 
     if infos:
         summaries = build_channel_studio_summaries(
             infos,
             shows_lookup=getattr(dialog, "_channel_shows_lookup", None),
-            catalog_channel_settings=getattr(dialog, "catalog_channel_settings", None),
+            catalog_channel_settings=catalog_channel_settings,
             commercials_config=getattr(dialog, "commercials_settings", None),
             airing_rules_config=getattr(dialog, "_airing_rules_config", None),
             logo_lookup=getattr(dialog, "_channel_logo_lookup", None),
@@ -110,6 +123,9 @@ def build_channels_page(dialog):
                 "name": summary.name,
                 "default_number": summary.number,
             }
+            # TODO: once Channel Studio tracks per-channel edit timestamps,
+            # feature the most-recently-edited channel here instead of
+            # always the first — see build_hero_channel_card's docstring.
             builder = build_hero_channel_card if index == 0 else build_dashboard_channel_card
             cards.append(
                 builder(
@@ -117,6 +133,7 @@ def build_channels_page(dialog):
                     schedules_by_id.get(summary.channel_id),
                     on_open=_open_channel,
                     on_set_logo=lambda checked=False, info=channel_info: _open_identity(info),
+                    enabled=_channel_enabled(summary.channel_id, catalog_channel_settings),
                 )
             )
         grid_layout.addWidget(build_channel_grid(cards))

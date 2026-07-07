@@ -286,8 +286,16 @@ def build_channel_studio_footer(total_count, on_reorder=None):
     layout.setContentsMargins(4, 4, 4, 0)
     layout.setSpacing(10)
 
-    count_lbl = QLabel(f"📊  Total Channels: {total_count}")
-    count_lbl.setObjectName("fieldHelp")
+    count_lbl = QLabel(f"📊  Total Channels: <b>{total_count}</b>")
+    count_lbl.setTextFormat(Qt.RichText)
+    count_lbl.setStyleSheet(
+        "color: rgba(210, 222, 255, 235);"
+        " background: rgba(68, 108, 235, 40);"
+        " border: 1px solid rgba(68, 108, 235, 90);"
+        " border-radius: 10px;"
+        " padding: 4px 12px;"
+        " font-size: 12px;"
+    )
     layout.addWidget(count_lbl)
     layout.addStretch(1)
 
