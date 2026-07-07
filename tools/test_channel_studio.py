@@ -13,6 +13,8 @@ if REPO_ROOT not in sys.path:
 
 from mediawave.channel_studio import channel_studio_adapter as adapter
 from mediawave.channel_studio.channel_studio_model import ChannelStudioSummary, TonightSchedule
+from mediawave.channel_studio import reorder
+from mediawave.channel_studio import studio_state
 
 PASS = []
 FAIL = []
@@ -209,6 +211,126 @@ adapter.build_channel_studio_summary(
 check("commercials_config left untouched", original_commercials == commercials_config)
 check("airing_rules_config left untouched", original_airing_rules == airing_rules_config)
 check("channel info dict left untouched", original_info == info)
+
+# ---------------------------------------------------------------------------
+# reorder.apply_saved_order — merging a saved display order with reality
+# ---------------------------------------------------------------------------
+section("reorder.apply_saved_order")
+
+channel_ids = ["a", "b", "c", "d"]
+
+saved_full = ["c", "a", "b", "d"]
+result_full = reorder.apply_saved_order(channel_ids, saved_full)
+check("saved order applied when it covers everything", result_full == saved_full, result_full)
+
+saved_stale = ["z", "c", "a", "y"]
+result_stale = reorder.apply_saved_order(channel_ids, saved_stale)
+check("stale/missing ids in saved order are dropped", "z" not in result_stale and "y" not in result_stale, result_stale)
+check("known ids from saved order still lead", result_stale[:2] == ["c", "a"], result_stale)
+
+saved_partial = ["d", "b"]
+result_partial = reorder.apply_saved_order(channel_ids, saved_partial)
+check(
+    "channels not in saved order are appended, in original order",
+    result_partial == ["d", "b", "a", "c"],
+    result_partial,
+)
+
+result_empty_saved = reorder.apply_saved_order(channel_ids, [])
+check("no saved order falls back to original order", result_empty_saved == channel_ids, result_empty_saved)
+
+result_no_ids = reorder.apply_saved_order([], saved_full)
+check("no known channels is a safe empty result", result_no_ids == [], result_no_ids)
+
+result_dupe_check = reorder.apply_saved_order(channel_ids, saved_full)
+check("no channel id is duplicated", len(result_dupe_check) == len(set(result_dupe_check)), result_dupe_check)
+check("every known channel id is still present", set(result_dupe_check) == set(channel_ids), result_dupe_check)
+
+# The hero card's channel is just another entry in the same id list handed
+# to apply_saved_order — since every known id is always preserved, the
+# grid can never lose the hero's channel just because it's featured above.
+hero_id = "b"
+check("hero channel id survives ordering like any other", hero_id in reorder.apply_saved_order(channel_ids, saved_stale))
+
+# ---------------------------------------------------------------------------
+# reorder.move_item — the drag-and-drop building block
+# ---------------------------------------------------------------------------
+section("reorder.move_item")
+
+base_order = ["a", "b", "c", "d"]
+moved_forward = reorder.move_item(base_order, 0, 2)
+check("move item forward in the list", moved_forward == ["b", "c", "a", "d"], moved_forward)
+
+moved_backward = reorder.move_item(base_order, 3, 0)
+check("move item backward in the list", moved_backward == ["d", "a", "b", "c"], moved_backward)
+
+moved_noop = reorder.move_item(base_order, 1, 1)
+check("moving an item to its own spot is a no-op", moved_noop == base_order, moved_noop)
+
+moved_negative = reorder.move_item(base_order, -1, 2)
+check("negative from_index is ignored safely", moved_negative == base_order, moved_negative)
+
+moved_out_of_range_from = reorder.move_item(base_order, 99, 0)
+check("out-of-range from_index is ignored safely", moved_out_of_range_from == base_order, moved_out_of_range_from)
+
+moved_out_of_range_to = reorder.move_item(base_order, 0, 99)
+check(
+    "out-of-range to_index is clamped, not ignored",
+    moved_out_of_range_to == ["b", "c", "d", "a"],
+    moved_out_of_range_to,
+)
+
+check("move_item on an empty list is a safe no-op", reorder.move_item([], 0, 1) == [])
+check("original list object is not mutated", base_order == ["a", "b", "c", "d"])
+
+# ---------------------------------------------------------------------------
+# studio_state — last-edited channel and grid display order persistence
+# ---------------------------------------------------------------------------
+section("studio_state: last-edited channel and channel order")
+
+import tempfile
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    state_path = os.path.join(tmpdir, "channel_studio_state.json")
+
+    check("no path is a safe no-op on save", studio_state.save_last_edited_channel_id(None, "x") is None)
+    check("missing file has no last-edited channel", studio_state.load_last_edited_channel_id(state_path) == "")
+    check("missing file has no saved channel order", studio_state.load_channel_order(state_path) == [])
+
+    studio_state.save_last_edited_channel_id(state_path, "media:/fake/root")
+    check(
+        "last-edited channel id round-trips",
+        studio_state.load_last_edited_channel_id(state_path) == "media:/fake/root",
+    )
+
+    studio_state.save_channel_order(state_path, ["c", "a", "b"])
+    check(
+        "channel order round-trips",
+        studio_state.load_channel_order(state_path) == ["c", "a", "b"],
+        studio_state.load_channel_order(state_path),
+    )
+    check(
+        "saving channel order doesn't clobber last-edited channel",
+        studio_state.load_last_edited_channel_id(state_path) == "media:/fake/root",
+    )
+
+    studio_state.save_channel_order(state_path, ["z", "y"])
+    check(
+        "saving channel order again overwrites the previous order",
+        studio_state.load_channel_order(state_path) == ["z", "y"],
+    )
+
+    check(
+        "saving with no path is a safe no-op",
+        studio_state.save_channel_order(None, ["a"]) is None,
+    )
+
+malformed_path = os.path.join(tempfile.gettempdir(), "channel_studio_state_malformed_test.json")
+with open(malformed_path, "w", encoding="utf-8") as handle:
+    handle.write("not valid json{{{")
+check("malformed state file falls back safely for last-edited", studio_state.load_last_edited_channel_id(malformed_path) == "")
+check("malformed state file falls back safely for channel order", studio_state.load_channel_order(malformed_path) == [])
+os.remove(malformed_path)
 
 # ---------------------------------------------------------------------------
 # Summary

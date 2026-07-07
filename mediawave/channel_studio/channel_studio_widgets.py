@@ -277,15 +277,20 @@ def build_tab_row(labels, on_select, initial_index=0):
 
 def build_channel_studio_footer(total_count, on_reorder=None):
     """Channel Studio's own persistent footer bar: a live channel count
-    and an optional (preview-only) Reorder Channels action. Deliberately
-    has no On Air status here — this page is about picking a channel,
-    not showing what's currently airing.
+    and an optional Reorder Channels toggle. Deliberately has no On Air
+    status here — this page is about picking a channel, not showing
+    what's currently airing.
 
     Uses the same "advFooter" object name as the main Advanced
     Configuration dialog's Close/Save bar so it picks up the identical
     background/top-border styling — callers are expected to swap this
     in for that bar (same fixed spot, same look), not stack it below
     scrollable content.
+
+    Returns `(footer, reorder_button)` — `reorder_button` is None if
+    `on_reorder` wasn't given. Callers own the button's label (e.g.
+    toggling "Reorder Channels" / "Done Reordering") since that's
+    reorder-mode state this module doesn't track.
     """
     footer = QWidget()
     footer.setObjectName("advFooter")
@@ -306,13 +311,14 @@ def build_channel_studio_footer(total_count, on_reorder=None):
     layout.addWidget(count_lbl)
     layout.addStretch(1)
 
+    reorder_btn = None
     if on_reorder is not None:
         reorder_btn = QPushButton("⇅  Reorder Channels")
         reorder_btn.setCursor(Qt.PointingHandCursor)
         reorder_btn.clicked.connect(on_reorder)
         layout.addWidget(reorder_btn)
 
-    return footer
+    return footer, reorder_btn
 
 
 def build_action_button_row(items, fallback=None):

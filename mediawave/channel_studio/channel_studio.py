@@ -66,6 +66,7 @@ def build_channel_studio_tab(dialog, nav_panel_cls=None, on_back=None, logo_path
         header.addWidget(back_btn)
         outer.addLayout(header)
 
-    content = dialog.build_scroll_tab(pages.build_channels_page(dialog))
+    page_content, page_footer = pages.build_channel_studio_content(dialog)
+    content = dialog.build_scroll_tab(page_content)
     outer.addWidget(content, 1)
-    return container, pages.build_channels_footer(dialog)
+    return container, page_footer

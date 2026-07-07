@@ -3,9 +3,9 @@
 The only top-level page in Channel Studio. Picking a channel opens its
 own five-tab view (see channel_studio_cards.py) — there is nothing else
 to navigate to from here. Aside from a read-only list of existing
-channel names/numbers/logos and the small last-edited-channel state in
-studio_state.py, no scheduling, library, or settings data is read or
-written from this page.
+channel names/numbers/logos and the small preview state in
+studio_state.py (last-edited channel, grid display order), no
+scheduling, library, or settings data is read or written from this page.
 """
 
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
@@ -16,10 +16,21 @@ from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_header import build_channel_studio_header
 from .channel_studio_widgets import build_channel_studio_footer, build_empty_state
 from .channel_card import build_dashboard_channel_card, build_hero_channel_card
-from .channel_grid import build_channel_grid
-from .studio_state import load_last_edited_channel_id, save_last_edited_channel_id
+from .draggable_grid import DraggableGrid
+from .reorder import apply_saved_order
+from .studio_state import (
+    load_channel_order,
+    load_last_edited_channel_id,
+    save_channel_order,
+    save_last_edited_channel_id,
+)
+from .studio_styles import style_setup_button
 
 _IDENTITY_TAB_INDEX = 3
+
+_REORDER_HINT_TEXT = "Drag channels to rearrange them."
+_REORDER_BUTTON_IDLE = "⇅  Reorder Channels"
+_REORDER_BUTTON_ACTIVE = "✓  Done Reordering"
 
 
 def _preview(dialog, title, description):
@@ -56,11 +67,24 @@ def _build_choose_hint():
     return label
 
 
+def _build_reorder_hint():
+    label = QLabel(_REORDER_HINT_TEXT)
+    label.setObjectName("sectionNote")
+    return label
+
+
 def _channel_info_for(summary):
     return {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
 
 
-def build_channels_page(dialog):
+def build_channel_studio_content(dialog):
+    """Build the Choose Channel page: the scrollable content (header,
+    hero, grid) and its persistent footer, together — not as two
+    independent builds — so the footer's Reorder Channels button can
+    share reorder-mode state with the grid it toggles. Returns
+    `(content, footer)`; see channel_studio.py for how callers place
+    `footer` outside the scrollable area.
+    """
     content = QWidget()
     layout = QVBoxLayout(content)
     layout.setContentsMargins(16, 14, 16, 16)
@@ -70,13 +94,15 @@ def build_channels_page(dialog):
     state_path = _state_path(dialog)
     catalog_channel_settings = getattr(dialog, "catalog_channel_settings", None)
 
-    # Hero (last-edited channel, contextual only) and grid (every channel,
-    # including whichever one the hero is showing) rebuild independently:
-    # the grid reacts to search text, the hero reacts to Setup being used.
     hero_container = QWidget()
     hero_layout = QVBoxLayout(hero_container)
     hero_layout.setContentsMargins(0, 0, 0, 0)
     hero_layout.setSpacing(0)
+
+    reorder_hint_container = QWidget()
+    reorder_hint_layout = QVBoxLayout(reorder_hint_container)
+    reorder_hint_layout.setContentsMargins(0, 0, 0, 0)
+    reorder_hint_layout.setSpacing(0)
 
     grid_container = QWidget()
     grid_layout = QVBoxLayout(grid_container)
@@ -99,11 +125,13 @@ def build_channels_page(dialog):
         channels_by_id = getattr(dialog, "_studio_channels_by_id", None) or {}
         schedules = build_tonight_schedules(infos, channels_by_id=channels_by_id)
         schedules_by_id = {schedule.channel_id: schedule for schedule in schedules}
-        ordered_summaries = sorted(summaries, key=lambda s: s.number)
+        number_sorted = sorted(summaries, key=lambda s: s.number)
     else:
-        ordered_summaries = []
+        number_sorted = []
 
     current_filter = {"text": ""}
+    reorder_state = {"active": False}
+    grid_ref = {"widget": None}
 
     def _clear(layout_obj):
         while layout_obj.count():
@@ -111,6 +139,16 @@ def build_channels_page(dialog):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
+
+    def _display_order():
+        """Channel-number order, reshuffled by any saved Channel Studio
+        display order (see reorder.apply_saved_order) — this never
+        touches real channel numbers, scheduling, or playback order.
+        """
+        ids = [s.channel_id for s in number_sorted]
+        ordered_ids = apply_saved_order(ids, load_channel_order(state_path))
+        by_id = {s.channel_id: s for s in number_sorted}
+        return [by_id[cid] for cid in ordered_ids if cid in by_id]
 
     def _open_channel(channel_info, initial_tab=0):
         channel_id = channel_info.get("id", "")
@@ -142,7 +180,7 @@ def build_channels_page(dialog):
 
     def _rebuild_hero():
         _clear(hero_layout)
-        if not ordered_summaries:
+        if not number_sorted:
             return
 
         last_edited_id = load_last_edited_channel_id(state_path)
@@ -163,9 +201,16 @@ def build_channels_page(dialog):
 
     def _rebuild_grid(filter_text=""):
         current_filter["text"] = filter_text or ""
+        if grid_ref["widget"] is not None:
+            # Defensive: if a drag was somehow still active when the grid
+            # is being torn down, cancel it first so its floating overlay
+            # (parented to the window, not to the grid, so it can float
+            # above the QScrollArea without being clipped) doesn't leak.
+            grid_ref["widget"].cancel_drag()
         _clear(grid_layout)
+        grid_ref["widget"] = None
 
-        if not ordered_summaries:
+        if not number_sorted:
             grid_layout.addWidget(
                 build_empty_state(
                     "No channels yet. Once you create or import one, it'll show up here "
@@ -174,28 +219,61 @@ def build_channels_page(dialog):
             )
             return
 
-        needle = current_filter["text"].strip().lower()
-        visible = [s for s in ordered_summaries if needle in s.name.lower()] if needle else ordered_summaries
-        if not visible:
-            grid_layout.addWidget(build_empty_state(f'No channels match "{filter_text}".'))
-            return
+        ordered = _display_order()
+        if reorder_state["active"]:
+            # Reorder mode always shows every channel, unfiltered — dragging
+            # a partially-filtered view would make "where did the rest go"
+            # confusing. The grid always includes every channel, including
+            # whichever one the hero card is featuring — the hero is a
+            # duplicate contextual preview, not a replacement.
+            visible = ordered
+        else:
+            needle = current_filter["text"].strip().lower()
+            visible = [s for s in ordered if needle in s.name.lower()] if needle else ordered
+            if not visible:
+                grid_layout.addWidget(build_empty_state(f'No channels match "{filter_text}".'))
+                return
 
-        # The grid always shows every channel — including whichever one the
-        # hero card is currently featuring; the hero is a duplicate,
-        # contextual preview, not a replacement for its grid card.
-        cards = []
+        entries = []
         for summary in visible:
             channel_info = _channel_info_for(summary)
-            cards.append(
-                build_dashboard_channel_card(
-                    summary,
-                    schedules_by_id.get(summary.channel_id),
-                    on_open=_open_from_setup,
-                    on_set_logo=lambda checked=False, info=channel_info: _open_identity(info),
-                    enabled=_channel_enabled(summary.channel_id, catalog_channel_settings),
-                )
+            card = build_dashboard_channel_card(
+                summary,
+                schedules_by_id.get(summary.channel_id),
+                on_open=_open_from_setup,
+                on_set_logo=lambda checked=False, info=channel_info: _open_identity(info),
+                enabled=_channel_enabled(summary.channel_id, catalog_channel_settings),
             )
-        grid_layout.addWidget(build_channel_grid(cards))
+            entries.append((summary.channel_id, card))
+
+        grid = DraggableGrid(entries)
+        grid.set_reorder_mode(reorder_state["active"])
+        grid_ref["widget"] = grid
+        grid_layout.addWidget(grid)
+
+    def _toggle_reorder(checked=False):
+        if reorder_state["active"]:
+            # Exiting reorder mode: persist wherever the grid ended up.
+            # Display order only — channel numbers, scheduling, and
+            # playback order are all untouched.
+            if grid_ref["widget"] is not None:
+                save_channel_order(state_path, grid_ref["widget"].current_order())
+            reorder_state["active"] = False
+        else:
+            reorder_state["active"] = True
+
+        if reorder_state["active"]:
+            reorder_btn.setText(_REORDER_BUTTON_ACTIVE)
+            style_setup_button(reorder_btn)
+        else:
+            reorder_btn.setText(_REORDER_BUTTON_IDLE)
+            reorder_btn.setStyleSheet("")
+
+        _clear(reorder_hint_layout)
+        if reorder_state["active"]:
+            reorder_hint_layout.addWidget(_build_reorder_hint())
+
+        _rebuild_grid(current_filter["text"])
 
     header = build_channel_studio_header(
         on_create=lambda: _preview(dialog, "Create Channel", "Creating a new channel isn't wired up yet — this is a preview."),
@@ -204,27 +282,16 @@ def build_channels_page(dialog):
     )
     layout.addWidget(header)
     layout.addWidget(hero_container)
+    layout.addWidget(reorder_hint_container)
     layout.addWidget(grid_container)
 
     _rebuild_hero()
     _rebuild_grid()
     layout.addStretch(1)
-    return content
 
-
-def build_channels_footer(dialog):
-    """Channel Studio's own persistent footer — built separately from
-    `build_channels_page` so the caller can place it *outside* the
-    scrollable content, in the same fixed spot the main Advanced
-    Configuration dialog's Close/Save footer occupies (see
-    channel_studio.py and _animate_mode_switch in channelsurfer2000.py).
-    """
-    infos = list(getattr(dialog, "catalog_channel_infos", None) or [])
-    return build_channel_studio_footer(
+    footer, reorder_btn = build_channel_studio_footer(
         total_count=len(infos),
-        on_reorder=lambda: _preview(
-            dialog,
-            "Reorder Channels",
-            "Drag-and-drop channel order is coming soon. Nothing changes until then.",
-        ),
+        on_reorder=_toggle_reorder,
     )
+
+    return content, footer
