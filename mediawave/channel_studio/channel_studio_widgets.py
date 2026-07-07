@@ -275,6 +275,31 @@ def build_tab_row(labels, on_select, initial_index=0):
     return row, group
 
 
+def build_channel_studio_footer(total_count, on_reorder=None):
+    """The Choose Channel page's bottom bar: a live channel count and an
+    optional (preview-only) Reorder Channels action. Deliberately has no
+    On Air status here — this page is about picking a channel, not
+    showing what's currently airing.
+    """
+    footer = QWidget()
+    layout = QHBoxLayout(footer)
+    layout.setContentsMargins(4, 4, 4, 0)
+    layout.setSpacing(10)
+
+    count_lbl = QLabel(f"📊  Total Channels: {total_count}")
+    count_lbl.setObjectName("fieldHelp")
+    layout.addWidget(count_lbl)
+    layout.addStretch(1)
+
+    if on_reorder is not None:
+        reorder_btn = QPushButton("⇅  Reorder Channels")
+        reorder_btn.setCursor(Qt.PointingHandCursor)
+        reorder_btn.clicked.connect(on_reorder)
+        layout.addWidget(reorder_btn)
+
+    return footer
+
+
 def build_action_button_row(items, fallback=None):
     """Build a row of action buttons.
 
