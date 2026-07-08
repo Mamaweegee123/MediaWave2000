@@ -15,6 +15,8 @@ from mediawave.channel_studio import channel_studio_adapter as adapter
 from mediawave.channel_studio.channel_studio_model import ChannelStudioSummary, TonightSchedule
 from mediawave.channel_studio import reorder
 from mediawave.channel_studio import studio_state
+from mediawave.channel_studio import companion_adapter
+from mediawave.channel_studio import channel_actions
 
 PASS = []
 FAIL = []
@@ -81,6 +83,29 @@ section("build_channel_studio_summary: missing logo")
 no_logo_summary = adapter.build_channel_studio_summary(info, shows=shows, logo_path="")
 check("empty logo path is safe, not None", no_logo_summary.logo_path == "")
 check("summary is still a valid dataclass instance", isinstance(no_logo_summary, ChannelStudioSummary))
+
+# ---------------------------------------------------------------------------
+# ChannelStudioSummary.is_companion / headline for companion channel types
+# ---------------------------------------------------------------------------
+section("ChannelStudioSummary: companion channel types")
+
+companion_summary = ChannelStudioSummary(
+    channel_id="special:radiowave",
+    name="RadioWaveTV",
+    number=3,
+    channel_type="radiowave",
+    companion_info_label="Music Folder",
+    companion_info_value="/Music/RadioWave",
+)
+check("radiowave is recognized as a companion", companion_summary.is_companion is True)
+check("companion headline reads 'Companion channel'", companion_summary.headline == "Companion channel", companion_summary.headline)
+
+media_summary = ChannelStudioSummary(channel_id="media:/x", name="X", number=1, channel_type="media")
+check("a media channel is not a companion", media_summary.is_companion is False)
+
+missing_summary = ChannelStudioSummary(channel_id="media-name:x", name="X", number=1, channel_type="missing")
+check("a 'missing' channel type is not a companion (unchanged legacy behavior)", missing_summary.is_companion is False)
+check("a 'missing' channel still gets the old special-channel headline", missing_summary.headline == "Special channel · built in", missing_summary.headline)
 
 # ---------------------------------------------------------------------------
 # commercial status resolution
@@ -383,6 +408,379 @@ with open(malformed_path, "w", encoding="utf-8") as handle:
 check("malformed state file falls back safely for last-edited", studio_state.load_last_edited_channel_id(malformed_path) == "")
 check("malformed state file falls back safely for channel order", studio_state.load_channel_order(malformed_path) == [])
 os.remove(malformed_path)
+
+# ---------------------------------------------------------------------------
+# companion_adapter: reading a raw settings dict into a snapshot
+# ---------------------------------------------------------------------------
+section("companion_adapter.read_companion_snapshot")
+
+raw_settings = {
+    "weatherstar_enabled": True,
+    "weatherstar_channel_number": 4,
+    "weatherstar_location": "Springfield, IL",
+    "radiowave_enabled": False,
+    "radiowave_channel_number": 2,
+    "radiowave_folder": "/Music/RadioWave",
+    "youtube_enabled": True,
+    "youtube_channel_number": 7,
+    "youtube_playlist_url": "https://youtube.com/playlist?list=abc",
+}
+snap = companion_adapter.read_companion_snapshot(raw_settings)
+check("weatherstar enabled flag read correctly", snap["weatherstar"]["enabled"] is True)
+check("weatherstar number read correctly", snap["weatherstar"]["number"] == 4, snap["weatherstar"]["number"])
+check("weatherstar detail is the location", snap["weatherstar"]["detail"] == "Springfield, IL")
+check("radiowave enabled flag read correctly", snap["radiowave"]["enabled"] is False)
+check("youtube detail is the playlist url", snap["youtube"]["detail"] == raw_settings["youtube_playlist_url"])
+check(
+    "malformed input falls back to an all-disabled snapshot",
+    all(not entry["enabled"] for entry in companion_adapter.read_companion_snapshot(None).values()),
+)
+check(
+    "non-numeric channel number falls back to 1",
+    companion_adapter.read_companion_snapshot({"weatherstar_channel_number": "not a number"})["weatherstar"]["number"] == 1,
+)
+
+# ---------------------------------------------------------------------------
+# companion_adapter: building summaries (enabled only, hides disabled)
+# ---------------------------------------------------------------------------
+section("companion_adapter.companion_summaries")
+
+summaries = companion_adapter.companion_summaries(snap)
+summary_types = [item["channel_type"] for item in summaries]
+check("only enabled companions appear, sorted by number (weatherstar=4, youtube=7)", summary_types == ["weatherstar", "youtube"], summary_types)
+check(
+    "disabled radiowave is hidden entirely, not just marked",
+    "radiowave" not in summary_types,
+)
+check(
+    "summaries are sorted by real channel number ascending",
+    [item["number"] for item in summaries] == sorted(item["number"] for item in summaries),
+)
+weatherstar_summary = next(item for item in summaries if item["channel_type"] == "weatherstar")
+check("companion channel id uses the stable special: form", weatherstar_summary["channel_id"] == "special:weatherstar")
+check("companion info label is type-specific", weatherstar_summary["companion_info_label"] == "Location")
+check("companion info value carries the configured detail", weatherstar_summary["companion_info_value"] == "Springfield, IL")
+
+live_status_summaries = companion_adapter.companion_summaries(snap, status_by_type={"youtube": "42 videos loaded"})
+youtube_summary = next(item for item in live_status_summaries if item["channel_type"] == "youtube")
+check("live status overrides the configured detail when given", youtube_summary["companion_info_value"] == "42 videos loaded")
+
+empty_summaries = companion_adapter.companion_summaries(companion_adapter.empty_snapshot())
+check("an all-disabled snapshot produces no summaries", empty_summaries == [])
+
+unconfigured = companion_adapter.companion_summaries(
+    companion_adapter.set_companion_enabled(companion_adapter.empty_snapshot(), "radiowave", True)
+)
+check(
+    "an enabled-but-unconfigured companion still gets a calm fallback detail",
+    unconfigured[0]["companion_info_value"] == "Not configured yet",
+)
+
+# ---------------------------------------------------------------------------
+# companion_adapter: enabling/disabling one companion
+# ---------------------------------------------------------------------------
+section("companion_adapter.set_companion_enabled")
+
+disabled_weatherstar = companion_adapter.set_companion_enabled(snap, "weatherstar", False)
+check("target companion flipped off", disabled_weatherstar["weatherstar"]["enabled"] is False)
+check("other companions untouched", disabled_weatherstar["youtube"]["enabled"] is True)
+check("original snapshot is not mutated", snap["weatherstar"]["enabled"] is True)
+check(
+    "unknown companion type is a safe no-op",
+    companion_adapter.set_companion_enabled(snap, "not-a-real-type", True) == dict(snap),
+)
+
+# ---------------------------------------------------------------------------
+# companion_adapter: resequencing real channel numbers among companions
+# ---------------------------------------------------------------------------
+section("companion_adapter.resequence_companion_numbers")
+
+three_enabled = companion_adapter.read_companion_snapshot(
+    {
+        "weatherstar_enabled": True,
+        "weatherstar_channel_number": 1,
+        "radiowave_enabled": True,
+        "radiowave_channel_number": 2,
+        "youtube_enabled": True,
+        "youtube_channel_number": 3,
+    }
+)
+moved = companion_adapter.resequence_companion_numbers(three_enabled, ["radiowave", "youtube", "weatherstar"])
+check(
+    "moving radiowave first gives it the smallest pooled number",
+    moved["radiowave"]["number"] == 1,
+    moved["radiowave"]["number"],
+)
+check("youtube takes the middle pooled number", moved["youtube"]["number"] == 2, moved["youtube"]["number"])
+check("weatherstar takes the last pooled number", moved["weatherstar"]["number"] == 3, moved["weatherstar"]["number"])
+check(
+    "the example from the spec: radiowave 1 -> 4 when reordered past two channels 2 and 3",
+    companion_adapter.resequence_companion_numbers(
+        companion_adapter.read_companion_snapshot(
+            {
+                "radiowave_enabled": True,
+                "radiowave_channel_number": 1,
+                "weatherstar_enabled": True,
+                "weatherstar_channel_number": 2,
+                "youtube_enabled": True,
+                "youtube_channel_number": 4,
+            }
+        ),
+        ["weatherstar", "youtube", "radiowave"],
+    )["radiowave"]["number"]
+    == 4,
+)
+
+only_one_enabled = companion_adapter.set_companion_enabled(companion_adapter.empty_snapshot(), "radiowave", True)
+check(
+    "a single enabled companion is a safe no-op (nothing to redistribute)",
+    companion_adapter.resequence_companion_numbers(only_one_enabled, ["radiowave"]) == only_one_enabled,
+)
+check(
+    "disabled companions are never touched by resequencing",
+    companion_adapter.resequence_companion_numbers(three_enabled, ["radiowave"])["weatherstar"]["number"] == 1,
+)
+local_untouched_snapshot = dict(three_enabled)
+resequenced = companion_adapter.resequence_companion_numbers(local_untouched_snapshot, ["youtube", "weatherstar", "radiowave"])
+check(
+    "resequencing never adds keys beyond the three known companion types",
+    set(resequenced.keys()) == set(companion_adapter.COMPANION_TYPES),
+)
+
+# ---------------------------------------------------------------------------
+# channel_actions: a lightweight fake dialog, no QApplication required.
+# Only duck-types the handful of attributes channel_actions.py touches
+# (isChecked/setChecked, value/setValue, text) -- not a real widget.
+# ---------------------------------------------------------------------------
+section("channel_actions: companion snapshot <-> fake dialog widgets")
+
+
+class _FakeCheckBox:
+    def __init__(self, checked=False):
+        self._checked = checked
+
+    def isChecked(self):
+        return self._checked
+
+    def setChecked(self, value):
+        self._checked = bool(value)
+
+
+class _FakeSpin:
+    def __init__(self, value=1):
+        self._value = value
+
+    def value(self):
+        return self._value
+
+    def setValue(self, value):
+        self._value = int(value)
+
+
+class _FakeLineEdit:
+    def __init__(self, text=""):
+        self._text = text
+
+    def text(self):
+        return self._text
+
+
+class _FakeDialog:
+    def __init__(self):
+        self.weatherstar_enabled = _FakeCheckBox(True)
+        self.weatherstar_channel_input = _FakeSpin(1)
+        self.weatherstar_location_input = _FakeLineEdit("Springfield, IL")
+        self.radiowave_enabled = _FakeCheckBox(True)
+        self.radiowave_channel_input = _FakeSpin(2)
+        self.radiowave_input = _FakeLineEdit("/Music/RadioWave")
+        self.youtube_enabled = _FakeCheckBox(False)
+        self.youtube_channel_input = _FakeSpin(3)
+        self.youtube_playlist_input = _FakeLineEdit("")
+        self.catalog_rows = [
+            {"id": "media:/fake/a", "enabled": _FakeCheckBox(True)},
+            {"id": "media:/fake/b", "enabled": _FakeCheckBox(False)},
+        ]
+        self.channel_commercial_overrides = {}
+        self._studio_channels_by_id = {}
+
+
+fake_dialog = _FakeDialog()
+fake_snapshot = channel_actions.companion_snapshot_from_dialog(fake_dialog)
+check("weatherstar enabled read from the fake checkbox", fake_snapshot["weatherstar"]["enabled"] is True)
+check("radiowave detail read from the fake line edit", fake_snapshot["radiowave"]["detail"] == "/Music/RadioWave")
+check("youtube disabled read from the fake checkbox", fake_snapshot["youtube"]["enabled"] is False)
+
+check("enabling a companion flips the real widget", channel_actions.set_companion_enabled_on_dialog(fake_dialog, "youtube", True) is True)
+check("the widget itself is now checked", fake_dialog.youtube_enabled.isChecked() is True)
+check("disabling a companion flips it back off", channel_actions.set_companion_enabled_on_dialog(fake_dialog, "youtube", False) is True)
+check("unknown companion type on set_companion_enabled_on_dialog is a safe no-op", channel_actions.set_companion_enabled_on_dialog(fake_dialog, "bogus", True) is False)
+
+resequenced = channel_actions.resequence_companions_on_dialog(fake_dialog, ["radiowave", "weatherstar"])
+check("resequencing writes radiowave's new number onto the real spinbox", fake_dialog.radiowave_channel_input.value() == 1, fake_dialog.radiowave_channel_input.value())
+check("resequencing writes weatherstar's new number onto the real spinbox", fake_dialog.weatherstar_channel_input.value() == 2, fake_dialog.weatherstar_channel_input.value())
+
+# ---------------------------------------------------------------------------
+# channel_actions: local folder channel enable via the My Catalog rows
+# ---------------------------------------------------------------------------
+section("channel_actions: local channel enable/disable")
+
+check("local channel enabled state reads from its My Catalog row", channel_actions.local_channel_enabled_from_dialog(fake_dialog, "media:/fake/a") is True)
+check("a disabled row reads as disabled", channel_actions.local_channel_enabled_from_dialog(fake_dialog, "media:/fake/b") is False)
+check("an unknown channel id reads as None, not a crash", channel_actions.local_channel_enabled_from_dialog(fake_dialog, "media:/does/not/exist") is None)
+
+check("disabling a local channel updates its real row", channel_actions.set_local_channel_enabled(fake_dialog, "media:/fake/a", False) is True)
+check("the row's checkbox actually flipped", fake_dialog.catalog_rows[0]["enabled"].isChecked() is False)
+check("setting an unknown channel id is a safe no-op that reports failure", channel_actions.set_local_channel_enabled(fake_dialog, "media:/nope", True) is False)
+
+# ---------------------------------------------------------------------------
+# channel_actions: per-channel commercial override mode
+# ---------------------------------------------------------------------------
+section("channel_actions: commercial override mode")
+
+check("a channel with no override yet summarizes as Default", channel_actions.commercials_summary_label(fake_dialog, "Movies") == "Default")
+check("mode defaults to inherit when unset", channel_actions.channel_commercial_override_mode(fake_dialog, "Movies") == "inherit")
+
+channel_actions.set_channel_commercial_override_mode(fake_dialog, "Movies", "off")
+check("setting the mode to off is reflected immediately", channel_actions.channel_commercial_override_mode(fake_dialog, "Movies") == "off")
+check("an off override summarizes as Off", channel_actions.commercials_summary_label(fake_dialog, "Movies") == "Off")
+
+channel_actions.set_channel_commercial_override_mode(fake_dialog, "Movies", "on")
+check("an on override summarizes as Custom", channel_actions.commercials_summary_label(fake_dialog, "Movies") == "Custom")
+
+fake_dialog.channel_commercial_overrides["MTV"] = {"enabled_mode": "inherit", "preferred_era": "80s"}
+check("an inherit override with other fields customized still summarizes as Custom", channel_actions.commercials_summary_label(fake_dialog, "MTV") == "Custom")
+
+check("an invalid mode is rejected rather than corrupting the override", (
+    channel_actions.set_channel_commercial_override_mode(fake_dialog, "Movies", "not-a-real-mode"),
+    channel_actions.channel_commercial_override_mode(fake_dialog, "Movies"),
+)[1] == "on")
+
+# ---------------------------------------------------------------------------
+# channel_actions: live companion status from real channel objects
+# ---------------------------------------------------------------------------
+section("channel_actions: companion live status")
+
+
+class _FakeRadioWaveChannel:
+    empty_state = False
+    shows = ["a", "b", "c"]
+
+
+class _FakeEmptyRadioWaveChannel:
+    empty_state = True
+    empty_reason = "No readable music files were found."
+
+
+class _FakeYouTubeChannel:
+    entries = [{"placeholder": True}, {"id": "1"}, {"id": "2"}]
+
+
+no_status_dialog = _FakeDialog()
+check("no live channels yet means no status entries, not an error", channel_actions.companion_status_from_dialog(no_status_dialog) == {})
+
+status_dialog = _FakeDialog()
+status_dialog._studio_channels_by_id = {"special:radiowave": _FakeRadioWaveChannel()}
+check("a loaded radiowave channel reports its track count", channel_actions.companion_status_from_dialog(status_dialog)["radiowave"] == "3 tracks loaded")
+
+empty_status_dialog = _FakeDialog()
+empty_status_dialog._studio_channels_by_id = {"special:radiowave": _FakeEmptyRadioWaveChannel()}
+check("an empty-state radiowave channel reports its empty reason", channel_actions.companion_status_from_dialog(empty_status_dialog)["radiowave"] == "No readable music files were found.")
+
+youtube_status_dialog = _FakeDialog()
+youtube_status_dialog._studio_channels_by_id = {"special:youtube": _FakeYouTubeChannel()}
+check("placeholder entries are excluded from the youtube video count", channel_actions.companion_status_from_dialog(youtube_status_dialog)["youtube"] == "2 videos loaded")
+
+# ---------------------------------------------------------------------------
+# channel_card.py: companion-aware card wiring (structural, no QApplication
+# needed -- mirrors the existing inspect.getsource pattern used above for
+# reorder-mode styling).
+# ---------------------------------------------------------------------------
+section("channel_card.py: companion card wiring")
+
+from mediawave.channel_studio import channel_card
+
+dashboard_source = inspect.getsource(channel_card.build_dashboard_channel_card)
+check("dashboard card branches on is_companion for its status panel", "is_companion" in dashboard_source)
+check("dashboard card threads on_toggle_enabled into the checkbox", "on_toggle=on_toggle_enabled" in dashboard_source)
+check("dashboard card offers a real Disable path for companions", "confirm_disable_companion_channel" in dashboard_source)
+
+hero_source = inspect.getsource(channel_card.build_hero_channel_card)
+check("hero card also branches on is_companion", "is_companion" in hero_source)
+check("hero card also threads on_toggle_enabled into the checkbox", "on_toggle=on_toggle_enabled" in hero_source)
+
+checkbox_source = inspect.getsource(channel_card._build_enabled_checkbox)
+check("the enabled checkbox only connects toggled when a real handler is given", "toggled.connect(on_toggle)" in checkbox_source)
+
+# ---------------------------------------------------------------------------
+# setup_sections: companion-type detection used to branch Setup's sections
+# ---------------------------------------------------------------------------
+section("setup_sections._companion_type")
+
+from mediawave.channel_studio import setup_sections
+
+radiowave_summary = ChannelStudioSummary(channel_id="special:radiowave", name="RadioWaveTV", number=1, channel_type="radiowave")
+check(
+    "a companion summary's type is read straight off the summary",
+    setup_sections._companion_type({"id": "special:radiowave"}, radiowave_summary) == "radiowave",
+)
+
+media_summary = ChannelStudioSummary(channel_id="media:/x", name="Movies", number=1, channel_type="media")
+check(
+    "a media summary is not a companion type",
+    setup_sections._companion_type({"id": "media:/x"}, media_summary) is None,
+)
+
+check(
+    "with no summary at all, a special: id still resolves to its companion type",
+    setup_sections._companion_type({"id": "special:youtube"}, None) == "youtube",
+)
+check(
+    "with no summary and a non-special id, there's no companion type",
+    setup_sections._companion_type({"id": "media:/y"}, None) is None,
+)
+check(
+    "a missing id entirely is handled without raising",
+    setup_sections._companion_type({}, None) is None,
+)
+
+# ---------------------------------------------------------------------------
+# channel_studio_pages.py: local channels are excluded from the companion
+# pipeline by companion type, not by keeping only channel_type == "media"
+# -- a regression caught manually: a local channel can legitimately be
+# channel_type "missing" (e.g. before self.channels is populated yet this
+# session, current_catalog_channel_infos falls back to building entries
+# from catalog_channel_settings alone) and must not be silently dropped.
+# ---------------------------------------------------------------------------
+section("channel_studio_pages.py: local-channel filter excludes by companion type")
+
+from mediawave.channel_studio import channel_studio_pages
+
+build_content_source = inspect.getsource(channel_studio_pages.build_channel_studio_content)
+check(
+    "local_infos filters out companion types, not everything that isn't 'media'",
+    'not in companion_adapter.COMPANION_TYPES' in build_content_source,
+    build_content_source,
+)
+check(
+    "the old too-aggressive == \"media\" filter is gone",
+    '== "media"]' not in build_content_source,
+)
+
+# ---------------------------------------------------------------------------
+# "Add Channel Logo" routing -- regression caught manually: it used to
+# reuse the OLD five-tab mock dialog's Identity-tab index (3), which in
+# the new ChannelSetupDialog's section order (Overview, Logo,
+# Commercials, Programming, Advanced) lands on Programming instead of Logo.
+# ---------------------------------------------------------------------------
+section("channel_studio_pages.py: Add Channel Logo opens the Logo section")
+
+from mediawave.channel_studio import channel_setup
+
+check(
+    "_LOGO_TAB_INDEX matches ChannelSetupDialog's own Logo section position",
+    channel_studio_pages._LOGO_TAB_INDEX == channel_setup._SECTION_TITLES.index("Logo"),
+    (channel_studio_pages._LOGO_TAB_INDEX, channel_setup._SECTION_TITLES),
+)
 
 # ---------------------------------------------------------------------------
 # Summary
