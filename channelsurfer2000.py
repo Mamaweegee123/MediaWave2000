@@ -21156,7 +21156,7 @@ class AdvancedConfigDialog(QDialog):
                 break
         self._bug_timing_update_visibility()
 
-    def _open_channel_logo_overrides(self):
+    def _open_channel_logo_overrides(self, initial_channel_name=None):
         current_global = self._collect_channel_bug_settings()
         current_overrides = current_global.get("channel_overrides") or {}
         # Build channel list from catalog_channel_infos (same source as My Catalog),
@@ -21179,6 +21179,8 @@ class AdvancedConfigDialog(QDialog):
             current_global,
             parent=self,
         )
+        if initial_channel_name and initial_channel_name in logo_channel_names:
+            dialog.channel_list.setCurrentRow(logo_channel_names.index(initial_channel_name))
         if dialog.exec():
             self.channel_bug_settings["channel_overrides"] = dialog.result_overrides
 
@@ -21327,8 +21329,10 @@ class AdvancedConfigDialog(QDialog):
             self.commercials_enabled.setChecked(False)
             self.commercials_enabled.blockSignals(False)
 
-    def open_channel_overrides_dialog(self):
+    def open_channel_overrides_dialog(self, initial_channel_name=None):
         dialog = CommercialOverridesDialog(self.channel_names, self.channel_commercial_overrides, self)
+        if initial_channel_name and initial_channel_name in self.channel_names:
+            dialog.channel_list.setCurrentRow(self.channel_names.index(initial_channel_name))
         if dialog.exec() == QDialog.Accepted:
             self.channel_commercial_overrides = dialog.result_overrides
 
