@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 from .channel_studio_widgets import FlowLayout
 from .studio_styles import (
     channel_number_font_family,
+    confirm_disable_companion_channel,
     confirm_remove_channel,
     schedule_row_badge_style,
     style_remove_button,
@@ -78,6 +79,10 @@ _HERO_INFO_VALUE_WIDTH = _HERO_RIGHT_COL_WIDTH - _PANEL_H_MARGIN - _INFO_LABEL_W
 _ENABLED_TOOLTIP = (
     "Preview only — turning channels on or off from Channel Studio isn't "
     "wired up yet."
+)
+_ENABLED_REAL_TOOLTIP = (
+    "Updates your real settings immediately. Click Save in Advanced "
+    "Configuration to make it stick."
 )
 
 
@@ -183,22 +188,24 @@ def _build_channel_number_label(number, point_size=18, glow=False):
     return label
 
 
-def _build_enabled_checkbox(enabled):
-    """A simple, preview-only on/off control.
+def _build_enabled_checkbox(enabled, on_toggle=None):
+    """The card's Enabled control.
 
-    Channel Studio's adapter already reads the same channel's real
-    `catalog_channel_settings[...]["enabled"]` value to seed this
-    checkbox's initial state (see channel_studio_pages.py), so it's
-    accurate at open time — but toggling it here doesn't write
-    anything back. My Catalog's own Enable/Disable All rebuilds that
-    setting from its own row widgets on Save
-    (`collect_catalog_channel_settings`), so writing here without also
-    updating those rows would just get silently discarded — safer to
-    leave real toggling to My Catalog for now.
+    When `on_toggle` is given, this is real: it's wired (by the caller,
+    in channel_studio_pages.py, via channel_actions.py) to the same
+    live widget My Catalog's own row or the Companion Channels tab's
+    own checkbox uses, so flipping it here updates that real setting
+    immediately, in this same dialog session. Without `on_toggle` it
+    stays the original preview-only control — used for anything that
+    doesn't have a safe, real setting to write to yet.
     """
     box = QCheckBox("Enabled")
     box.setChecked(bool(enabled))
-    box.setToolTip(_ENABLED_TOOLTIP)
+    if on_toggle is not None:
+        box.toggled.connect(on_toggle)
+        box.setToolTip(_ENABLED_REAL_TOOLTIP)
+    else:
+        box.setToolTip(_ENABLED_TOOLTIP)
     return box
 
 
@@ -267,11 +274,61 @@ def _build_schedule_panel(schedule, text_width, row_height=18, fixed_height=None
     return panel
 
 
-def build_dashboard_channel_card(summary, schedule, on_open, on_set_logo=None, enabled=True):
+def _build_companion_status_panel(summary, text_width, fixed_height=None):
+    """Replaces the Now/Next/Later schedule panel for companion cards —
+    WeatherStar/RadioWaveTV/NetTV don't have a "lineup" in the folder-
+    channel sense, so this shows the one piece of type-specific status
+    that actually matters instead (location/music folder/playlist —
+    see companion_adapter.companion_summaries for where these come
+    from, including the live-status upgrade once the channel is
+    actually loaded).
+    """
+    panel = QFrame()
+    panel.setObjectName("companionStatusPanel")
+    panel.setStyleSheet(
+        "QFrame#companionStatusPanel {"
+        " background: rgba(8, 10, 24, 170);"
+        " border: 1px solid rgba(255, 255, 255, 22);"
+        " border-radius: 8px;"
+        "}"
+    )
+    layout = QVBoxLayout(panel)
+    layout.setContentsMargins(10, 8, 10, 8)
+    layout.setSpacing(4)
+
+    label_lbl = QLabel((summary.companion_info_label or "Status").upper())
+    label_lbl.setObjectName("fieldHelp")
+    label_lbl.setStyleSheet("font-weight: 700; letter-spacing: 1px;")
+    layout.addWidget(label_lbl)
+
+    value_lbl = QLabel()
+    value_lbl.setObjectName("sectionNote")
+    _elide(value_lbl, summary.companion_info_value or "Not configured yet", text_width)
+    layout.addWidget(value_lbl)
+    layout.addStretch(1)
+
+    if fixed_height:
+        panel.setFixedHeight(fixed_height)
+    return panel
+
+
+def build_dashboard_channel_card(
+    summary,
+    schedule,
+    on_open,
+    on_set_logo=None,
+    enabled=True,
+    on_toggle_enabled=None,
+    on_remove=None,
+):
     """Build one channel's dashboard tile for the Choose Channel grid.
 
-    Remove is handled internally via `studio_styles.confirm_remove_channel`
-    (safe, confirmation-only) — callers don't need to wire it.
+    Remove is handled internally: for a companion channel with
+    `on_remove` given, it's a real (but non-destructive) Disable via
+    `studio_styles.confirm_disable_companion_channel`; otherwise it's
+    the original safe, confirmation-only preview via
+    `studio_styles.confirm_remove_channel` — callers don't need to
+    wire either one up themselves beyond passing `on_remove`.
     """
     card = QFrame()
     card.setObjectName("sectionCard")
@@ -321,12 +378,15 @@ def build_dashboard_channel_card(summary, schedule, on_open, on_set_logo=None, e
     header_row.addWidget(logo_widget)
     outer.addLayout(header_row)
 
-    outer.addWidget(
-        _build_schedule_panel(schedule, _NORMAL_SCHEDULE_TEXT_WIDTH, row_height=18, fixed_height=76)
-    )
+    if summary.is_companion:
+        outer.addWidget(_build_companion_status_panel(summary, _NORMAL_SCHEDULE_TEXT_WIDTH, fixed_height=76))
+    else:
+        outer.addWidget(
+            _build_schedule_panel(schedule, _NORMAL_SCHEDULE_TEXT_WIDTH, row_height=18, fixed_height=76)
+        )
 
     bottom_row = QHBoxLayout()
-    bottom_row.addWidget(_build_enabled_checkbox(enabled))
+    bottom_row.addWidget(_build_enabled_checkbox(enabled, on_toggle=on_toggle_enabled))
     bottom_row.addStretch(1)
     outer.addLayout(bottom_row)
 
@@ -337,9 +397,14 @@ def build_dashboard_channel_card(summary, schedule, on_open, on_set_logo=None, e
     style_setup_button(setup_btn)
     setup_btn.clicked.connect(lambda: on_open(channel_info))
     btn_row.addWidget(setup_btn)
-    remove_btn = QPushButton("🗑  Remove")
-    style_remove_button(remove_btn)
-    remove_btn.clicked.connect(lambda: confirm_remove_channel(card, summary.name))
+    if summary.is_companion and on_remove is not None:
+        remove_btn = QPushButton("🚫  Disable")
+        style_remove_button(remove_btn)
+        remove_btn.clicked.connect(lambda: confirm_disable_companion_channel(card, summary.name, on_remove))
+    else:
+        remove_btn = QPushButton("🗑  Remove")
+        style_remove_button(remove_btn)
+        remove_btn.clicked.connect(lambda: confirm_remove_channel(card, summary.name))
     btn_row.addWidget(remove_btn)
     outer.addLayout(btn_row)
 
@@ -350,6 +415,11 @@ def _channel_info_rows(summary):
     """Only real, already-known values — calm fallback text otherwise.
     Never repeats the Now/Next/Later schedule shown above it.
     """
+    if summary.is_companion:
+        # Location/folder/playlist already has its own panel (see
+        # _build_companion_status_panel) — this stays to just Type/Source
+        # so the two panels don't repeat each other.
+        return [("Type", "Companion channel"), ("Source", "Built in")]
     is_special = summary.channel_type != "media"
     rows = [
         ("Type", "Special channel" if is_special else "Folder channel"),
@@ -404,7 +474,15 @@ def _build_channel_info_panel(summary):
     return panel
 
 
-def build_hero_channel_card(summary, schedule, on_open, on_set_logo=None, enabled=True):
+def build_hero_channel_card(
+    summary,
+    schedule,
+    on_open,
+    on_set_logo=None,
+    enabled=True,
+    on_toggle_enabled=None,
+    on_remove=None,
+):
     """Build the more compact, visually special tile for the Choose
     Channel grid's hero slot.
 
@@ -455,13 +533,16 @@ def build_hero_channel_card(summary, schedule, on_open, on_set_logo=None, enable
     _elide(name_lbl, summary.name, _HERO_LEFT_COL_WIDTH - 10)
     left_col.addWidget(name_lbl)
     left_col.addWidget(_build_logo_widget(summary, on_set_logo, size=78))
-    left_col.addWidget(_build_enabled_checkbox(enabled))
+    left_col.addWidget(_build_enabled_checkbox(enabled, on_toggle=on_toggle_enabled))
     left_col.addStretch(1)
     body_row.addWidget(left_widget)
 
     right_col = QVBoxLayout()
     right_col.setSpacing(8)
-    right_col.addWidget(_build_schedule_panel(schedule, _HERO_SCHEDULE_TEXT_WIDTH, row_height=22))
+    if summary.is_companion:
+        right_col.addWidget(_build_companion_status_panel(summary, _HERO_SCHEDULE_TEXT_WIDTH))
+    else:
+        right_col.addWidget(_build_schedule_panel(schedule, _HERO_SCHEDULE_TEXT_WIDTH, row_height=22))
     right_col.addWidget(_build_channel_info_panel(summary))
     body_row.addLayout(right_col, 1)
 
@@ -474,9 +555,14 @@ def build_hero_channel_card(summary, schedule, on_open, on_set_logo=None, enable
     style_setup_button(setup_btn)
     setup_btn.clicked.connect(lambda: on_open(channel_info))
     btn_row.addWidget(setup_btn)
-    remove_btn = QPushButton("🗑  Remove")
-    style_remove_button(remove_btn)
-    remove_btn.clicked.connect(lambda: confirm_remove_channel(card, summary.name))
+    if summary.is_companion and on_remove is not None:
+        remove_btn = QPushButton("🚫  Disable")
+        style_remove_button(remove_btn)
+        remove_btn.clicked.connect(lambda: confirm_disable_companion_channel(card, summary.name, on_remove))
+    else:
+        remove_btn = QPushButton("🗑  Remove")
+        style_remove_button(remove_btn)
+        remove_btn.clicked.connect(lambda: confirm_remove_channel(card, summary.name))
     btn_row.addWidget(remove_btn)
     outer.addLayout(btn_row)
 
