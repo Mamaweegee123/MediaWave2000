@@ -284,6 +284,58 @@ check("move_item on an empty list is a safe no-op", reorder.move_item([], 0, 1) 
 check("original list object is not mutated", base_order == ["a", "b", "c", "d"])
 
 # ---------------------------------------------------------------------------
+# reorder.overlay_top_left — the drag-ghost cursor-hotspot math
+# ---------------------------------------------------------------------------
+section("reorder.overlay_top_left")
+
+check(
+    "clicking a card's own top-left keeps the overlay under the cursor exactly",
+    reorder.overlay_top_left((500, 300), (0, 0)) == (500, 300),
+)
+check(
+    "clicking mid-card offsets the overlay by that same amount",
+    reorder.overlay_top_left((500, 300), (200, 120)) == (300, 180),
+)
+check(
+    "cursor moving by (dx, dy) moves the overlay by the same (dx, dy)",
+    reorder.overlay_top_left((520, 340), (200, 120)) == (320, 220),
+)
+check(
+    "negative press offsets (clicking above/left of the overlay origin) still work",
+    reorder.overlay_top_left((100, 100), (-10, -10)) == (110, 110),
+)
+
+# ---------------------------------------------------------------------------
+# Reorder mode must not change card geometry constants
+# ---------------------------------------------------------------------------
+section("reorder mode leaves card dimensions untouched")
+
+from mediawave.channel_studio.channel_card import CARD_WIDTH, HERO_CARD_WIDTH
+
+check("normal card width is unchanged by the reorder-mode pass", CARD_WIDTH == 430, CARD_WIDTH)
+check(
+    "hero card width still derives from the normal card width",
+    HERO_CARD_WIDTH == CARD_WIDTH * 2 + 16,
+    HERO_CARD_WIDTH,
+)
+
+import inspect
+
+from mediawave.channel_studio import draggable_grid
+
+reorder_mode_source = inspect.getsource(draggable_grid._Slot.set_reorder_mode)
+check(
+    "reorder-mode styling uses outline, not border, so it can't change sizeHint",
+    "outline" in reorder_mode_source and "border:" not in reorder_mode_source,
+    reorder_mode_source,
+)
+check(
+    "reorder-mode styling is scoped to the slot's own object name, not a bare QFrame selector",
+    "QFrame#reorderSlot" in reorder_mode_source and "QFrame {" not in reorder_mode_source,
+    reorder_mode_source,
+)
+
+# ---------------------------------------------------------------------------
 # studio_state — last-edited channel and grid display order persistence
 # ---------------------------------------------------------------------------
 section("studio_state: last-edited channel and channel order")

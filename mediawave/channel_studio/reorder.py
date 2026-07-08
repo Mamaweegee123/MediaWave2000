@@ -40,3 +40,17 @@ def move_item(order, from_index, to_index):
     item = items.pop(from_index)
     items.insert(to_index, item)
     return items
+
+
+def overlay_top_left(cursor_pos, press_offset):
+    """Where a floating drag overlay's top-left should sit so the exact
+    point the user originally clicked stays under the cursor as it
+    moves — cursor position minus the click's offset from the dragged
+    item's own top-left (the "hotspot"). `cursor_pos` and `press_offset`
+    are (x, y) tuples, not Qt types, so this stays testable without a
+    QApplication; draggable_grid.py converts QPoint <-> tuple at the
+    call site.
+    """
+    cursor_x, cursor_y = cursor_pos
+    offset_x, offset_y = press_offset
+    return (cursor_x - offset_x, cursor_y - offset_y)
