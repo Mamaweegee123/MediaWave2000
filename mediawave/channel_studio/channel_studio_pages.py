@@ -10,10 +10,13 @@ scheduling, library, or settings data is read or written from this page.
 
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
+from . import channel_actions
+from . import companion_adapter
+from .channel_setup import ChannelSetupDialog
 from .channel_studio_adapter import build_channel_studio_summaries, build_tonight_schedules
-from .channel_studio_cards import ChannelEditorPreviewDialog
 from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_header import build_channel_studio_header
+from .channel_studio_model import ChannelStudioSummary
 from .channel_studio_widgets import build_channel_studio_footer, build_empty_state
 from .channel_card import build_dashboard_channel_card, build_hero_channel_card
 from .draggable_grid import DraggableGrid
@@ -26,7 +29,13 @@ from .studio_state import (
 )
 from .studio_styles import style_setup_button
 
-_IDENTITY_TAB_INDEX = 3
+_COMPANION_TYPE_BY_ID = {cid: ctype for ctype, cid in companion_adapter.COMPANION_CHANNEL_IDS.items()}
+
+# Matches channel_setup.ChannelSetupDialog's own section order
+# (Overview, Logo, Commercials, Programming, Advanced) -- "Add Channel
+# Logo" should land on Logo, not wherever the *old* five-tab mock
+# dialog's Identity tab used to be.
+_LOGO_TAB_INDEX = 1
 
 _REORDER_HINT_TEXT = "Drag channels to rearrange them."
 _REORDER_BUTTON_IDLE = "⇅  Reorder Channels"
@@ -77,6 +86,33 @@ def _channel_info_for(summary):
     return {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
 
 
+class _RefreshOnShowWidget(QWidget):
+    """Channel Studio's own settings edits already trigger a rebuild (see
+    _toggle_local_enabled/_toggle_companion_enabled/_toggle_reorder in
+    build_channel_studio_content), but an edit made in a SIBLING tab —
+    the Companion Channels tab's own channel-number spinbox, or a My
+    Catalog row — has no way to reach into an already-built Channel
+    Studio grid to tell it to refresh. Rebuilding on every showEvent
+    (i.e. every time the user switches into Channel Studio's mode, not
+    just the first time) closes that gap without Channel Studio needing
+    to know anything about which other tab might have changed
+    something, and without any changes to channelsurfer2000.py's own
+    navigation code. `on_show` is set by the caller once its rebuild
+    functions exist; a callable is expected but a missing/None one is a
+    safe no-op (relevant only during this widget's own construction,
+    before the caller has anything to assign yet).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.on_show = None
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        if self.on_show is not None:
+            self.on_show()
+
+
 def build_channel_studio_content(dialog):
     """Build the Choose Channel page: the scrollable content (header,
     hero, grid) and its persistent footer, together — not as two
@@ -85,12 +121,27 @@ def build_channel_studio_content(dialog):
     `(content, footer)`; see channel_studio.py for how callers place
     `footer` outside the scrollable area.
     """
-    content = QWidget()
+    content = _RefreshOnShowWidget()
     layout = QVBoxLayout(content)
     layout.setContentsMargins(16, 14, 16, 16)
     layout.setSpacing(16)
 
     infos = list(getattr(dialog, "catalog_channel_infos", None) or [])
+    # Companion channels (weatherstar/radiowave/youtube) get their own
+    # dedicated pipeline below (companion_adapter + channel_actions,
+    # reading live Companion Channels tab widgets) so their cards show
+    # real type-specific status instead of generic folder-channel
+    # labels -- excluded here so they don't also render as a second,
+    # wrong-looking tile through the local/folder pipeline. Excluding
+    # by companion type name (not by keeping only "media") matters: a
+    # local channel can legitimately show up as channel_type "missing"
+    # here too -- e.g. before self.channels has been populated yet this
+    # session, current_catalog_channel_infos() falls back to building
+    # entries from catalog_channel_settings alone -- and those still
+    # belong in the local/folder pipeline, not dropped.
+    local_infos = [
+        info for info in infos if info.get("channel_type", "media") not in companion_adapter.COMPANION_TYPES
+    ]
     state_path = _state_path(dialog)
     catalog_channel_settings = getattr(dialog, "catalog_channel_settings", None)
 
@@ -112,9 +163,9 @@ def build_channel_studio_content(dialog):
     summaries_by_id = {}
     schedules_by_id = {}
 
-    if infos:
+    if local_infos:
         summaries = build_channel_studio_summaries(
-            infos,
+            local_infos,
             shows_lookup=getattr(dialog, "_channel_shows_lookup", None),
             catalog_channel_settings=catalog_channel_settings,
             commercials_config=getattr(dialog, "commercials_settings", None),
@@ -123,7 +174,7 @@ def build_channel_studio_content(dialog):
         )
         summaries_by_id = {summary.channel_id: summary for summary in summaries}
         channels_by_id = getattr(dialog, "_studio_channels_by_id", None) or {}
-        schedules = build_tonight_schedules(infos, channels_by_id=channels_by_id)
+        schedules = build_tonight_schedules(local_infos, channels_by_id=channels_by_id)
         schedules_by_id = {schedule.channel_id: schedule for schedule in schedules}
         number_sorted = sorted(summaries, key=lambda s: s.number)
     else:
@@ -150,11 +201,58 @@ def build_channel_studio_content(dialog):
         by_id = {s.channel_id: s for s in number_sorted}
         return [by_id[cid] for cid in ordered_ids if cid in by_id]
 
+    def _local_enabled(channel_id):
+        """Real enabled state for a local folder channel: prefers the
+        live My Catalog row (so an edit made either here or in My
+        Catalog itself, earlier in this same dialog session, is always
+        reflected), falling back to the settings snapshot the dialog
+        was opened with when no row exists yet.
+        """
+        live = channel_actions.local_channel_enabled_from_dialog(dialog, channel_id)
+        if live is not None:
+            return live
+        return _channel_enabled(channel_id, catalog_channel_settings)
+
+    def _companion_summary_objects():
+        """Enabled companions only, read live off the Companion Channels
+        tab's own widgets every time this is called so enable/disable
+        and reorder changes made in Channel Studio (or in the Companion
+        Channels tab itself) show up immediately.
+        """
+        snapshot = channel_actions.companion_snapshot_from_dialog(dialog)
+        status = channel_actions.companion_status_from_dialog(dialog)
+        return [
+            ChannelStudioSummary(**fields)
+            for fields in companion_adapter.companion_summaries(snapshot, status)
+        ]
+
+    def _toggle_local_enabled(channel_id, checked):
+        channel_actions.set_local_channel_enabled(dialog, channel_id, checked)
+        _rebuild_grid(current_filter["text"])
+
+    def _toggle_companion_enabled(companion_type, checked):
+        channel_actions.set_companion_enabled_on_dialog(dialog, companion_type, checked)
+        _rebuild_grid(current_filter["text"])
+
+    def _summary_for(channel_id):
+        """Local summaries are already indexed; a companion summary is
+        built fresh (live) only when actually needed, since it's not
+        worth rebuilding all three companions' live status on every
+        grid refresh just so Setup could open on one of them.
+        """
+        if channel_id in summaries_by_id:
+            return summaries_by_id[channel_id]
+        if channel_id in _COMPANION_TYPE_BY_ID:
+            for summary in _companion_summary_objects():
+                if summary.channel_id == channel_id:
+                    return summary
+        return None
+
     def _open_channel(channel_info, initial_tab=0):
         channel_id = channel_info.get("id", "")
-        summary = summaries_by_id.get(channel_id)
+        summary = _summary_for(channel_id)
         schedule = schedules_by_id.get(channel_id)
-        ChannelEditorPreviewDialog(
+        ChannelSetupDialog(
             channel_info,
             summary=summary,
             schedule=schedule,
@@ -164,8 +262,8 @@ def build_channel_studio_content(dialog):
             initial_tab=initial_tab,
         ).exec()
 
-    def _open_identity(channel_info):
-        _open_channel(channel_info, initial_tab=_IDENTITY_TAB_INDEX)
+    def _open_logo(channel_info):
+        _open_channel(channel_info, initial_tab=_LOGO_TAB_INDEX)
 
     def _open_from_setup(channel_info):
         """The Setup button's handler, from either the hero card or a
@@ -194,8 +292,9 @@ def build_channel_studio_content(dialog):
                 hero_summary,
                 schedules_by_id.get(hero_summary.channel_id),
                 on_open=_open_from_setup,
-                on_set_logo=lambda checked=False, info=_channel_info_for(hero_summary): _open_identity(info),
-                enabled=_channel_enabled(hero_summary.channel_id, catalog_channel_settings),
+                on_set_logo=lambda checked=False, info=_channel_info_for(hero_summary): _open_logo(info),
+                enabled=_local_enabled(hero_summary.channel_id),
+                on_toggle_enabled=lambda checked, cid=hero_summary.channel_id: _toggle_local_enabled(cid, checked),
             )
         )
 
@@ -210,7 +309,10 @@ def build_channel_studio_content(dialog):
         _clear(grid_layout)
         grid_ref["widget"] = None
 
-        if not number_sorted:
+        ordered = _display_order()
+        companions = _companion_summary_objects()
+
+        if not ordered and not companions:
             grid_layout.addWidget(
                 build_empty_state(
                     "No channels yet. Once you create or import one, it'll show up here "
@@ -219,30 +321,44 @@ def build_channel_studio_content(dialog):
             )
             return
 
-        ordered = _display_order()
         if reorder_state["active"]:
             # Reorder mode always shows every channel, unfiltered — dragging
             # a partially-filtered view would make "where did the rest go"
             # confusing. The grid always includes every channel, including
             # whichever one the hero card is featuring — the hero is a
             # duplicate contextual preview, not a replacement.
-            visible = ordered
+            visible_local = ordered
+            visible_companions = companions
         else:
             needle = current_filter["text"].strip().lower()
-            visible = [s for s in ordered if needle in s.name.lower()] if needle else ordered
-            if not visible:
+            visible_local = [s for s in ordered if needle in s.name.lower()] if needle else ordered
+            visible_companions = [c for c in companions if needle in c.name.lower()] if needle else companions
+            if not visible_local and not visible_companions:
                 grid_layout.addWidget(build_empty_state(f'No channels match "{filter_text}".'))
                 return
 
         entries = []
-        for summary in visible:
+        for summary in visible_local:
             channel_info = _channel_info_for(summary)
             card = build_dashboard_channel_card(
                 summary,
                 schedules_by_id.get(summary.channel_id),
                 on_open=_open_from_setup,
-                on_set_logo=lambda checked=False, info=channel_info: _open_identity(info),
-                enabled=_channel_enabled(summary.channel_id, catalog_channel_settings),
+                on_set_logo=lambda checked=False, info=channel_info: _open_logo(info),
+                enabled=_local_enabled(summary.channel_id),
+                on_toggle_enabled=lambda checked, cid=summary.channel_id: _toggle_local_enabled(cid, checked),
+            )
+            entries.append((summary.channel_id, card))
+        for summary in visible_companions:
+            channel_info = _channel_info_for(summary)
+            card = build_dashboard_channel_card(
+                summary,
+                None,
+                on_open=_open_from_setup,
+                on_set_logo=lambda checked=False, info=channel_info: _open_logo(info),
+                enabled=True,
+                on_toggle_enabled=lambda checked, ct=summary.channel_type: _toggle_companion_enabled(ct, checked),
+                on_remove=lambda ct=summary.channel_type: _toggle_companion_enabled(ct, False),
             )
             entries.append((summary.channel_id, card))
 
@@ -254,10 +370,22 @@ def build_channel_studio_content(dialog):
     def _toggle_reorder(checked=False):
         if reorder_state["active"]:
             # Exiting reorder mode: persist wherever the grid ended up.
-            # Display order only — channel numbers, scheduling, and
-            # playback order are all untouched.
+            # Local folder channels: display order only — real channel
+            # numbers, scheduling, and playback order are all untouched.
+            # Companion channels: also resequence their REAL channel
+            # numbers (weatherstar/radiowave/youtube_channel_number) to
+            # match their new relative order among each other, so the
+            # Companion Channels tab picks up the same move — see
+            # companion_adapter.resequence_companion_numbers for why
+            # this can never renumber a local channel or collide.
             if grid_ref["widget"] is not None:
-                save_channel_order(state_path, grid_ref["widget"].current_order())
+                final_order = grid_ref["widget"].current_order()
+                save_channel_order(state_path, final_order)
+                companion_order = [
+                    _COMPANION_TYPE_BY_ID[cid] for cid in final_order if cid in _COMPANION_TYPE_BY_ID
+                ]
+                if len(companion_order) >= 2:
+                    channel_actions.resequence_companions_on_dialog(dialog, companion_order)
             reorder_state["active"] = False
         else:
             reorder_state["active"] = True
@@ -293,5 +421,7 @@ def build_channel_studio_content(dialog):
         total_count=len(infos),
         on_reorder=_toggle_reorder,
     )
+
+    content.on_show = lambda: (_rebuild_hero(), _rebuild_grid(current_filter["text"]))
 
     return content, footer
