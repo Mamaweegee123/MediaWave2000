@@ -6,6 +6,12 @@ of a channel's studio summary plus small, pure formatting helpers.
 
 from dataclasses import dataclass, field
 
+# WeatherStar/RadioWaveTV/NetTV -- built-in, non-folder channels. See
+# companion_adapter.py for how their summaries get built; this module
+# only needs to know their type names to pick the right headline/info
+# rows for a card.
+COMPANION_CHANNEL_TYPES = ("weatherstar", "radiowave", "youtube")
+
 
 @dataclass
 class ChannelStudioSummary:
@@ -25,6 +31,16 @@ class ChannelStudioSummary:
     commercials_label: str = "Commercials off"
     airing_rule_count: int = 0
     seasonal_rule_count: int = 0
+    # Companion-only: a short label/value pair for the one piece of
+    # type-specific status worth showing (WeatherStar's location,
+    # RadioWaveTV's music folder, NetTV's playlist) -- see
+    # companion_adapter.companion_summaries. Unused for "media" channels.
+    companion_info_label: str = ""
+    companion_info_value: str = ""
+
+    @property
+    def is_companion(self):
+        return self.channel_type in COMPANION_CHANNEL_TYPES
 
     @property
     def has_hints(self):
@@ -33,6 +49,8 @@ class ChannelStudioSummary:
     @property
     def headline(self):
         """A one-line, friendly summary for a channel card."""
+        if self.is_companion:
+            return "Companion channel"
         if self.channel_type != "media":
             return "Special channel · built in"
         if not self.content_known:
