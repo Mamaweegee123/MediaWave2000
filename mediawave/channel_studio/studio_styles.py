@@ -213,3 +213,18 @@ def confirm_remove_channel(parent, channel_name):
             "Remove Channel",
             "Removing channels from Channel Studio isn't wired up yet — nothing changed.",
         )
+
+
+def confirm_disable_companion_channel(parent, channel_name, on_confirm):
+    """"Remove" for a companion channel is real, but only ever a real
+    Disable — never a delete. Nothing about the channel's configuration
+    (location, music folder, playlist URL, ...) is touched, so turning
+    it back on later picks up right where it left off.
+    """
+    box = QMessageBox(parent)
+    box.setWindowTitle(f"Disable {channel_name}?")
+    box.setText("Disable this companion channel? Your settings will be kept.")
+    box.setStandardButtons(QMessageBox.Cancel | QMessageBox.Yes)
+    box.setDefaultButton(QMessageBox.Cancel)
+    if box.exec() == QMessageBox.Yes:
+        on_confirm()
