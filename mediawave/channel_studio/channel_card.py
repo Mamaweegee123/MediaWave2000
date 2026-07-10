@@ -320,6 +320,7 @@ def build_dashboard_channel_card(
     enabled=True,
     on_toggle_enabled=None,
     on_remove=None,
+    commercials_status=None,
 ):
     """Build one channel's dashboard tile for the Choose Channel grid.
 
@@ -329,6 +330,14 @@ def build_dashboard_channel_card(
     the original safe, confirmation-only preview via
     `studio_styles.confirm_remove_channel` — callers don't need to
     wire either one up themselves beyond passing `on_remove`.
+
+    `commercials_status`, when given, is a short live-computed line
+    (e.g. "shared commercials" / "commercials off" / "custom
+    commercials" -- see channel_actions.card_commercials_status) shown
+    under the headline. Without it, no extra line is added -- the
+    headline's own static "commercials on/off" phrase (from
+    ChannelStudioSummary.headline) is all that shows, same as before
+    this per-channel override status existed.
     """
     card = QFrame()
     card.setObjectName("sectionCard")
@@ -373,6 +382,11 @@ def build_dashboard_channel_card(
     headline_lbl.setObjectName("sectionNote")
     _elide(headline_lbl, summary.headline, title_width)
     title_col.addWidget(headline_lbl)
+    if commercials_status:
+        commercials_lbl = QLabel()
+        commercials_lbl.setObjectName("fieldHelp")
+        _elide(commercials_lbl, commercials_status, title_width)
+        title_col.addWidget(commercials_lbl)
     header_row.addLayout(title_col, 1)
 
     header_row.addWidget(logo_widget)
@@ -411,9 +425,15 @@ def build_dashboard_channel_card(
     return card
 
 
-def _channel_info_rows(summary):
+def _channel_info_rows(summary, commercials_status=None):
     """Only real, already-known values — calm fallback text otherwise.
     Never repeats the Now/Next/Later schedule shown above it.
+
+    `commercials_status`, when given, replaces the static
+    `summary.commercials_label` for the Commercials row with the live,
+    per-channel-override-aware label instead (see
+    channel_actions.commercials_summary_label) -- the static one only
+    ever reflects the global on/off flag, not a per-channel override.
     """
     if summary.is_companion:
         # Location/folder/playlist already has its own panel (see
@@ -427,7 +447,7 @@ def _channel_info_rows(summary):
     ]
     if not is_special:
         rows.append(("Playback", f"{summary.playback_order_label} order"))
-    rows.append(("Commercials", summary.commercials_label))
+    rows.append(("Commercials", commercials_status or summary.commercials_label))
     if summary.content_known:
         counts = []
         if summary.show_count:
@@ -439,7 +459,7 @@ def _channel_info_rows(summary):
     return rows
 
 
-def _build_channel_info_panel(summary):
+def _build_channel_info_panel(summary, commercials_status=None):
     panel = QFrame()
     panel.setObjectName("channelInfoPanel")
     panel.setStyleSheet(
@@ -458,7 +478,7 @@ def _build_channel_info_panel(summary):
     heading.setStyleSheet("font-weight: 700; letter-spacing: 1px;")
     layout.addWidget(heading)
 
-    for label_text, value_text in _channel_info_rows(summary):
+    for label_text, value_text in _channel_info_rows(summary, commercials_status=commercials_status):
         row = QHBoxLayout()
         row.setSpacing(_INFO_ROW_SPACING)
         label_lbl = QLabel(label_text)
@@ -482,6 +502,7 @@ def build_hero_channel_card(
     enabled=True,
     on_toggle_enabled=None,
     on_remove=None,
+    commercials_status=None,
 ):
     """Build the more compact, visually special tile for the Choose
     Channel grid's hero slot.
@@ -495,6 +516,10 @@ def build_hero_channel_card(
     The same channel this card shows always still has its own tile in
     the regular grid below — this is a contextual duplicate, not a
     replacement.
+
+    `commercials_status`, when given, replaces the Channel Info panel's
+    static Commercials row the same way it does on the dashboard card
+    — see `_channel_info_rows`.
     """
     card = QFrame()
     card.setObjectName("sectionCard")
@@ -543,7 +568,7 @@ def build_hero_channel_card(
         right_col.addWidget(_build_companion_status_panel(summary, _HERO_SCHEDULE_TEXT_WIDTH))
     else:
         right_col.addWidget(_build_schedule_panel(schedule, _HERO_SCHEDULE_TEXT_WIDTH, row_height=22))
-    right_col.addWidget(_build_channel_info_panel(summary))
+    right_col.addWidget(_build_channel_info_panel(summary, commercials_status=commercials_status))
     body_row.addLayout(right_col, 1)
 
     outer.addLayout(body_row)
