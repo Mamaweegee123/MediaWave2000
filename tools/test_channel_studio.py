@@ -602,6 +602,11 @@ class _FakeDialog:
         ]
         self.channel_commercial_overrides = {}
         self._studio_channels_by_id = {}
+        self.commercials_settings = {"enabled": True, "root_folder": "/fake/commercials", "mode": "between_episodes"}
+        self._parent = None
+
+    def parent(self):
+        return self._parent
 
 
 fake_dialog = _FakeDialog()
@@ -781,6 +786,113 @@ check(
     channel_studio_pages._LOGO_TAB_INDEX == channel_setup._SECTION_TITLES.index("Logo"),
     (channel_studio_pages._LOGO_TAB_INDEX, channel_setup._SECTION_TITLES),
 )
+
+# ---------------------------------------------------------------------------
+# channel_actions: Commercials Setup v2 -- card status, library status,
+# timed-breaks label, and channel override summary.
+# ---------------------------------------------------------------------------
+section("channel_actions: commercials v2 status helpers")
+
+commercials_dialog = _FakeDialog()
+check("no override yet -> card status is shared commercials", channel_actions.card_commercials_status(commercials_dialog, "Movies") == "shared commercials")
+
+channel_actions.set_channel_commercial_override_mode(commercials_dialog, "Movies", "off")
+check("off override -> card status is commercials off", channel_actions.card_commercials_status(commercials_dialog, "Movies") == "commercials off")
+
+channel_actions.set_channel_commercial_override_mode(commercials_dialog, "Movies", "on")
+check("on override -> card status is custom commercials", channel_actions.card_commercials_status(commercials_dialog, "Movies") == "custom commercials")
+
+check("library status shows a live count when the main app has one loaded", (
+    lambda d: (
+        setattr(d, "_parent", type("FakeApp", (), {"commercial_library": [1, 2, 3]})()),
+        channel_actions.commercial_library_status(d),
+    )[1]
+)(_FakeDialog()) == "Shared library: 3 clips")
+
+check("library status falls back to calm text with no folder configured", (
+    lambda d: (
+        setattr(d, "commercials_settings", {"enabled": True, "root_folder": "", "mode": "between_episodes"}),
+        channel_actions.commercial_library_status(d),
+    )[1]
+)(_FakeDialog()) == "Shared library: no folder configured yet")
+
+check("library status reports commercials off when the shared library itself is disabled", (
+    lambda d: (
+        setattr(d, "commercials_settings", {"enabled": False, "root_folder": "/x", "mode": "between_episodes"}),
+        channel_actions.commercial_library_status(d),
+    )[1]
+)(_FakeDialog()) == "Shared library: commercials are off")
+
+timed_dialog = _FakeDialog()
+timed_dialog.commercials_settings = {"enabled": True, "root_folder": "/x", "mode": "timed_midroll"}
+check("global mode timed_midroll -> timed breaks On for a channel with no override", channel_actions.channel_timed_breaks_label(timed_dialog, "Movies") == "On")
+
+between_dialog = _FakeDialog()
+between_dialog.commercials_settings = {"enabled": True, "root_folder": "/x", "mode": "between_episodes"}
+check("global mode between_episodes -> timed breaks Off for a channel with no override", channel_actions.channel_timed_breaks_label(between_dialog, "Movies") == "Off")
+
+override_mode_dialog = _FakeDialog()
+override_mode_dialog.commercials_settings = {"enabled": True, "root_folder": "/x", "mode": "between_episodes"}
+override_mode_dialog.channel_commercial_overrides = {"Movies": {"enabled_mode": "on", "mode": "timed_midroll"}}
+check("a Custom override's own mode wins over the shared global mode", channel_actions.channel_timed_breaks_label(override_mode_dialog, "Movies") == "On")
+
+check("channel_override_summary reports None with no override", channel_actions.channel_override_summary(_FakeDialog(), "Movies") == "None")
+
+off_override_dialog = _FakeDialog()
+off_override_dialog.channel_commercial_overrides = {"Movies": {"enabled_mode": "off"}}
+check("channel_override_summary reports the off state plainly", channel_actions.channel_override_summary(off_override_dialog, "Movies") == "Commercials off")
+
+custom_override_dialog = _FakeDialog()
+custom_override_dialog.channel_commercial_overrides = {"Movies": {"enabled_mode": "on"}}
+check("channel_override_summary reports the on/custom state plainly", channel_actions.channel_override_summary(custom_override_dialog, "Movies") == "Custom commercial settings")
+
+inherit_with_extras_dialog = _FakeDialog()
+inherit_with_extras_dialog.channel_commercial_overrides = {"Movies": {"enabled_mode": "inherit", "preferred_era": "80s"}}
+check("an inherit override that still customizes a field reports Custom preferences", channel_actions.channel_override_summary(inherit_with_extras_dialog, "Movies") == "Custom preferences")
+
+# ---------------------------------------------------------------------------
+# setup_sections.py: NetTV gets the real commercial control mechanism,
+# WeatherStar/RadioWaveTV stay informational-only -- confirmed via source
+# inspection (the actual write path is already covered above/in
+# channel_actions, this checks the section builder's own branching).
+# ---------------------------------------------------------------------------
+section("setup_sections.py: companion commercial support is type-specific")
+
+commercials_section_source = inspect.getsource(setup_sections.build_commercials_section)
+check(
+    "only weatherstar/radiowave are treated as commercials-not-applicable",
+    'companion_type in ("weatherstar", "radiowave")' in commercials_section_source,
+    commercials_section_source,
+)
+check(
+    "NetTV (youtube) gets its own copy, not the generic local-channel copy",
+    "_NETTV_COMMERCIALS_MODE_COPY" in commercials_section_source and "is_nettv" in commercials_section_source,
+)
+check(
+    "the three choice buttons are wired to the same real override functions NetTV and local channels share",
+    "set_channel_commercial_override_mode" in commercials_section_source
+    and "open_commercial_overrides_for_channel" in commercials_section_source,
+)
+
+overview_section_source = inspect.getsource(setup_sections.build_overview_section)
+check(
+    "Overview's Commercials preview also treats NetTV as supported, not just local channels",
+    'companion_type == "youtube"' in overview_section_source,
+    overview_section_source,
+)
+
+# ---------------------------------------------------------------------------
+# channel_card.py: the new commercials_status line/row is optional and
+# additive -- structural checks matching the existing inspect.getsource pattern.
+# ---------------------------------------------------------------------------
+section("channel_card.py: commercials_status wiring")
+
+dashboard_source_v2 = inspect.getsource(channel_card.build_dashboard_channel_card)
+check("dashboard card accepts an optional commercials_status param", "commercials_status=None" in dashboard_source_v2)
+check("dashboard card only adds the extra line when a status was actually given", "if commercials_status:" in dashboard_source_v2)
+
+info_rows_source = inspect.getsource(channel_card._channel_info_rows)
+check("the Commercials row prefers the live status over the static summary label", "commercials_status or summary.commercials_label" in info_rows_source)
 
 # ---------------------------------------------------------------------------
 # Summary
