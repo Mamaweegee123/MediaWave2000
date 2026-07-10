@@ -22,6 +22,7 @@ from .setup_sections import (
 from .studio_styles import SinglePageStackedWidget, build_scroll_area
 
 _SECTION_TITLES = ["Overview", "Logo", "Commercials", "Programming", "Advanced"]
+_OVERVIEW_SECTION_INDEX = 0
 _COMMERCIALS_SECTION_INDEX = 2
 
 
@@ -86,7 +87,23 @@ class ChannelSetupDialog(QDialog):
         outer.addWidget(back_btn, 0, Qt.AlignLeft)
 
     def _show_section(self, index):
+        if index == _OVERVIEW_SECTION_INDEX:
+            # Overview's own "Commercials: X" preview card is a static
+            # snapshot from whenever it was last built -- refresh it
+            # in place so a mode change made over on the Commercials
+            # section (or the Enabled toggle, changed from a sibling
+            # tab) doesn't look stale when the user comes back here.
+            self._refresh_overview()
         self._stack.setCurrentIndex(index)
+
+    def _refresh_overview(self):
+        old_widget = self._stack.widget(_OVERVIEW_SECTION_INDEX)
+        new_widget = build_overview_section(
+            self._studio_dialog, self._channel_info, self._summary, self._go_to_commercials
+        )
+        self._stack.removeWidget(old_widget)
+        self._stack.insertWidget(_OVERVIEW_SECTION_INDEX, new_widget)
+        old_widget.deleteLater()
 
     def _go_to_commercials(self):
         button = self._tab_group.button(_COMMERCIALS_SECTION_INDEX)
