@@ -13,6 +13,7 @@ from mediawave.clip_cutter import (
     ClipQueue,
     ClipSegment,
     InvalidClipRange,
+    NonAdjacentClipMergeError,
     TinyClipError,
     build_accurate_cut_command,
     build_fast_cut_command,
@@ -53,6 +54,39 @@ assert queue.clips == (second,)
 queue.clear()
 assert queue.clips == ()
 assert queue.remove_last() is None
+
+queue.add(70, 82, origin="Smart suggestion", confidence=0.8, reasons=("black frame",))
+queue.add(82, 95, origin="Smart suggestion", confidence=0.9, reasons=("audio dip",))
+queue.add(130, 145)
+merged_two = queue.merge_indices([0, 1])
+assert merged_two.start_seconds == 70
+assert merged_two.end_seconds == 95
+assert merged_two.origin == "Merged"
+assert merged_two.reasons == ("black frame", "audio dip")
+assert [clip.start_seconds for clip in queue.clips] == [70, 130]
+queue.clear()
+
+queue.add(10, 20)
+queue.add(20, 30)
+queue.add(30, 40)
+queue.add(90, 100)
+merged_three = queue.merge_indices([0, 1, 2])
+assert merged_three.start_seconds == 10
+assert merged_three.end_seconds == 40
+assert [clip.start_seconds for clip in queue.clips] == [10, 90]
+assert len(plan_output_paths(Path("/clips"), "Commercials", len(queue))) == 2
+queue.clear()
+
+queue.add(10, 20)
+queue.add(20, 30)
+queue.add(30, 40)
+assert_raises(NonAdjacentClipMergeError, queue.merge_indices, [0, 2])
+queue.clear()
+
+queue.add(10, 25)
+queue.add(20, 30)
+assert_raises(InvalidClipRange, queue.merge_indices, [0, 1])
+queue.clear()
 
 smart = queue.add(
     10,

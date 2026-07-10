@@ -28,6 +28,10 @@ class TinyClipError(InvalidClipRange):
     """Raised when a clip is shorter than the accidental-clip threshold."""
 
 
+class NonAdjacentClipMergeError(InvalidClipRange):
+    """Raised when selected clips are not adjacent in the queue."""
+
+
 @dataclass(frozen=True)
 class ClipSegment:
     start_seconds: float
@@ -103,6 +107,42 @@ class ClipQueue:
             raise TinyClipError("This clip is under 1 second long.")
         self._clips[index] = updated
         return updated
+
+    def merge_indices(self, indices: list[int] | tuple[int, ...]) -> ClipSegment:
+        selected = sorted(set(indices))
+        if len(selected) < 2:
+            raise NonAdjacentClipMergeError("Select at least two adjacent clips to merge.")
+        if selected != list(range(selected[0], selected[-1] + 1)):
+            raise NonAdjacentClipMergeError("Only adjacent clips can be merged.")
+        if selected[0] < 0 or selected[-1] >= len(self._clips):
+            raise InvalidClipRange("Selected clips are no longer available.")
+
+        clips = [self._clips[index] for index in selected]
+        for left, right in zip(clips, clips[1:]):
+            if left.end_seconds > right.start_seconds:
+                raise InvalidClipRange("Selected clips overlap and cannot be merged.")
+
+        merged_start = clips[0].start_seconds
+        merged_end = clips[-1].end_seconds
+        if selected[0] > 0 and self._clips[selected[0] - 1].end_seconds > merged_start:
+            raise InvalidClipRange("Merged clip would overlap the previous clip.")
+        if selected[-1] < len(self._clips) - 1 and self._clips[selected[-1] + 1].start_seconds < merged_end:
+            raise InvalidClipRange("Merged clip would overlap the next clip.")
+
+        confidence_values = [clip.confidence for clip in clips if clip.confidence is not None]
+        confidence = sum(confidence_values) / len(confidence_values) if confidence_values else None
+        reasons = tuple(dict.fromkeys(reason for clip in clips for reason in clip.reasons))
+        merged = ClipSegment(
+            merged_start,
+            merged_end,
+            origin="Merged",
+            confidence=confidence,
+            reasons=reasons,
+        )
+        if merged.duration < MIN_CLIP_SECONDS:
+            raise TinyClipError("This clip is under 1 second long.")
+        self._clips[selected[0] : selected[-1] + 1] = [merged]
+        return merged
 
     def remove_first(self, count: int) -> None:
         if count > 0:

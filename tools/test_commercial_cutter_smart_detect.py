@@ -56,10 +56,11 @@ preset_events = [
     DetectionEvent(30.0, "scene"),
     DetectionEvent(40.0, "black"),
 ]
-lax = build_suggestions(preset_events, 50.0, "Lax")
+conservative = build_suggestions(preset_events, 50.0, "Conservative")
 normal = build_suggestions(preset_events, 50.0, "Normal")
 aggressive = build_suggestions(preset_events, 50.0, "Aggressive")
-assert len(lax) <= len(normal) < len(aggressive)
+assert len(conservative) <= len(normal) < len(aggressive)
+assert build_suggestions(preset_events, 50.0, "Lax") == conservative
 
 assert confidence_label(0.80) == "High confidence"
 assert confidence_label(0.60) == "Medium confidence"
@@ -78,6 +79,17 @@ assert suggestions[1].start_seconds > 15.0
 assert "black frame" in suggestions[1].reasons
 assert "scene cut" in suggestions[1].reasons
 assert suggestions[1].confidence_label == "High confidence"
+
+short_gap_events = [
+    DetectionEvent(10.0, "black"),
+    DetectionEvent(20.0, "black"),
+    DetectionEvent(23.0, "black"),
+    DetectionEvent(40.0, "black"),
+]
+normal_gap_suggestions = build_suggestions(short_gap_events, 50.0, "Normal", minimum_seconds=5.0)
+aggressive_gap_suggestions = build_suggestions(short_gap_events, 50.0, "Aggressive", minimum_seconds=5.0)
+assert any(item.start_seconds == 10.0 and item.end_seconds == 40.0 for item in normal_gap_suggestions)
+assert len(normal_gap_suggestions) < len(aggressive_gap_suggestions)
 
 video_command = build_video_detection_command("ffmpeg", Path("source.mp4"), "Normal")
 audio_command = build_audio_detection_command("ffmpeg", Path("source.mp4"), "Normal")

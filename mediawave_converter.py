@@ -54,6 +54,7 @@ from mediawave.clip_cutter import (
     ClipQueue,
     ClipSegment,
     InvalidClipRange,
+    NonAdjacentClipMergeError,
     TinyClipError,
     build_accurate_cut_command,
     build_fast_cut_command,
@@ -290,23 +291,23 @@ SUPPORTED_VIDEO_EXTENSIONS = {
     ".wmv",
 }
 ASPECT_CHOICES = {
-    "Classic TV": {
+    "4:3": {
         "ratio": 4 / 3,
         "tag": "4x3",
         "sizes": [
             ("960 x 720", (960, 720)),
             ("1280 x 960", (1280, 960)),
         ],
-        "friendly": "Old-school 4:3 shape",
+        "friendly": "4:3 shape",
     },
-    "Widescreen": {
+    "16:9": {
         "ratio": 16 / 9,
         "tag": "16x9",
         "sizes": [
             ("1280 x 720", (1280, 720)),
             ("1920 x 1080", (1920, 1080)),
         ],
-        "friendly": "Modern 16:9 shape",
+        "friendly": "16:9 shape",
     },
 }
 QUALITY_PRESETS = {
@@ -375,7 +376,7 @@ IMPORT_PRESETS = {
             "mp4",
         ],
         "convert_after": True,
-        "aspect_override": "Widescreen",
+        "aspect_override": "16:9",
         "size_override": (1280, 720),
     },
 }
@@ -401,8 +402,10 @@ def import_cookie_args(cookies_browser: str, cookies_file: str) -> list[str]:
         return ["--cookies", file_path]
     return []
 LEGACY_ASPECT_LABELS = {
-    "Classic 4:3": "Classic TV",
-    "Fullscreen 16:9": "Widescreen",
+    "Classic TV": "4:3",
+    "Widescreen": "16:9",
+    "Classic 4:3": "4:3",
+    "Fullscreen 16:9": "16:9",
 }
 LEGACY_QUALITY_LABELS = {
     "Near-lossless": "Best Picture",
@@ -413,6 +416,11 @@ SLIDER_LABELS = [
     (0.34, "Balanced"),
     (0.67, "Assertive"),
 ]
+
+
+def normalize_aspect_label(label: str) -> str:
+    normalized = LEGACY_ASPECT_LABELS.get(label, label)
+    return normalized if normalized in ASPECT_CHOICES else "4:3"
 ENCODER_CHOICES = {
     "Automatic": "Prefer the Mac hardware encoder when available, with software fallback.",
     "Mac Speed Boost": "Use Apple's video engine when available for faster batches.",
@@ -1018,6 +1026,31 @@ _IMPORT_SEASON_EPISODE_PAREN_RE = re.compile(
 _SHOW_EPISODE_COLON_RE = re.compile(r"^(?P<show>.+?)\s*[:：]\s*(?P<episode_title>.+)$")
 # Some sources use a hyphen instead of a colon: "Bob Ross - Mirrored Images (Season 24 Episode 6)".
 _SHOW_EPISODE_DASH_RE = re.compile(r"^(?P<show>.+?)\s+-\s+(?P<episode_title>.+)$")
+_DASH_SEASON_EPISODE_RE = re.compile(
+    r"^(?:(?P<title>.*?)[ ._]+)?(?P<season>\d{1,2})-(?P<episode>\d{2})(?:$|[ ._-]+(?P<name>.*))$",
+    re.I,
+)
+_COMPACT_SEASON_EPISODE_RE = re.compile(r"^(?P<code>\d{3}|\d{4})(?:$|[ ._-]+(?P<name>.*))$", re.I)
+
+
+def rename_guess_title(path: Path, raw_title: str) -> str:
+    return clean_filename_words(raw_title) or clean_filename_words(path.parent.name)
+
+
+def compact_episode_code_parts(code: str) -> tuple[int, int] | None:
+    if len(code) == 3:
+        season = int(code[0])
+        episode = int(code[1:])
+    elif len(code) == 4:
+        if code.startswith(("19", "20")):
+            return None
+        season = int(code[:2])
+        episode = int(code[2:])
+    else:
+        return None
+    if season <= 0 or episode <= 0:
+        return None
+    return season, episode
 
 
 def parse_rename_file(path: Path) -> RenameFileInfo:
@@ -1028,7 +1061,7 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
     # the patterns below out of alignment. Only matches digits immediately followed by
     # a separator (no space first), so genuine number-led titles like "01 Naruto" or
     # "01 - Naruto" are left alone.
-    working_stem = _LEADING_IMPORT_INDEX_RE.sub("", stem, count=1)
+    working_stem = stem if _DASH_SEASON_EPISODE_RE.match(stem) else _LEADING_IMPORT_INDEX_RE.sub("", stem, count=1)
 
     paren_match = _IMPORT_SEASON_EPISODE_PAREN_RE.match(working_stem)
     if paren_match:
@@ -1038,7 +1071,7 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
         episode_title = split.group("episode_title") if split else (paren_match.group("name") or "")
         return RenameFileInfo(
             path=path,
-            guessed_title=clean_filename_words(show_title),
+            guessed_title=rename_guess_title(path, show_title),
             season=int(paren_match.group("season")),
             episode=int(paren_match.group("episode")),
             existing_episode_title=clean_filename_words(episode_title),
@@ -1053,10 +1086,31 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
         if match:
             return RenameFileInfo(
                 path=path,
-                guessed_title=clean_filename_words(match.group("title")),
+                guessed_title=rename_guess_title(path, match.group("title")),
                 season=int(match.group("season")),
                 episode=int(match.group("episode")),
                 existing_episode_title=clean_filename_words(match.group("name") or ""),
+            )
+    dash_code = _DASH_SEASON_EPISODE_RE.match(working_stem)
+    if dash_code:
+        return RenameFileInfo(
+            path=path,
+            guessed_title=rename_guess_title(path, dash_code.group("title") or ""),
+            season=int(dash_code.group("season")),
+            episode=int(dash_code.group("episode")),
+            existing_episode_title=clean_filename_words(dash_code.group("name") or ""),
+        )
+    compact_code = _COMPACT_SEASON_EPISODE_RE.match(working_stem)
+    if compact_code:
+        parts = compact_episode_code_parts(compact_code.group("code"))
+        if parts is not None:
+            season, episode = parts
+            return RenameFileInfo(
+                path=path,
+                guessed_title=rename_guess_title(path, ""),
+                season=season,
+                episode=episode,
+                existing_episode_title=clean_filename_words(compact_code.group("name") or ""),
             )
     absolute = re.match(
         r"^(?P<title>.*?)[ ._-]+(?:EP?|Episode)[ ._-]*(?P<episode>\d{1,4})(?:[ ._-]+(?P<name>.*))?$", working_stem, re.I
@@ -1064,7 +1118,7 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
     if absolute:
         return RenameFileInfo(
             path=path,
-            guessed_title=clean_filename_words(absolute.group("title")),
+            guessed_title=rename_guess_title(path, absolute.group("title")),
             season=None,
             episode=int(absolute.group("episode")),
             existing_episode_title=clean_filename_words(absolute.group("name") or ""),
@@ -1077,7 +1131,7 @@ def parse_rename_file(path: Path) -> RenameFileInfo:
     if anime_release:
         return RenameFileInfo(
             path=path,
-            guessed_title=clean_filename_words(anime_release.group("title")),
+            guessed_title=rename_guess_title(path, anime_release.group("title")),
             season=None,
             episode=int(anime_release.group("episode")),
             existing_episode_title=clean_filename_words(anime_release.group("name") or ""),
@@ -3625,16 +3679,17 @@ class MediaWaveConverterWindow(QMainWindow):
         queue_layout.setContentsMargins(14, 12, 14, 12)
         queue_layout.setSpacing(8)
         queue_layout.addWidget(self.panel_heading("Clip Queue"))
-        self.clip_queue_table = QTableWidget(0, 3)
-        self.clip_queue_table.setHorizontalHeaderLabels(["Clip", "Review", "Why"])
+        self.clip_queue_table = QTableWidget(0, 4)
+        self.clip_queue_table.setHorizontalHeaderLabels(["Clip", "Duration", "Review", "Why"])
         self.clip_queue_table.horizontalHeader().setStretchLastSection(True)
         self.clip_queue_table.verticalHeader().setVisible(False)
         self.clip_queue_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.clip_queue_table.setSelectionBehavior(QAbstractItemView.SelectRows)
-        self.clip_queue_table.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.clip_queue_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.clip_queue_table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.clip_queue_table.setColumnWidth(0, 145)
-        self.clip_queue_table.setColumnWidth(1, 95)
+        self.clip_queue_table.setColumnWidth(1, 80)
+        self.clip_queue_table.setColumnWidth(2, 115)
         self.clip_queue_table.setMinimumHeight(175)
         self.clip_queue_table.itemSelectionChanged.connect(self.refresh_clip_review_buttons)
         self.clip_queue_table.cellDoubleClicked.connect(lambda _row, _column: self.preview_selected_clip())
@@ -3644,6 +3699,8 @@ class MediaWaveConverterWindow(QMainWindow):
         review_row.setSpacing(5)
         self.clip_preview_selected_button = QPushButton("Preview")
         self.clip_preview_selected_button.clicked.connect(self.preview_selected_clip)
+        self.clip_merge_selected_button = QPushButton("Merge Selected")
+        self.clip_merge_selected_button.clicked.connect(self.merge_selected_clips)
         self.clip_set_start_button = QPushButton("Set Start Here")
         self.clip_set_start_button.clicked.connect(lambda: self.adjust_selected_clip("start"))
         self.clip_set_end_button = QPushButton("Set End Here")
@@ -3651,9 +3708,10 @@ class MediaWaveConverterWindow(QMainWindow):
         self.clip_remove_selected_button = QPushButton("Remove")
         self.clip_remove_selected_button.clicked.connect(self.remove_selected_clip)
         review_row.addWidget(self.clip_preview_selected_button, 0, 0)
-        review_row.addWidget(self.clip_remove_selected_button, 0, 1)
-        review_row.addWidget(self.clip_set_start_button, 1, 0)
-        review_row.addWidget(self.clip_set_end_button, 1, 1)
+        review_row.addWidget(self.clip_merge_selected_button, 0, 1)
+        review_row.addWidget(self.clip_remove_selected_button, 1, 0)
+        review_row.addWidget(self.clip_set_start_button, 2, 0)
+        review_row.addWidget(self.clip_set_end_button, 2, 1)
         queue_layout.addLayout(review_row)
         self.refresh_clip_review_buttons()
 
@@ -3696,6 +3754,7 @@ class MediaWaveConverterWindow(QMainWindow):
             ("Right", lambda: self.seek_clip_player(10)),
             ("Return", self.export_clips),
             ("Enter", self.export_clips),
+            ("M", self.merge_selected_clips),
             ("Esc", self.cancel_active_clip_marker),
         ]
         for key, handler in shortcuts:
@@ -3760,9 +3819,9 @@ class MediaWaveConverterWindow(QMainWindow):
 
     def update_smart_detect_help(self, preset_name: str) -> None:
         descriptions = {
-            "Lax": "Fewer suggestions with stronger evidence. Best when the compilation has clear breaks.",
-            "Normal": "Balanced black-frame, audio-dip, and scene-change evidence. Recommended starting point.",
-            "Aggressive": "More suggestions, including low-confidence scene or audio clues. Expect false positives.",
+            "Conservative": "Fewer cuts with stronger transition evidence. Best when you want complete commercial blocks.",
+            "Normal": "Balanced, with safer defaults to avoid splitting commercials halfway through.",
+            "Aggressive": "More suggestions, including lower-confidence clues. Expect extra review.",
         }
         self.smart_detect_help.setText(
             f"{descriptions.get(preset_name, descriptions['Normal'])} Suggestions are drafts—review them before export."
@@ -3878,14 +3937,19 @@ class MediaWaveConverterWindow(QMainWindow):
             QTimer.singleShot(0, self.close)
 
     def selected_clip_index(self) -> int | None:
+        rows = self.selected_clip_indices()
+        return rows[0] if rows else None
+
+    def selected_clip_indices(self) -> list[int]:
         rows = self.clip_queue_table.selectionModel().selectedRows()
-        return rows[0].row() if rows else None
+        return sorted(row.row() for row in rows)
 
     def refresh_clip_review_buttons(self) -> None:
-        selected = self.selected_clip_index() if hasattr(self, "clip_queue_table") else None
+        selected_indices = self.selected_clip_indices() if hasattr(self, "clip_queue_table") else []
         detecting = bool(self.smart_detect_worker and self.smart_detect_worker.isRunning())
         exporting = bool(self.clip_export_worker and self.clip_export_worker.isRunning())
-        enabled = selected is not None and not detecting and not exporting
+        single_enabled = len(selected_indices) == 1 and not detecting and not exporting
+        merge_enabled = len(selected_indices) >= 2 and not detecting and not exporting
         for button_name in (
             "clip_preview_selected_button",
             "clip_set_start_button",
@@ -3893,7 +3957,9 @@ class MediaWaveConverterWindow(QMainWindow):
             "clip_remove_selected_button",
         ):
             if hasattr(self, button_name):
-                getattr(self, button_name).setEnabled(enabled)
+                getattr(self, button_name).setEnabled(single_enabled)
+        if hasattr(self, "clip_merge_selected_button"):
+            self.clip_merge_selected_button.setEnabled(merge_enabled)
 
     def preview_selected_clip(self) -> None:
         index = self.selected_clip_index()
@@ -3930,6 +3996,24 @@ class MediaWaveConverterWindow(QMainWindow):
         self.clip_export_status.setText(f"Removed Clip {index + 1:03d} from the queue.")
         next_row = min(index, len(self.clip_queue) - 1)
         self.refresh_clip_queue_ui(select_row=next_row if next_row >= 0 else None)
+
+    def merge_selected_clips(self) -> None:
+        indices = self.selected_clip_indices()
+        if len(indices) < 2:
+            return
+        try:
+            merged = self.clip_queue.merge_indices(indices)
+        except NonAdjacentClipMergeError:
+            QMessageBox.warning(self, "Merge Clips", "Only adjacent clips can be merged.")
+            return
+        except InvalidClipRange as exc:
+            QMessageBox.warning(self, "Merge Clips", str(exc))
+            return
+        self.clip_export_status.setText(
+            f"Merged {len(indices)} clips into {format_timestamp(merged.start_seconds)} - "
+            f"{format_timestamp(merged.end_seconds)}."
+        )
+        self.refresh_clip_queue_ui(select_row=indices[0])
 
     def update_clip_position(self, position_ms: int) -> None:
         if not self.clip_position_slider.isSliderDown():
@@ -4044,14 +4128,18 @@ class MediaWaveConverterWindow(QMainWindow):
             if clip.origin == "Smart suggestion":
                 review_text = f"Smart suggestion • {confidence_label(clip.confidence or 0.0)}"
                 reason_text = ", ".join(clip.reasons) or "possible boundary"
+            elif clip.origin == "Merged":
+                review_text = "Merged"
+                reason_text = ", ".join(clip.reasons) or "Combined selected clips"
             else:
                 review_text = "Manual"
                 reason_text = "Marked by you"
             self.clip_queue_table.setItem(row, 0, QTableWidgetItem(range_text))
+            self.clip_queue_table.setItem(row, 1, QTableWidgetItem(format_timestamp(clip.duration)))
             review_item = QTableWidgetItem(review_text)
             review_item.setToolTip(review_text)
-            self.clip_queue_table.setItem(row, 1, review_item)
-            self.clip_queue_table.setItem(row, 2, QTableWidgetItem(reason_text))
+            self.clip_queue_table.setItem(row, 2, review_item)
+            self.clip_queue_table.setItem(row, 3, QTableWidgetItem(reason_text))
         if len(self.clip_queue):
             target_row = select_row if select_row is not None else prior_selection
             if target_row is not None and 0 <= target_row < len(self.clip_queue):
@@ -5123,7 +5211,7 @@ class MediaWaveConverterWindow(QMainWindow):
         settings = load_json(SETTINGS_FILE, {})
         self.source_edit.setText(settings.get("source_root", ""))
         self.output_edit.setText(settings.get("output_root", ""))
-        aspect = LEGACY_ASPECT_LABELS.get(settings.get("aspect_label", ""), settings.get("aspect_label", "Classic TV"))
+        aspect = normalize_aspect_label(settings.get("aspect_label", "4:3"))
         if aspect in ASPECT_CHOICES:
             self.aspect_combo.setCurrentText(aspect)
         self.sync_advanced_size_options()
@@ -5181,6 +5269,8 @@ class MediaWaveConverterWindow(QMainWindow):
         if clip_mode in {"Accurate Cut", "Fast Cut"}:
             self.clip_mode_combo.setCurrentText(clip_mode)
         smart_preset = settings.get("smart_detect_preset", "Normal")
+        if smart_preset == "Lax":
+            smart_preset = "Conservative"
         if smart_preset in SMART_DETECT_PRESETS:
             self.smart_detect_preset_combo.setCurrentText(smart_preset)
         self.smart_detect_min_spin.setValue(int(settings.get("smart_detect_min_seconds", 5)))
@@ -6102,7 +6192,7 @@ class MediaWaveConverterWindow(QMainWindow):
             return ConversionOptions(
                 source_root=Path(payload["source_root"]),
                 output_root=Path(payload["output_root"]),
-                aspect_label=payload["aspect_label"],
+                aspect_label=normalize_aspect_label(payload["aspect_label"]),
                 target_width=int(payload["target_width"]),
                 target_height=int(payload["target_height"]),
                 framing_mode=payload.get("framing_mode", "Keep More Picture"),
@@ -6524,7 +6614,7 @@ class MediaWaveConverterWindow(QMainWindow):
             return
         self.source_edit.setText(str(options.source_root))
         self.output_edit.setText(str(options.output_root))
-        self.aspect_combo.setCurrentText(options.aspect_label)
+        self.aspect_combo.setCurrentText(normalize_aspect_label(options.aspect_label))
         self.framing_mode_combo.setCurrentText(options.framing_mode)
         self.sync_advanced_size_options()
         self.framing_combo.setCurrentText(options.framing_mode)

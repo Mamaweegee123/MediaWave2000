@@ -28,13 +28,17 @@ class SmartDetectPreset:
     silence_duration: float
     merge_seconds: float
     max_suggestions: int
+    minimum_clip_seconds: float = 5.0
+    minimum_suggestion_confidence: float = 0.0
+    short_gap_merge_seconds: float = 0.0
 
 
 PRESETS = {
-    "Lax": SmartDetectPreset("Lax", 0.70, 0.48, 0.18, "-42dB", 0.40, 1.5, 30),
-    "Normal": SmartDetectPreset("Normal", 0.50, 0.36, 0.12, "-36dB", 0.25, 1.0, 50),
-    "Aggressive": SmartDetectPreset("Aggressive", 0.20, 0.25, 0.08, "-30dB", 0.15, 0.6, 80),
+    "Conservative": SmartDetectPreset("Conservative", 0.82, 0.44, 0.35, "-40dB", 0.35, 2.0, 25, 12.0, 0.78, 6.0),
+    "Normal": SmartDetectPreset("Normal", 0.74, 0.40, 0.22, "-38dB", 0.30, 1.75, 40, 8.0, 0.68, 4.0),
+    "Aggressive": SmartDetectPreset("Aggressive", 0.20, 0.25, 0.08, "-30dB", 0.15, 0.6, 80, 1.0, 0.0, 1.0),
 }
+PRESET_ALIASES = {"Lax": "Conservative"}
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,10 @@ def confidence_label(confidence: float) -> str:
     if confidence >= 0.50:
         return "Medium confidence"
     return "Low confidence"
+
+
+def normalize_preset_name(preset_name: str) -> str:
+    return PRESET_ALIASES.get(preset_name, preset_name)
 
 
 def boundary_confidence(signals: Sequence[str]) -> float:
@@ -143,11 +151,15 @@ def build_suggestions(
     maximum_seconds: float = 300.0,
 ) -> list[SmartSuggestion]:
     """Turn mockable detection events into bounded, reviewable clip drafts."""
+    preset_name = normalize_preset_name(preset_name)
     if preset_name not in PRESETS:
         raise ValueError(f"Unknown Smart Detect preset: {preset_name}")
     if duration_seconds <= 0 or minimum_seconds <= 0 or maximum_seconds < minimum_seconds:
         raise ValueError("Smart Detect duration limits are invalid.")
     preset = PRESETS[preset_name]
+    minimum_seconds = max(minimum_seconds, preset.minimum_clip_seconds)
+    if maximum_seconds < minimum_seconds:
+        raise ValueError("Smart Detect duration limits are invalid for this preset.")
     boundaries = merge_nearby_boundaries(events, within_seconds=preset.merge_seconds)
     accepted = [boundary for boundary in boundaries if boundary.confidence >= preset.boundary_threshold]
     accepted = [
@@ -178,6 +190,8 @@ def build_suggestions(
         elif clip_duration > 120.0:
             score -= 0.08
         score = max(0.0, min(0.99, score))
+        if score < preset.minimum_suggestion_confidence:
+            continue
         signal_names = sorted({signal for boundary in evidence for signal in boundary.signals})
         reasons = tuple(REASON_LABELS.get(signal, signal) for signal in signal_names)
         suggestions.append(
@@ -190,10 +204,40 @@ def build_suggestions(
             )
         )
 
+    suggestions = merge_short_gap_suggestions(suggestions, within_seconds=preset.short_gap_merge_seconds)
     if len(suggestions) > preset.max_suggestions:
         suggestions = sorted(suggestions, key=lambda item: item.confidence, reverse=True)[: preset.max_suggestions]
         suggestions.sort(key=lambda item: item.start_seconds)
     return suggestions
+
+
+def merge_short_gap_suggestions(
+    suggestions: Sequence[SmartSuggestion],
+    *,
+    within_seconds: float,
+) -> list[SmartSuggestion]:
+    if within_seconds <= 0:
+        return list(suggestions)
+    ordered = sorted(suggestions, key=lambda item: (item.start_seconds, item.end_seconds))
+    if not ordered:
+        return []
+    merged: list[SmartSuggestion] = [ordered[0]]
+    for suggestion in ordered[1:]:
+        previous = merged[-1]
+        gap = suggestion.start_seconds - previous.end_seconds
+        if 0 < gap <= within_seconds:
+            confidence = max(previous.confidence, suggestion.confidence)
+            reasons = tuple(dict.fromkeys((*previous.reasons, *suggestion.reasons)))
+            merged[-1] = SmartSuggestion(
+                start_seconds=previous.start_seconds,
+                end_seconds=suggestion.end_seconds,
+                confidence=confidence,
+                confidence_label=confidence_label(confidence),
+                reasons=reasons,
+            )
+        else:
+            merged.append(suggestion)
+    return merged
 
 
 BLACK_RE = re.compile(
@@ -254,7 +298,7 @@ def build_video_detection_command(
     source_path: Path,
     preset_name: str,
 ) -> list[str]:
-    preset = PRESETS[preset_name]
+    preset = PRESETS[normalize_preset_name(preset_name)]
     video_filter = (
         f"blackdetect=d={preset.black_duration}:pix_th=0.10,"
         f"select=gt(scene\\,{preset.scene_threshold}),showinfo"
@@ -282,7 +326,7 @@ def build_audio_detection_command(
     source_path: Path,
     preset_name: str,
 ) -> list[str]:
-    preset = PRESETS[preset_name]
+    preset = PRESETS[normalize_preset_name(preset_name)]
     return [
         ffmpeg_path,
         "-hide_banner",
@@ -321,6 +365,7 @@ def detect_commercial_suggestions(
     runner: CommandRunner = subprocess.run,
 ) -> SmartDetectResult:
     """Scan media without writing files and return suggested commercial clips."""
+    preset_name = normalize_preset_name(preset_name)
     if preset_name not in PRESETS:
         raise ValueError(f"Unknown Smart Detect preset: {preset_name}")
     if not source_path.is_file():

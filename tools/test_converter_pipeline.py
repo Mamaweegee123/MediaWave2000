@@ -40,7 +40,7 @@ def make_options(
     return ConversionOptions(
         source_root=Path("/tmp/source"),
         output_root=Path("/tmp/output"),
-        aspect_label="Widescreen",
+        aspect_label="16:9",
         target_width=1280,
         target_height=720,
         framing_mode=framing_mode,
