@@ -261,3 +261,82 @@ def commercials_summary_label(dialog, channel_name):
     extra_keys = set(override.keys()) - {"enabled_mode"}
     truthy_extra = any(override.get(key) for key in extra_keys)
     return "Custom" if truthy_extra else "Default"
+
+
+def card_commercials_status(dialog, channel_name):
+    """The short, lowercase line a Channel Studio card shows for
+    commercial status -- same three states as commercials_summary_label,
+    just card-length phrasing ("shared commercials" instead of
+    "Default", to match the card's existing "N shows · commercials off"
+    style headline text).
+    """
+    label = commercials_summary_label(dialog, channel_name)
+    return {"Default": "shared commercials", "Off": "commercials off", "Custom": "custom commercials"}.get(
+        label, "shared commercials"
+    )
+
+
+def commercial_library_status(dialog):
+    """Best-effort description of the shared commercial library's real
+    state. A live clip count when reachable -- load_or_refresh_
+    commercial_library (channelsurfer2000.py) populates
+    `commercial_library` on the MAIN app object, not on this dialog,
+    and there's no dedicated accessor for it, so this reaches through
+    `dialog.parent()` (the main app -- see how AdvancedConfigDialog is
+    always constructed with `self` as its Qt parent in
+    open_advanced_configuration). Falls back to calm, still-accurate
+    text (off / no folder set / configured) when the count isn't
+    reachable, rather than guessing a number.
+    """
+    commercials_settings = getattr(dialog, "commercials_settings", None) or {}
+    if not commercials_settings.get("enabled"):
+        return "Shared library: commercials are off"
+    if not str(commercials_settings.get("root_folder", "") or "").strip():
+        return "Shared library: no folder configured yet"
+    parent = getattr(dialog, "parent", None)
+    main_app = parent() if callable(parent) else None
+    library = getattr(main_app, "commercial_library", None)
+    if isinstance(library, list):
+        count = len(library)
+        return f"Shared library: {count} clip" + ("s" if count != 1 else "")
+    return "Shared library: configured"
+
+
+def channel_timed_breaks_label(dialog, channel_name):
+    """"On"/"Off" for whether this channel's EFFECTIVE commercial mode
+    is timed mid-episode breaks (mode == "timed_midroll" -- a real
+    existing value in COMMERCIAL_MODES, channelsurfer2000.py, not an
+    invented proxy). Uses the channel's own override mode when Custom
+    is active and it sets one, otherwise the shared global mode --
+    mirrors exactly what resolve_channel_commercial_profile does when
+    building this channel's real schedule.
+    """
+    commercials_settings = getattr(dialog, "commercials_settings", None) or {}
+    overrides = getattr(dialog, "channel_commercial_overrides", None) or {}
+    override = overrides.get(channel_name) or {}
+    enabled_mode = str(override.get("enabled_mode", "inherit") or "inherit")
+    if enabled_mode == "on" and override.get("mode"):
+        effective_mode = override["mode"]
+    else:
+        effective_mode = commercials_settings.get("mode", "between_episodes")
+    return "On" if effective_mode == "timed_midroll" else "Off"
+
+
+def channel_override_summary(dialog, channel_name):
+    """A short description of what's actually stored in this channel's
+    commercial override entry, or "None" if there isn't one yet --
+    what the "Channel override:" status line shows.
+    """
+    overrides = getattr(dialog, "channel_commercial_overrides", None) or {}
+    override = overrides.get(channel_name) or {}
+    if not override:
+        return "None"
+    mode = str(override.get("enabled_mode", "inherit") or "inherit")
+    if mode == "off":
+        return "Commercials off"
+    if mode == "on":
+        return "Custom commercial settings"
+    extra_keys = set(override.keys()) - {"enabled_mode"}
+    if any(override.get(key) for key in extra_keys):
+        return "Custom preferences"
+    return "None"
