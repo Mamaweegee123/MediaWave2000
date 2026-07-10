@@ -11,13 +11,27 @@ disk directly.
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QCheckBox, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from . import channel_actions
 from .channel_studio_cards import build_drafts_section
 from .channel_studio_widgets import build_info_card, build_schedule_timeline
+from .studio_styles import style_choice_button
 
-_COMMERCIALS_MODE_LABELS = {"inherit": "Default", "on": "Custom (on)", "off": "Off"}
+# Local (and NetTV, which reuses the exact same override mechanism --
+# see resolve_channel_commercial_profile in channelsurfer2000.py, which
+# doesn't distinguish channel type) commercial mode copy, matched to
+# the three real states commercials_summary_label ever returns.
+_COMMERCIALS_MODE_COPY = {
+    "Default": "Use the shared commercial library.",
+    "Off": "Do not play commercials on this channel.",
+    "Custom": "Use this channel's own commercial settings.",
+}
+_NETTV_COMMERCIALS_MODE_COPY = {
+    "Default": "Play short commercial breaks between videos, pulled from the shared commercial library.",
+    "Off": "Skip commercial breaks between videos on this channel.",
+    "Custom": "Use NetTV's own commercial settings for the breaks between videos.",
+}
 
 
 def _companion_type(channel_info, summary):
@@ -65,15 +79,16 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
     enabled_layout.addWidget(box)
     layout.addWidget(enabled_card)
 
-    if companion_type:
-        commercials_label = "Not applicable"
-    else:
-        commercials_label = channel_actions.commercials_summary_label(dialog, channel_name)
+    # NetTV shares the real commercial-override mechanism with local
+    # channels (see build_commercials_section's docstring for why) --
+    # only WeatherStar/RadioWaveTV are genuinely "not applicable".
+    commercials_supported = not companion_type or companion_type == "youtube"
+    commercials_label = channel_actions.commercials_summary_label(dialog, channel_name) if commercials_supported else "Not applicable"
     layout.addWidget(
         build_info_card(
             f"Commercials: {commercials_label}",
-            None if companion_type else "See the Commercials section for per-channel controls.",
-            buttons=None if companion_type else [("Go to Commercials", lambda checked=False: on_navigate_commercials())],
+            None if not commercials_supported else "See the Commercials section for per-channel controls.",
+            buttons=None if not commercials_supported else [("Go to Commercials", lambda checked=False: on_navigate_commercials())],
         )
     )
 
@@ -141,58 +156,93 @@ def build_logo_section(dialog, channel_info, summary):
 
 
 def build_commercials_section(dialog, channel_info, summary):
+    """Commercials Setup v2 -- a real control panel, not a placeholder.
+
+    Local channels and NetTV (channel_type "youtube") share the exact
+    same three-state control: NetTV's per-video filler breaks are
+    resolved through resolve_channel_commercial_profile the same way a
+    local channel's scheduled breaks are (channelsurfer2000.py), so the
+    same channel_actions.py helpers apply safely -- only the copy
+    changes, since NetTV's "commercials" are short filler between
+    videos, not a scheduled program-break timeline.
+
+    WeatherStar and RadioWaveTV never touch commercial logic anywhere
+    in the app (confirmed: apply_channel_schedules only builds
+    schedules for channel_type == "media", and nothing else references
+    resolve_channel_commercial_profile for either type) -- so those two
+    stay informational-only, honestly, rather than offering controls
+    that would silently do nothing.
+    """
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setContentsMargins(2, 4, 2, 4)
     layout.setSpacing(10)
 
     companion_type = _companion_type(channel_info, summary)
-    if companion_type:
+    if companion_type in ("weatherstar", "radiowave"):
         layout.addWidget(
             build_info_card(
                 "Commercials don't apply here",
-                "Companion channels (WeatherStar, RadioWaveTV, NetTV) don't play commercial "
-                "breaks.",
+                "Commercials for this companion channel are managed by its own playback "
+                "mode there's no per-channel commercial setting to control.",
             )
         )
         layout.addStretch(1)
         return page
 
+    is_nettv = companion_type == "youtube"
+    mode_copy = _NETTV_COMMERCIALS_MODE_COPY if is_nettv else _COMMERCIALS_MODE_COPY
     channel_name = channel_info.get("name", "Channel")
 
     body = QWidget()
     body_layout = QVBoxLayout(body)
     body_layout.setContentsMargins(0, 0, 0, 0)
+    body_layout.setSpacing(10)
     layout.addWidget(body)
     layout.addStretch(1)
 
     def _render():
-        # Rebuilt in place (not a fresh page) so the mode label updates
-        # immediately after a button click without reopening Setup.
+        # Rebuilt in place (not a fresh page) so the status and the
+        # highlighted choice both update immediately after a click,
+        # without reopening Setup.
         while body_layout.count():
             item = body_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
 
-        commercials_settings = getattr(dialog, "commercials_settings", None) or {}
-        shared_enabled = bool(commercials_settings.get("enabled", False))
-        shared_status = "Shared library: commercials on" if shared_enabled else "Shared library: commercials off"
-        mode = channel_actions.channel_commercial_override_mode(dialog, channel_name)
-        mode_label = _COMMERCIALS_MODE_LABELS.get(mode, "Default")
+        mode = channel_actions.commercials_summary_label(dialog, channel_name)
+        description = mode_copy.get(mode, mode_copy["Default"])
+        if mode == "Default":
+            status_lines = [
+                channel_actions.commercial_library_status(dialog),
+                f"Timed breaks: {channel_actions.channel_timed_breaks_label(dialog, channel_name)}",
+                f"Channel override: {channel_actions.channel_override_summary(dialog, channel_name)}",
+            ]
+        else:
+            status_lines = []
+        if is_nettv:
+            status_lines.insert(0, "Applies to: short breaks between videos, not a full schedule")
 
         body_layout.addWidget(
-            build_info_card(
-                f"This channel: {mode_label}",
-                shared_status,
-                meta_lines=["Custom clips still come from the shared Commercials folder."],
-                buttons=[
-                    ("Use Default Commercials", lambda checked=False: _set_mode("inherit")),
-                    ("Disable Commercials For This Channel", lambda checked=False: _set_mode("off")),
-                    ("Customize For This Channel", lambda checked=False: _customize()),
-                ],
-            )
+            build_info_card(f"Commercials: {mode}", description, meta_lines=status_lines)
         )
+
+        choice_row = QWidget()
+        choice_layout = QHBoxLayout(choice_row)
+        choice_layout.setContentsMargins(0, 0, 0, 0)
+        choice_layout.setSpacing(8)
+        for choice_mode, choice_label, on_click in (
+            ("Default", "Use Default", lambda: _set_mode("inherit")),
+            ("Off", "Turn Off Commercials", lambda: _set_mode("off")),
+            ("Custom", "Customize This Channel", lambda: _customize()),
+        ):
+            btn = QPushButton(choice_label)
+            btn.setCursor(Qt.PointingHandCursor)
+            style_choice_button(btn, active=(mode == choice_mode))
+            btn.clicked.connect(lambda checked=False, action=on_click: action())
+            choice_layout.addWidget(btn, 1)
+        body_layout.addWidget(choice_row)
 
     def _set_mode(new_mode):
         channel_actions.set_channel_commercial_override_mode(dialog, channel_name, new_mode)
