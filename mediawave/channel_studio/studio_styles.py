@@ -134,6 +134,33 @@ def style_remove_button(button):
     return button
 
 
+def style_choice_button(button, active):
+    """One of a row of mutually-exclusive choice buttons (e.g. Commercials
+    Setup v2's Default/Off/Custom) — filled and bordered like
+    style_setup_button when it's the currently-active choice, a quieter
+    outline otherwise, so the user can tell which one is in effect
+    without reading the status text above it.
+    """
+    if active:
+        return style_setup_button(button)
+    button.setStyleSheet(
+        """
+        QPushButton {
+            background: rgba(255, 255, 255, 12);
+            border: 1px solid rgba(255, 255, 255, 60);
+            border-radius: 6px;
+            color: rgba(230, 235, 250, 220);
+            font-weight: 600;
+            padding: 5px 14px;
+        }
+        QPushButton:hover {
+            background: rgba(255, 255, 255, 24);
+        }
+        """
+    )
+    return button
+
+
 def schedule_row_badge_style(kind):
     """Inline stylesheet for a colored NOW/NEXT/LATER pill label.
     `kind` is one of "now", "next", "later".
