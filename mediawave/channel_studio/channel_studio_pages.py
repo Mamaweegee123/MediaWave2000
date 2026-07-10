@@ -295,6 +295,7 @@ def build_channel_studio_content(dialog):
                 on_set_logo=lambda checked=False, info=_channel_info_for(hero_summary): _open_logo(info),
                 enabled=_local_enabled(hero_summary.channel_id),
                 on_toggle_enabled=lambda checked, cid=hero_summary.channel_id: _toggle_local_enabled(cid, checked),
+                commercials_status=channel_actions.card_commercials_status(dialog, hero_summary.name),
             )
         )
 
@@ -347,6 +348,7 @@ def build_channel_studio_content(dialog):
                 on_set_logo=lambda checked=False, info=channel_info: _open_logo(info),
                 enabled=_local_enabled(summary.channel_id),
                 on_toggle_enabled=lambda checked, cid=summary.channel_id: _toggle_local_enabled(cid, checked),
+                commercials_status=channel_actions.card_commercials_status(dialog, summary.name),
             )
             entries.append((summary.channel_id, card))
         for summary in visible_companions:
