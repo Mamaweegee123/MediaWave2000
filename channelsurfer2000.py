@@ -111,14 +111,18 @@ from mediawave.channel_logos import (
     CHANNEL_BUG_CORNER_OPTIONS,
     CHANNEL_BUG_DURATION_OPTIONS,
     CHANNEL_BUG_INTERVAL_OPTIONS,
+    CHANNEL_BUG_OVERRIDE_MODES,
     CHANNEL_BUG_PLACEMENT_AREAS,
     CHANNEL_BUG_PLACEMENT_LABELS,
     CHANNEL_BUG_PREFERRED_NAMES,
     CHANNEL_BUG_SUPPORTED_EXTS,
     channel_bug_settings_defaults,
+    channel_logo_excluded_shows,
     get_effective_channel_logo_settings,
+    is_show_excluded,
     migrate_old_timing_fields as _migrate_old_timing_fields,
     normalize_channel_bug_settings,
+    pick_periodic_interval_minutes,
 )
 from mediawave.airing_rules import (
     AIRING_DAYS_OF_WEEK,
@@ -6483,6 +6487,7 @@ class ChannelBugOverlay(QWidget):
         self._hide_after_timer = QTimer(self)
         self._hide_after_timer.setSingleShot(True)
         self._hide_after_timer.timeout.connect(self._on_hide_after)
+        self._suppressed = False            # commercial / Vault / excluded-show -- see set_suppressed
         self.hide()
 
     # ── Configuration ───────────────────────────────────────────────────────
@@ -6539,13 +6544,16 @@ class ChannelBugOverlay(QWidget):
                 self._hide_after_timer.start(dur_ms)
                 triggered = True
             if timing.get("periodic"):
-                interval_ms = int(timing.get("periodic_interval_minutes", 10) or 10) * 60 * 1000
                 if not triggered and not timing.get("on_program_start"):
                     # Show immediately on tune only when periodic is the sole trigger.
                     # If on_program_start is also set, defer the first show to the program advance.
                     self._show_bug(True)
                     self._hide_after_timer.start(dur_ms)
-                self._periodic_timer.start(interval_ms)
+                # random_interval mode: single-shot, re-armed with a fresh
+                # random interval each time it fires (see _on_periodic_tick).
+                # Fixed mode keeps the original repeating timer untouched.
+                self._periodic_timer.setSingleShot(bool(timing.get("random_interval")))
+                self._periodic_timer.start(self._next_periodic_interval_ms(timing))
             # on_program_start: no immediate show on tune — waits for first program advance
 
     def on_program_start_trigger(self):
@@ -6586,11 +6594,36 @@ class ChannelBugOverlay(QWidget):
         else:
             self._set_composited_visible(self._visible_flag)
 
+    def set_suppressed(self, suppressed):
+        """Hard-hide while a commercial, Vault, or an excluded show is
+        playing -- the channel bug is for channel/program playback only.
+
+        Layered underneath the timing-mode state machine (_visible_flag)
+        rather than replacing it: lifting suppression just resumes
+        whatever the timing mode already decided, no extra trigger
+        needed. See _set_composited_visible for the actual gate --
+        every show path (guide/vault closing, a periodic tick, a tune)
+        funnels through there, so nothing can slip past this while
+        suppressed is True.
+        """
+        suppressed = bool(suppressed)
+        if suppressed == self._suppressed:
+            return
+        self._suppressed = suppressed
+        if suppressed:
+            self._opacity_anim = 0.0
+            self._fade_timer.stop()
+            self.hide()
+        else:
+            self._set_composited_visible(self._visible_flag)
+
     def _show_bug(self, show):
         self._visible_flag = show
         self._set_composited_visible(show)
 
     def _set_composited_visible(self, show):
+        if self._suppressed:
+            show = False
         if show:
             if self.parentWidget() is not None:
                 self.setGeometry(self.parentWidget().rect())
@@ -6621,6 +6654,10 @@ class ChannelBugOverlay(QWidget):
             self._opacity_anim += step if target > self._opacity_anim else -step
         self.update()
 
+    def _next_periodic_interval_ms(self, timing):
+        minutes = pick_periodic_interval_minutes(timing)
+        return max(1000, int(minutes * 60 * 1000))
+
     def _on_periodic_tick(self):
         timing = self._eff.get("timing") or {}
         dur_ms = int(timing.get("duration_seconds", 5) or 5) * 1000
@@ -6628,6 +6665,11 @@ class ChannelBugOverlay(QWidget):
         self._opacity_anim = 0.0
         self._show_bug(True)
         self._hide_after_timer.start(dur_ms)
+        if timing.get("random_interval"):
+            # Single-shot timer (set in on_channel_tune) -- re-arm with a
+            # fresh random interval so the gap between appearances varies
+            # cycle to cycle instead of settling into a fixed clock.
+            self._periodic_timer.start(self._next_periodic_interval_ms(timing))
 
     def _on_hide_after(self):
         self._show_bug(False)
@@ -22594,6 +22636,13 @@ class ChannelSurfer(QWidget):
         self._alert_poll_timer.setInterval(15000)  # check every 15s
         self._alert_poll_timer.timeout.connect(self._poll_alerts)
         self._alert_poll_timer.start()
+        # Catches a commercial break (or Vault entry) that starts mid-viewing --
+        # configure_channel_bug() already handles the tune/program-advance
+        # moments instantly; this just closes the gap in between.
+        self._channel_bug_suppression_timer = QTimer(self)
+        self._channel_bug_suppression_timer.setInterval(2000)
+        self._channel_bug_suppression_timer.timeout.connect(self._sync_channel_bug_suppression)
+        self._channel_bug_suppression_timer.start()
         self._queued_commercial_alerts = []
         self.guide_selection = 0
         self.loaded_media_channels = []
@@ -23741,12 +23790,14 @@ class ChannelSurfer(QWidget):
         if is_program_advance:
             # Same channel, different program — just fire the program-start trigger
             self.video_window.channel_bug.on_program_start_trigger()
+            self._sync_channel_bug_suppression()
             return
         settings = normalize_channel_bug_settings(self.app_settings.get("channel_bug", {}))
         root_path = getattr(ch, "root_path", "") if ch is not None else ""
         channel_name = getattr(ch, "name", "") if ch is not None else ""
         self.video_window.channel_bug.configure(settings, channel_name, root_path)
         self.video_window.channel_bug.on_channel_tune()
+        self._sync_channel_bug_suppression()
 
     def update_qol_setting(self, key, value, refresh=True):
         self.app_settings[key] = bool(value)
@@ -32774,6 +32825,46 @@ class ChannelSurfer(QWidget):
             return bool(entry.get("is_commercial") or entry.get("kind") in {"commercial", "promo", "bumper", "station_id"})
         except Exception:
             return False
+
+    def _sync_channel_bug_suppression(self):
+        """The channel bug is for channel/program playback only -- never
+        during a commercial break, never in Vault (on-demand), and never
+        over a show that's already been marked as having its own logo
+        baked in (see channel_actions.set_channel_logo_excluded_shows).
+
+        Called at channel tune / program advance (via configure_channel_bug)
+        for an immediate response, and on a lightweight periodic tick (see
+        _channel_bug_suppression_timer) so a commercial that starts
+        mid-viewing gets caught too, not just at the next tune.
+        """
+        if not hasattr(self, "video_window"):
+            return
+        bug = getattr(self.video_window, "channel_bug", None)
+        if bug is None:
+            return
+        is_vault = self.playback_mode == "ondemand"
+        is_commercial = self._is_currently_commercial()
+        is_excluded = False
+        if not is_vault and not is_commercial:
+            try:
+                if self.current_channel is not None and 0 <= self.current_channel < len(self.channels):
+                    channel = self.channels[self.current_channel]
+                    media_channel = (
+                        self.loaded_media_channels[self.current_channel]
+                        if self.current_channel < len(self.loaded_media_channels) else None
+                    )
+                    if media_channel is not None and hasattr(media_channel, "get_current_info"):
+                        info = media_channel.get_current_info() or {}
+                        entry = info.get("current_entry") or {}
+                        path = entry.get("path", "") if isinstance(entry, dict) else ""
+                        if path:
+                            show_key = parse_local_media(path).get("match_key", "")
+                            settings = normalize_channel_bug_settings(self.app_settings.get("channel_bug", {}))
+                            excluded = channel_logo_excluded_shows(settings, getattr(channel, "name", ""))
+                            is_excluded = is_show_excluded(excluded, show_key)
+            except Exception:
+                is_excluded = False
+        bug.set_suppressed(is_commercial or is_vault or is_excluded)
 
     def _on_fullscreen_alert_dismissed(self, alert_id):
         pass  # alert already marked shown before display; nothing extra needed
