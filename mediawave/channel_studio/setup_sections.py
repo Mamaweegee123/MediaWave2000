@@ -9,14 +9,31 @@ settings actually live on -- nothing here writes to app_settings or
 disk directly.
 """
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QCheckBox, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+import os
 
+from PySide6.QtCore import QUrl, Qt
+from PySide6.QtGui import QDesktopServices, QPixmap
+from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget
+
+from ..channel_logos import (
+    LOGO_TIMING_PRESETS,
+    logo_opacity_to_percent,
+    logo_percent_to_opacity,
+    logo_percent_to_size,
+    logo_size_to_percent,
+)
 from . import channel_actions
 from .channel_studio_cards import build_drafts_section
-from .channel_studio_widgets import build_info_card, build_schedule_timeline
-from .studio_styles import style_choice_button
+from .channel_studio_widgets import build_action_button_row, build_info_card, build_schedule_timeline
+from .logo_studio import LogoPreviewScreen, LogoTimingDialog, ShowExclusionsDialog
+from .studio_styles import style_choice_button, style_slider
+
+_LOGO_PREVIEW_REFERENCE_WIDTH = 1280.0
+_LOGO_MODE_DESCRIPTIONS = {
+    "Default": "Using the shared logo display settings.",
+    "Custom": "This channel has its own logo position, size, and timing.",
+    "Off": "The logo is turned off for this channel.",
+}
 
 # Local (and NetTV, which reuses the exact same override mechanism --
 # see resolve_channel_commercial_profile in channelsurfer2000.py, which
@@ -97,10 +114,26 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
 
 
 def build_logo_section(dialog, channel_info, summary):
+    """Logo Studio -- a compact interactive visual editor: drag the logo
+    around a simulated screen, resize/opacity via live sliders, pick a
+    timing mode from a dropdown. Every real change funnels through
+    channel_actions.py's channel_logo_* helpers into the exact same
+    channel_bug_settings["channel_overrides"] dict the old Channel Logos
+    (Advanced Configuration) tab's "Customize Individual Channels" dialog
+    already reads and writes -- that dialog is kept intact and reachable
+    here as "Advanced Logo Settings" for anything this panel doesn't
+    expose directly (placement area, per-field manual entry).
+
+    Deliberately a single compact screen, not a long scroll: the 9
+    timing modes live in one dropdown (LogoTimingDialog handles anything
+    finer-grained than a preset), and "Color effects" is a one-line note
+    rather than a card -- grayscale_on_video is the one real tint the
+    overlay supports, nothing else is offered as if it were real.
+    """
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setContentsMargins(2, 4, 2, 4)
-    layout.setSpacing(10)
+    layout.setSpacing(8)
 
     companion_type = _companion_type(channel_info, summary)
     if companion_type:
@@ -114,44 +147,265 @@ def build_logo_section(dialog, channel_info, summary):
         layout.addStretch(1)
         return page
 
-    logo_path = getattr(summary, "logo_path", "") if summary is not None else ""
     channel_name = channel_info.get("name", "Channel")
+    channel_id = channel_info.get("id", "")
+    root_path = getattr(summary, "root_path", "") if summary is not None else ""
+    logo_path = getattr(summary, "logo_path", "") if summary is not None else ""
+    pixmap = None
     if logo_path:
-        pixmap = QPixmap(logo_path)
-    else:
-        pixmap = None
+        candidate = QPixmap(logo_path)
+        if not candidate.isNull():
+            pixmap = candidate
 
-    if pixmap is not None and not pixmap.isNull():
-        preview = QLabel()
-        preview.setPixmap(pixmap.scaled(120, 120, Qt.KeepAspectRatio, Qt.SmoothTransformation))
-        preview.setAlignment(Qt.AlignCenter)
-        layout.addWidget(build_info_card(f"{channel_name}'s logo", None))
-        layout.addWidget(preview, 0, Qt.AlignLeft)
-    else:
-        layout.addWidget(
-            build_info_card(
-                "No logo detected yet",
-                "MediaWave2000 looks for a logo image in this channel's own Logos folder "
-                "(logo.png, bug.png, or a file named after the channel). Add one there and "
-                "it'll show up automatically the card doesn't need any changes here.",
-            )
+    note = QLabel("Drag the logo on the preview, or fine-tune it here.")
+    note.setObjectName("sectionNote")
+    note.setWordWrap(True)
+    layout.addWidget(note)
+
+    body = QHBoxLayout()
+    body.setSpacing(14)
+    body_wrap = QWidget()
+    body_wrap.setLayout(body)
+    layout.addWidget(body_wrap, 1)
+
+    preview = LogoPreviewScreen()
+    preview.set_logo(pixmap)
+    body.addWidget(preview, 3)
+
+    controls = QWidget()
+    controls_layout = QVBoxLayout(controls)
+    controls_layout.setContentsMargins(0, 0, 0, 0)
+    controls_layout.setSpacing(6)
+    body.addWidget(controls, 2)
+
+    # `state` holds the opacity/size the preview is currently showing --
+    # kept separate from the committed override so a slider drag can
+    # repaint the preview live without writing (and re-rendering the
+    # whole panel around) on every tick. Only sliderReleased commits.
+    state = {"opacity": 0.75, "size": 80}
+
+    def _sync_state_from_settings():
+        eff = channel_actions.channel_logo_effective_settings(dialog, channel_name)
+        state["opacity"] = float(eff.get("opacity", 0.75) or 0.75)
+        state["size"] = int(eff.get("size", 80) or 80)
+
+    def _preview_scale():
+        return max(1, preview.width()) / _LOGO_PREVIEW_REFERENCE_WIDTH
+
+    def _repaint_preview():
+        scale = _preview_scale()
+        logo_px = max(16, int(state["size"] * scale))
+        x, y = channel_actions.channel_logo_preview_position(
+            dialog, channel_name, preview.width(), preview.height(), logo_px, logo_px
+        )
+        preview.set_geometry_state(x, y, logo_px, logo_px, state["opacity"])
+
+    def _open_logos_folder():
+        target = os.path.join(root_path, "Logos") if root_path else ""
+        if not target or not os.path.isdir(target):
+            target = root_path or ""
+        if target and os.path.isdir(target):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(target))
+
+    def _on_drop(x, y, screen_w, screen_h, logo_w, logo_h):
+        # LogoPreviewScreen reports everything in preview-canvas pixels;
+        # unscale back to the same real-px space corner/margin/offset
+        # settings are stored in before handing off to channel_actions.
+        scale = _preview_scale()
+        channel_actions.set_channel_logo_position_from_drop(
+            dialog, channel_name,
+            x / scale, y / scale, screen_w / scale, screen_h / scale, logo_w / scale, logo_h / scale,
+        )
+        _full_render()
+
+    preview.resized.connect(_repaint_preview)
+    preview.logoDropped.connect(_on_drop)
+
+    def _clear_controls():
+        while controls_layout.count():
+            item = controls_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+
+    def _set_mode(mode):
+        channel_actions.set_channel_logo_override_mode(dialog, channel_name, mode)
+        _full_render()
+
+    def _apply_preset(preset_id):
+        channel_actions.apply_channel_logo_timing_preset(dialog, channel_name, preset_id)
+        _full_render()
+
+    def _reset():
+        channel_actions.reset_channel_logo_override(dialog, channel_name)
+        _full_render()
+
+    def _open_advanced():
+        channel_actions.open_logo_overrides_for_channel(dialog, channel_name)
+        _full_render()
+
+    def _open_advanced_timing():
+        eff = channel_actions.channel_logo_effective_settings(dialog, channel_name)
+        timing_dialog = LogoTimingDialog(eff.get("timing") or {}, parent=page)
+        if timing_dialog.exec() and timing_dialog.result_timing is not None:
+            channel_actions.set_channel_logo_override_fields(dialog, channel_name, timing=timing_dialog.result_timing)
+            _full_render()
+
+    def _open_show_exclusions():
+        shows = channel_actions.channel_logo_available_shows(dialog, channel_id)
+        excluded = channel_actions.channel_logo_excluded_shows(dialog, channel_name)
+        exclusions_dialog = ShowExclusionsDialog(shows, excluded, parent=page)
+        if exclusions_dialog.exec() and exclusions_dialog.result_excluded is not None:
+            channel_actions.set_channel_logo_excluded_shows(dialog, channel_name, exclusions_dialog.result_excluded)
+            _full_render()
+
+    def _preview_timing():
+        eff = channel_actions.channel_logo_effective_settings(dialog, channel_name)
+        preview.start_timing_preview(eff.get("timing") or {})
+
+    def _full_render():
+        _clear_controls()
+        _sync_state_from_settings()
+
+        mode = channel_actions.channel_logo_mode_label(dialog, channel_name)
+        preset_id = channel_actions.channel_logo_current_preset_id(dialog, channel_name)
+        preset_label = next((p["label"] for p in LOGO_TIMING_PRESETS if p["id"] == preset_id), "Custom")
+        status_lines = [
+            f"Opacity: {logo_opacity_to_percent(state['opacity'])}%",
+            f"Size: {logo_size_to_percent(state['size'])}%",
+            f"Timing: {preset_label}",
+        ]
+        controls_layout.addWidget(
+            build_info_card(f"Logo: {mode}", _LOGO_MODE_DESCRIPTIONS.get(mode, ""), meta_lines=status_lines)
         )
 
-    layout.addWidget(
-        build_info_card(
-            "Logo display",
-            "Corner, size, opacity, and timing use the shared default unless you customize "
-            "them for this channel specifically.",
-            buttons=[
-                (
-                    "Customize Logo Display",
-                    lambda checked=False: channel_actions.open_logo_overrides_for_channel(dialog, channel_name),
+        if pixmap is None:
+            controls_layout.addWidget(
+                build_info_card(
+                    "No logo image found",
+                    "Add a PNG to this channel's Logos folder and it'll show up automatically.",
+                    buttons=[("Open Logos Folder", lambda checked=False: _open_logos_folder())],
                 )
-            ],
-        )
-    )
+            )
 
-    layout.addStretch(1)
+        # A wrapping FlowLayout row (not a QHBoxLayout) so this row's own
+        # minimum width is just its widest single button, not the sum of
+        # both -- keeps the panel from forcing extra width under a
+        # larger UI scale or system font.
+        mode_row, mode_buttons = build_action_button_row(
+            [
+                ("Use Default", lambda checked=False: _set_mode("global")),
+                ("Off For This Channel", lambda checked=False: _set_mode("off")),
+            ]
+        )
+        for choice_mode, btn in zip(("Default", "Off"), mode_buttons):
+            btn.setCursor(Qt.PointingHandCursor)
+            style_choice_button(btn, active=(mode == choice_mode))
+        controls_layout.addWidget(mode_row)
+
+        opacity_label = QLabel(f"Opacity: {logo_opacity_to_percent(state['opacity'])}%")
+        opacity_label.setObjectName("fieldHelp")
+        opacity_slider = QSlider(Qt.Horizontal)
+        style_slider(opacity_slider)
+        opacity_slider.setRange(10, 100)
+        opacity_slider.setValue(logo_opacity_to_percent(state["opacity"]))
+
+        def _on_opacity_change(value, lbl=opacity_label):
+            lbl.setText(f"Opacity: {value}%")
+            state["opacity"] = logo_percent_to_opacity(value)
+            _repaint_preview()
+
+        def _on_opacity_released():
+            channel_actions.set_channel_logo_override_fields(dialog, channel_name, opacity=state["opacity"])
+            _full_render()
+
+        opacity_slider.valueChanged.connect(_on_opacity_change)
+        opacity_slider.sliderReleased.connect(_on_opacity_released)
+        controls_layout.addWidget(opacity_label)
+        controls_layout.addWidget(opacity_slider)
+
+        size_label = QLabel(f"Size: {logo_size_to_percent(state['size'])}%")
+        size_label.setObjectName("fieldHelp")
+        size_slider = QSlider(Qt.Horizontal)
+        style_slider(size_slider)
+        size_slider.setRange(0, 100)
+        size_slider.setValue(logo_size_to_percent(state["size"]))
+
+        def _on_size_change(value, lbl=size_label):
+            lbl.setText(f"Size: {value}%")
+            state["size"] = logo_percent_to_size(value)
+            _repaint_preview()
+
+        def _on_size_released():
+            channel_actions.set_channel_logo_override_fields(dialog, channel_name, size=state["size"])
+            _full_render()
+
+        size_slider.valueChanged.connect(_on_size_change)
+        size_slider.sliderReleased.connect(_on_size_released)
+        controls_layout.addWidget(size_label)
+        controls_layout.addWidget(size_slider)
+
+        eff = channel_actions.channel_logo_effective_settings(dialog, channel_name)
+        gray_check = QCheckBox("Show on-screen logo in grayscale")
+        gray_check.setToolTip("Grayscale only applies to the video overlay -- the Info screen logo stays full color.")
+        gray_check.setChecked(bool(eff.get("grayscale_on_video", False)))
+
+        def _on_gray_toggled(checked):
+            channel_actions.set_channel_logo_override_fields(dialog, channel_name, grayscale_on_video=checked)
+            _full_render()
+
+        gray_check.toggled.connect(_on_gray_toggled)
+        controls_layout.addWidget(gray_check)
+
+        color_note = QLabel("More effects later.")
+        color_note.setObjectName("fieldHelp")
+        controls_layout.addWidget(color_note)
+
+        timing_row = QWidget()
+        timing_row_layout = QHBoxLayout(timing_row)
+        timing_row_layout.setContentsMargins(0, 0, 0, 0)
+        timing_row_layout.setSpacing(6)
+        timing_row_layout.addWidget(QLabel("Timing:"))
+        timing_combo = QComboBox()
+        # The longest label ("Per-Show Start + Random Returns") would
+        # otherwise force the whole combo -- and the panel around it --
+        # wide enough to show it without eliding. Cap the box itself to
+        # a reasonable width; the full label is still visible in the
+        # open dropdown and as a tooltip.
+        timing_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        timing_combo.setMinimumContentsLength(14)
+        timing_combo.addItem("Custom", None)
+        for preset in LOGO_TIMING_PRESETS:
+            timing_combo.addItem(preset["label"], preset["id"])
+            idx = timing_combo.count() - 1
+            timing_combo.setItemData(idx, preset["description"], Qt.ToolTipRole)
+        match_index = timing_combo.findData(preset_id) if preset_id else 0
+        timing_combo.setCurrentIndex(match_index if match_index >= 0 else 0)
+        timing_combo.currentIndexChanged.connect(
+            lambda index, combo=timing_combo: _apply_preset(combo.itemData(index)) if combo.itemData(index) else None
+        )
+        timing_row_layout.addWidget(timing_combo, 1)
+        preview_btn = QPushButton("▶")
+        preview_btn.setFixedWidth(28)
+        preview_btn.setToolTip("Preview this timing in the simulated screen")
+        preview_btn.clicked.connect(lambda checked=False: _preview_timing())
+        timing_row_layout.addWidget(preview_btn)
+        controls_layout.addWidget(timing_row)
+
+        actions_row, _ = build_action_button_row(
+            [
+                ("Advanced Timing…", lambda checked=False: _open_advanced_timing()),
+                ("Show Exclusions…", lambda checked=False: _open_show_exclusions()),
+                ("Advanced Logo Settings", lambda checked=False: _open_advanced()),
+                ("Reset to Default", lambda checked=False: _reset()),
+            ]
+        )
+        controls_layout.addWidget(actions_row)
+
+        controls_layout.addStretch(1)
+        _repaint_preview()
+
+    _full_render()
     return page
 
 
