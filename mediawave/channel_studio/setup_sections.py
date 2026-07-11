@@ -13,15 +13,31 @@ import os
 
 from PySide6.QtCore import QUrl, Qt
 from PySide6.QtGui import QDesktopServices, QPixmap
-from PySide6.QtWidgets import QCheckBox, QComboBox, QHBoxLayout, QLabel, QPushButton, QSlider, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QComboBox,
+    QGridLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QSlider,
+    QVBoxLayout,
+    QWidget,
+)
 
 from ..channel_logos import (
     LOGO_TIMING_PRESETS,
+    LOGO_TIMING_PRESETS_DROPDOWN_IDS,
+    find_channel_bug_logo,
     logo_opacity_to_percent,
     logo_percent_to_opacity,
     logo_percent_to_size,
     logo_size_to_percent,
 )
+
+# The Timing dropdown's own public list -- see LOGO_TIMING_PRESETS_DROPDOWN_IDS's
+# docstring for why the other presets stay real without being offered here.
+_LOGO_TIMING_DROPDOWN_PRESETS = [p for p in LOGO_TIMING_PRESETS if p["id"] in LOGO_TIMING_PRESETS_DROPDOWN_IDS]
 from . import channel_actions
 from .channel_studio_cards import build_drafts_section
 from .channel_studio_widgets import build_action_button_row, build_info_card, build_schedule_timeline
@@ -150,7 +166,15 @@ def build_logo_section(dialog, channel_info, summary):
     channel_name = channel_info.get("name", "Channel")
     channel_id = channel_info.get("id", "")
     root_path = getattr(summary, "root_path", "") if summary is not None else ""
-    logo_path = getattr(summary, "logo_path", "") if summary is not None else ""
+    # A live lookup, not the summary's own logo_path snapshot -- that
+    # snapshot is taken once when Advanced Configuration is opened, so
+    # it can go stale (or miss a logo dropped in after the fact) while
+    # real playback (which calls this same function fresh every tune)
+    # keeps finding it. Falls back to the snapshot only if the live
+    # lookup comes up empty (e.g. root_path unavailable this session).
+    logo_path = find_channel_bug_logo(root_path, channel_name) or (
+        getattr(summary, "logo_path", "") if summary is not None else ""
+    )
     pixmap = None
     if logo_path:
         candidate = QPixmap(logo_path)
@@ -321,8 +345,6 @@ def build_logo_section(dialog, channel_info, summary):
 
         opacity_slider.valueChanged.connect(_on_opacity_change)
         opacity_slider.sliderReleased.connect(_on_opacity_released)
-        controls_layout.addWidget(opacity_label)
-        controls_layout.addWidget(opacity_slider)
 
         size_label = QLabel(f"Size: {logo_size_to_percent(state['size'])}%")
         size_label.setObjectName("fieldHelp")
@@ -342,8 +364,20 @@ def build_logo_section(dialog, channel_info, summary):
 
         size_slider.valueChanged.connect(_on_size_change)
         size_slider.sliderReleased.connect(_on_size_released)
-        controls_layout.addWidget(size_label)
-        controls_layout.addWidget(size_slider)
+
+        # Opacity and size side by side, not stacked -- Logo Studio's
+        # whole point is fitting the preview + controls on one screen,
+        # not a tall scrolling column.
+        slider_grid = QWidget()
+        slider_grid_layout = QGridLayout(slider_grid)
+        slider_grid_layout.setContentsMargins(0, 0, 0, 0)
+        slider_grid_layout.setHorizontalSpacing(20)
+        slider_grid_layout.setVerticalSpacing(2)
+        slider_grid_layout.addWidget(opacity_label, 0, 0)
+        slider_grid_layout.addWidget(size_label, 0, 1)
+        slider_grid_layout.addWidget(opacity_slider, 1, 0)
+        slider_grid_layout.addWidget(size_slider, 1, 1)
+        controls_layout.addWidget(slider_grid)
 
         eff = channel_actions.channel_logo_effective_settings(dialog, channel_name)
         gray_check = QCheckBox("Show on-screen logo in grayscale")
@@ -375,7 +409,7 @@ def build_logo_section(dialog, channel_info, summary):
         timing_combo.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
         timing_combo.setMinimumContentsLength(14)
         timing_combo.addItem("Custom", None)
-        for preset in LOGO_TIMING_PRESETS:
+        for preset in _LOGO_TIMING_DROPDOWN_PRESETS:
             timing_combo.addItem(preset["label"], preset["id"])
             idx = timing_combo.count() - 1
             timing_combo.setItemData(idx, preset["description"], Qt.ToolTipRole)

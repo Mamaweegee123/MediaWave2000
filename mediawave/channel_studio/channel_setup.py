@@ -23,6 +23,7 @@ from .studio_styles import SinglePageStackedWidget, build_scroll_area
 
 _SECTION_TITLES = ["Overview", "Logo", "Commercials", "Programming", "Advanced"]
 _OVERVIEW_SECTION_INDEX = 0
+_LOGO_SECTION_INDEX = 1
 _COMMERCIALS_SECTION_INDEX = 2
 
 
@@ -52,7 +53,10 @@ class ChannelSetupDialog(QDialog):
         self._drafts_path = drafts_path
         channel_name = channel_info.get("name", "Channel")
         self.setWindowTitle(channel_name)
-        self.resize(820, 540)
+        # Wide enough that Logo Studio's simulated screen + controls sit
+        # side-by-side without horizontal scroll -- see setup_sections.py's
+        # build_logo_section docstring for the layout that needs the room.
+        self.resize(1180, 620)
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(20, 18, 20, 16)
@@ -94,6 +98,12 @@ class ChannelSetupDialog(QDialog):
             # section (or the Enabled toggle, changed from a sibling
             # tab) doesn't look stale when the user comes back here.
             self._refresh_overview()
+        elif index == _LOGO_SECTION_INDEX:
+            # Logo Studio does a live logo-file lookup at build time, so
+            # rebuilding it here picks up a logo dropped into the
+            # channel's Logos folder after this Setup dialog was opened,
+            # not just at the next full reopen.
+            self._refresh_logo()
         self._stack.setCurrentIndex(index)
 
     def _refresh_overview(self):
@@ -103,6 +113,13 @@ class ChannelSetupDialog(QDialog):
         )
         self._stack.removeWidget(old_widget)
         self._stack.insertWidget(_OVERVIEW_SECTION_INDEX, new_widget)
+        old_widget.deleteLater()
+
+    def _refresh_logo(self):
+        old_widget = self._stack.widget(_LOGO_SECTION_INDEX)
+        new_widget = build_logo_section(self._studio_dialog, self._channel_info, self._summary)
+        self._stack.removeWidget(old_widget)
+        self._stack.insertWidget(_LOGO_SECTION_INDEX, new_widget)
         old_widget.deleteLater()
 
     def _go_to_commercials(self):
