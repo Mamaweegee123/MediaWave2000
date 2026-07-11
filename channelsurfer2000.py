@@ -118,6 +118,7 @@ from mediawave.channel_logos import (
     CHANNEL_BUG_SUPPORTED_EXTS,
     channel_bug_settings_defaults,
     channel_logo_excluded_shows,
+    find_channel_bug_logo,
     get_effective_channel_logo_settings,
     is_show_excluded,
     migrate_old_timing_fields as _migrate_old_timing_fields,
@@ -1428,62 +1429,6 @@ def gather_channel_shows(root_path, show_files):
         if len(results) >= 300:
             break
     return sorted(results, key=lambda x: x["title"].lower())
-
-
-def find_channel_bug_logo(root_path, channel_name):
-    """Discover the best logo image in <root_path>/Logos/.
-
-    Returns an absolute path string or "" if none found.
-    """
-    if not root_path:
-        return ""
-    logos_dir = os.path.join(root_path, "Logos")
-    if not os.path.isdir(logos_dir):
-        return ""
-    try:
-        entries = os.listdir(logos_dir)
-    except OSError:
-        return ""
-    lower_entries = {e.lower(): e for e in entries}
-
-    def candidate(name):
-        actual = lower_entries.get(name.lower())
-        if actual:
-            p = os.path.join(logos_dir, actual)
-            if os.path.isfile(p):
-                return p
-        return ""
-
-    # Exact preferred names
-    for name in CHANNEL_BUG_PREFERRED_NAMES:
-        c = candidate(name)
-        if c:
-            return c
-
-    # <channel_name>.png variants
-    safe_name = re.sub(r"[^\w\-. ]", "", channel_name or "").strip()
-    for ext in CHANNEL_BUG_SUPPORTED_EXTS:
-        c = candidate(f"{safe_name}{ext}")
-        if c:
-            return c
-
-    # Any supported image in Logos/, prefer PNG first
-    png_hits = []
-    other_hits = []
-    for entry in sorted(entries):
-        ext = os.path.splitext(entry)[1].lower()
-        if ext in CHANNEL_BUG_SUPPORTED_EXTS:
-            full = os.path.join(logos_dir, entry)
-            if os.path.isfile(full):
-                if ext == ".png":
-                    png_hits.append(full)
-                else:
-                    other_hits.append(full)
-    if png_hits:
-        return png_hits[0]
-    if other_hits:
-        return other_hits[0]
-    return ""
 
 
 def load_channel_bug_pixmap(root_path, channel_name, size):

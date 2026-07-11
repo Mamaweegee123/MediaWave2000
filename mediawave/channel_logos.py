@@ -1,10 +1,76 @@
 """Channel logo settings helpers for MediaWave."""
 
+import os
+import re
+
 
 CHANNEL_BUG_SUPPORTED_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 CHANNEL_BUG_PREFERRED_NAMES = ("logo.png", "channel.png", "bug.png")
 CHANNEL_BUG_CORNER_OPTIONS = ("top-left", "top-right", "bottom-left", "bottom-right")
 CHANNEL_BUG_OVERRIDE_MODES = ("global", "custom", "off")
+
+
+def find_channel_bug_logo(root_path, channel_name):
+    """Discover the best logo image in <root_path>/Logos/.
+
+    The single source of truth for channel logo discovery -- real
+    playback (ChannelBugOverlay.configure in channelsurfer2000.py) and
+    every UI that shows a logo preview (Channel Studio cards, Logo
+    Studio) all call this same function, so "logos work during
+    playback but Channel Studio can't find them" can't happen from a
+    second, weaker lookup drifting out of sync with this one.
+
+    Returns an absolute path string or "" if none found.
+    """
+    if not root_path:
+        return ""
+    logos_dir = os.path.join(root_path, "Logos")
+    if not os.path.isdir(logos_dir):
+        return ""
+    try:
+        entries = os.listdir(logos_dir)
+    except OSError:
+        return ""
+    lower_entries = {e.lower(): e for e in entries}
+
+    def candidate(name):
+        actual = lower_entries.get(name.lower())
+        if actual:
+            p = os.path.join(logos_dir, actual)
+            if os.path.isfile(p):
+                return p
+        return ""
+
+    # Exact preferred names
+    for name in CHANNEL_BUG_PREFERRED_NAMES:
+        c = candidate(name)
+        if c:
+            return c
+
+    # <channel_name>.png variants
+    safe_name = re.sub(r"[^\w\-. ]", "", channel_name or "").strip()
+    for ext in CHANNEL_BUG_SUPPORTED_EXTS:
+        c = candidate(f"{safe_name}{ext}")
+        if c:
+            return c
+
+    # Any supported image in Logos/, prefer PNG first
+    png_hits = []
+    other_hits = []
+    for entry in sorted(entries):
+        ext = os.path.splitext(entry)[1].lower()
+        if ext in CHANNEL_BUG_SUPPORTED_EXTS:
+            full = os.path.join(logos_dir, entry)
+            if os.path.isfile(full):
+                if ext == ".png":
+                    png_hits.append(full)
+                else:
+                    other_hits.append(full)
+    if png_hits:
+        return png_hits[0]
+    if other_hits:
+        return other_hits[0]
+    return ""
 
 _TIMING_DEFAULTS = {
     "always_visible": False,
@@ -455,6 +521,17 @@ LOGO_TIMING_PRESETS = (
 )
 
 _LOGO_TIMING_PRESETS_BY_ID = {p["id"]: p for p in LOGO_TIMING_PRESETS}
+
+# The Timing dropdown's own, smaller public list -- everything else in
+# LOGO_TIMING_PRESETS stays real and stays in the lookup table (so a
+# channel already using one of the trimmed presets, or one loaded from
+# an older saved settings file, still resolves correctly), it's just
+# not offered as a fresh choice. logo_timing_preset_for_settings still
+# recognizes a trimmed preset's exact settings -- the dropdown is the
+# only thing that treats it as "no dropdown match", which the UI shows
+# as "Custom" (an honest description: the trimmed presets are still
+# real, specific settings, just not surfaced as a one-click choice).
+LOGO_TIMING_PRESETS_DROPDOWN_IDS = ("always", "show_start", "interval", "random_pop_in", "random_short_bumps")
 
 
 def logo_timing_preset_by_id(preset_id):
