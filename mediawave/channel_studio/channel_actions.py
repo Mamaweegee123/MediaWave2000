@@ -26,11 +26,24 @@ against a lightweight stand-in object (see tools/test_channel_studio.py)
 that only needs to duck-type the handful of attributes actually used.
 """
 
+from ..channel_logos import (
+    channel_logo_excluded_shows as _channel_logo_excluded_shows,
+    get_effective_channel_logo_settings,
+    logo_timing_preset_by_id,
+    logo_timing_preset_for_settings,
+    normalize_channel_bug_override,
+    normalize_channel_bug_settings,
+    normalize_show_exclusions,
+    position_to_corner_offsets,
+    resolve_logo_position,
+)
 from .companion_adapter import (
     COMPANION_TYPES,
     read_companion_snapshot,
     resequence_companion_numbers,
 )
+
+_LOGO_MODE_LABELS = {"global": "Default", "custom": "Custom", "off": "Off"}
 
 _COMPANION_ENABLED_ATTR = {
     "weatherstar": "weatherstar_enabled",
@@ -340,3 +353,175 @@ def channel_override_summary(dialog, channel_name):
     if any(override.get(key) for key in extra_keys):
         return "Custom preferences"
     return "None"
+
+
+# ── Logo Studio v1 ────────────────────────────────────────────────────────
+#
+# Same live-widget-sharing pattern as the commercials helpers above:
+# `dialog.channel_bug_settings` is the SAME dict My Catalog / Companion
+# Channels tabs would see, normalized on this dialog's construction (see
+# `self.channel_bug_settings = normalize_channel_bug_settings(...)` in
+# AdvancedConfigDialog.__init__). Its "channel_overrides" sub-dict is
+# exactly what ChannelLogoOverridesDialog itself reads and writes -- these
+# helpers write to the same place, so the two stay interchangeable.
+
+
+def channel_logo_global_settings(dialog):
+    """The live global channel-bug settings for this dialog session."""
+    return normalize_channel_bug_settings(getattr(dialog, "channel_bug_settings", None) or {})
+
+
+def channel_logo_effective_settings(dialog, channel_name):
+    """What would actually apply to this channel right now -- global
+    settings merged with its override, if any. Mirrors exactly what
+    ChannelBugOverlay.configure() computes for real playback.
+    """
+    return get_effective_channel_logo_settings(channel_name, channel_logo_global_settings(dialog))
+
+
+def channel_logo_override_mode(dialog, channel_name):
+    """"global" / "custom" / "off" -- "global" if no override exists yet."""
+    settings = getattr(dialog, "channel_bug_settings", None) or {}
+    overrides = settings.get("channel_overrides") or {}
+    override = overrides.get(channel_name) or {}
+    return str(override.get("mode", "global") or "global")
+
+
+def channel_logo_mode_label(dialog, channel_name):
+    """"Default" / "Custom" / "Off" -- what the Logo Studio status card
+    shows for this channel's current mode.
+    """
+    return _LOGO_MODE_LABELS.get(channel_logo_override_mode(dialog, channel_name), "Default")
+
+
+def set_channel_logo_override_mode(dialog, channel_name, mode):
+    """Set just the mode ("global"/"custom"/"off"). Switching to "custom"
+    seeds the override from the channel's current effective settings so
+    controls start from where the logo already visually is, not from
+    the global defaults.
+    """
+    settings = getattr(dialog, "channel_bug_settings", None)
+    if not isinstance(settings, dict):
+        return
+    overrides = settings.setdefault("channel_overrides", {})
+    if mode == "custom":
+        seed = dict(channel_logo_effective_settings(dialog, channel_name))
+        seed["mode"] = "custom"
+        overrides[channel_name] = normalize_channel_bug_override(seed, channel_logo_global_settings(dialog))
+    else:
+        overrides[channel_name] = normalize_channel_bug_override({"mode": mode}, channel_logo_global_settings(dialog))
+
+
+def set_channel_logo_override_fields(dialog, channel_name, **fields):
+    """Merge `fields` (corner/opacity/size/margin/horizontal_offset/
+    vertical_offset/placement_area/grayscale_on_video/fade/timing) into
+    this channel's override, switching it to "custom" first if it wasn't
+    already -- dragging, resizing, or adjusting opacity implies the user
+    wants a custom setting for this channel. Unknown keys are silently
+    dropped by normalize_channel_bug_override, same as the old dialog.
+    """
+    settings = getattr(dialog, "channel_bug_settings", None)
+    if not isinstance(settings, dict):
+        return
+    overrides = settings.setdefault("channel_overrides", {})
+    current = overrides.get(channel_name) or {}
+    if current.get("mode") != "custom":
+        current = dict(channel_logo_effective_settings(dialog, channel_name))
+    else:
+        current = dict(current)
+    current["mode"] = "custom"
+    current.update(fields)
+    overrides[channel_name] = normalize_channel_bug_override(current, channel_logo_global_settings(dialog))
+
+
+def reset_channel_logo_override(dialog, channel_name):
+    """Remove this channel's override entirely -- back to "Use Default"."""
+    settings = getattr(dialog, "channel_bug_settings", None)
+    if not isinstance(settings, dict):
+        return
+    overrides = settings.get("channel_overrides")
+    if isinstance(overrides, dict):
+        overrides.pop(channel_name, None)
+
+
+def apply_channel_logo_timing_preset(dialog, channel_name, preset_id):
+    """Apply one of LOGO_TIMING_PRESETS's real timing (+ fade) settings to
+    this channel's override, switching it to "custom" if needed.
+    """
+    preset = logo_timing_preset_by_id(preset_id)
+    if preset is None:
+        return
+    fields = {"timing": dict(preset["timing"])}
+    if preset["fade"] is not None:
+        fields["fade"] = preset["fade"]
+    set_channel_logo_override_fields(dialog, channel_name, **fields)
+
+
+def channel_logo_current_preset_id(dialog, channel_name):
+    """Which LOGO_TIMING_PRESETS entry (if any) matches this channel's
+    current effective timing + fade -- None for a hand-tuned combo that
+    doesn't match a preset (the UI just shows nothing highlighted then).
+    """
+    eff = channel_logo_effective_settings(dialog, channel_name)
+    return logo_timing_preset_for_settings(eff.get("timing") or {}, eff.get("fade", True))
+
+
+def channel_logo_preview_position(dialog, channel_name, screen_w, screen_h, logo_w, logo_h):
+    """(x, y) top-left position for the preview, in whatever pixel unit
+    screen_w/screen_h/logo_w/logo_h are given in -- callers pass a scaled
+    preview-canvas size, not the real video window size.
+    """
+    eff = channel_logo_effective_settings(dialog, channel_name)
+    return resolve_logo_position(
+        eff.get("corner", "bottom-right"),
+        int(eff.get("horizontal_offset", 0) or 0),
+        int(eff.get("vertical_offset", 0) or 0),
+        screen_w, screen_h, logo_w, logo_h,
+        int(eff.get("margin", 18) or 18),
+    )
+
+
+def set_channel_logo_position_from_drop(dialog, channel_name, x, y, screen_w, screen_h, logo_w, logo_h):
+    """Convert a dropped preview position back to corner + offsets (see
+    position_to_corner_offsets) and write it to the channel's override.
+    """
+    eff = channel_logo_effective_settings(dialog, channel_name)
+    margin = int(eff.get("margin", 18) or 18)
+    corner, h_offset, v_offset = position_to_corner_offsets(x, y, screen_w, screen_h, logo_w, logo_h, margin)
+    set_channel_logo_override_fields(
+        dialog, channel_name,
+        corner=corner, horizontal_offset=h_offset, vertical_offset=v_offset,
+    )
+
+
+def channel_logo_available_shows(dialog, channel_id):
+    """The shows Airing Rules already knows about for this channel --
+    [{"title", "title_key", "media_type"}, ...] -- reused as-is for Show
+    Exclusions so it doesn't need its own discovery pass. Empty if the
+    catalog hasn't loaded shows for this channel yet.
+    """
+    lookup = getattr(dialog, "_channel_shows_lookup", None) or {}
+    return list(lookup.get(channel_id, None) or [])
+
+
+def channel_logo_excluded_shows(dialog, channel_name):
+    """The show keys this channel's logo is hidden for, regardless of
+    its Default/Custom/Off mode (see channel_logos.channel_logo_excluded_shows).
+    """
+    settings = getattr(dialog, "channel_bug_settings", None) or {}
+    return _channel_logo_excluded_shows(settings, channel_name)
+
+
+def set_channel_logo_excluded_shows(dialog, channel_name, show_keys):
+    """Write this channel's excluded-show list without disturbing its
+    mode (Default/Custom/Off) -- exclusions are orthogonal to those,
+    unlike opacity/size/timing which imply "Custom" (see
+    set_channel_logo_override_fields).
+    """
+    settings = getattr(dialog, "channel_bug_settings", None)
+    if not isinstance(settings, dict):
+        return
+    overrides = settings.setdefault("channel_overrides", {})
+    current = dict(overrides.get(channel_name) or {"mode": "global"})
+    current["excluded_shows"] = normalize_show_exclusions(show_keys)
+    overrides[channel_name] = normalize_channel_bug_override(current, channel_logo_global_settings(dialog))
