@@ -13,6 +13,13 @@ _TIMING_DEFAULTS = {
     "periodic": False,
     "duration_seconds": 5,
     "periodic_interval_minutes": 10,
+    # Random-interval periodic mode: when set, each periodic cycle picks a
+    # fresh interval within [interval_min_minutes, interval_max_minutes]
+    # instead of firing on a fixed clock. Chosen once per cycle (a handful
+    # of minutes apart at minimum), never per-frame, so it can't flicker.
+    "random_interval": False,
+    "interval_min_minutes": 5,
+    "interval_max_minutes": 20,
 }
 
 CHANNEL_BUG_DURATION_OPTIONS = [
@@ -42,13 +49,21 @@ def normalize_timing(t):
     if not isinstance(t, dict):
         t = {}
     result = dict(_TIMING_DEFAULTS)
-    for key in ("always_visible", "on_channel_tune", "on_program_start", "periodic"):
+    for key in ("always_visible", "on_channel_tune", "on_program_start", "periodic", "random_interval"):
         if key in t:
             result[key] = bool(t[key])
     if "duration_seconds" in t:
         result["duration_seconds"] = max(1, min(3600, int(t["duration_seconds"] or 5)))
     if "periodic_interval_minutes" in t:
         result["periodic_interval_minutes"] = max(1, min(120, int(t["periodic_interval_minutes"] or 10)))
+    if "interval_min_minutes" in t:
+        result["interval_min_minutes"] = max(1, min(120, int(t["interval_min_minutes"] or 5)))
+    if "interval_max_minutes" in t:
+        result["interval_max_minutes"] = max(1, min(120, int(t["interval_max_minutes"] or 20)))
+    if result["interval_max_minutes"] < result["interval_min_minutes"]:
+        result["interval_max_minutes"] = result["interval_min_minutes"]
+    if not result["periodic"]:
+        result["random_interval"] = False
     if result["always_visible"]:
         result["on_channel_tune"] = False
         result["on_program_start"] = False
@@ -118,6 +133,20 @@ def channel_bug_channel_defaults():
     }
 
 
+def normalize_show_exclusions(raw):
+    """A deduped, order-preserving list of non-empty show-key strings."""
+    if not isinstance(raw, (list, tuple)):
+        return []
+    seen = set()
+    result = []
+    for item in raw:
+        key = str(item or "").strip()
+        if key and key not in seen:
+            seen.add(key)
+            result.append(key)
+    return result
+
+
 def normalize_channel_bug_override(override, global_settings):
     if not isinstance(override, dict):
         return {"mode": "global"}
@@ -128,6 +157,13 @@ def normalize_channel_bug_override(override, global_settings):
         else:
             mode = "global"
     result = {"mode": mode}
+    # Show exclusions are independent of mode -- a channel can be in
+    # Default (global) logo mode and still hide the bug for specific
+    # shows that already have a network logo baked in (see
+    # channel_logo_excluded_shows / is_show_excluded below).
+    excluded_shows = normalize_show_exclusions(override.get("excluded_shows"))
+    if excluded_shows:
+        result["excluded_shows"] = excluded_shows
     if mode == "custom":
         gs = global_settings or {}
         result["corner"] = str(override.get("corner") or gs.get("corner", "bottom-right"))
@@ -208,3 +244,271 @@ def get_effective_channel_logo_settings(channel_name, global_settings):
         result["timing"] = normalize_timing(ch_override.get("timing") or gs.get("timing") or {})
         return result
     return dict(gs)
+
+
+def pick_periodic_interval_minutes(timing, rng=None):
+    """The number of minutes until the next periodic show.
+
+    Fixed `periodic_interval_minutes` unless `random_interval` is set, in
+    which case a fresh value is drawn from
+    [interval_min_minutes, interval_max_minutes] -- callers are expected to
+    call this once per cycle (when a periodic timer (re)starts), not per
+    frame, so the result only changes a handful of times per hour at most.
+
+    `rng` takes any object with a `.uniform(a, b)` method (e.g. `random`,
+    or a `random.Random(seed)` for deterministic tests); defaults to the
+    stdlib `random` module.
+    """
+    t = timing if isinstance(timing, dict) else {}
+    if not t.get("random_interval"):
+        return max(1, int(t.get("periodic_interval_minutes", 10) or 10))
+    lo = max(1, int(t.get("interval_min_minutes", 5) or 5))
+    hi = max(lo, int(t.get("interval_max_minutes", 20) or 20))
+    if rng is None:
+        import random as rng
+    return rng.uniform(lo, hi)
+
+
+# ── Logo Studio v1: simulated-screen position math ──────────────────────────
+#
+# The overlay positions the logo by corner + margin + horizontal/vertical
+# offset (see ChannelBugOverlay.paintEvent in channelsurfer2000.py) -- never
+# raw x/y. These two functions are the exact same math, factored out so the
+# Logo Studio preview widget can convert a drag position to real settings
+# (and back) without duplicating or drifting from the real overlay's layout.
+#
+# Both operate in one consistent unit space (e.g. real screen pixels, or a
+# scaled-down preview-canvas pixel space -- callers pick the space and stay
+# consistent within a single call).
+
+LOGO_OFFSET_RANGE = (-240, 240)
+LOGO_MARGIN_RANGE = (0, 120)
+LOGO_SIZE_RANGE = (32, 256)
+
+
+def resolve_logo_position(corner, horizontal_offset, vertical_offset, screen_w, screen_h, logo_w, logo_h, margin):
+    """(x, y) top-left position of the logo, clamped inside the screen --
+    identical formula to ChannelBugOverlay.paintEvent.
+    """
+    if "right" in corner:
+        x = screen_w - logo_w - margin
+    else:
+        x = margin
+    if "bottom" in corner:
+        y = screen_h - logo_h - margin
+    else:
+        y = margin
+    x += horizontal_offset
+    y += vertical_offset
+    x = max(0, min(x, screen_w - logo_w))
+    y = max(0, min(y, screen_h - logo_h))
+    return x, y
+
+
+def position_to_corner_offsets(x, y, screen_w, screen_h, logo_w, logo_h, margin):
+    """Inverse of resolve_logo_position: given a dropped top-left position,
+    pick the nearest corner (by which quadrant the logo's center falls in)
+    and the horizontal/vertical offset that reproduces that exact position
+    from that corner + margin, clamped to the supported offset range.
+    """
+    cx = x + logo_w / 2.0
+    cy = y + logo_h / 2.0
+    corner = ("bottom" if cy >= screen_h / 2.0 else "top") + "-" + ("right" if cx >= screen_w / 2.0 else "left")
+
+    lo, hi = LOGO_OFFSET_RANGE
+    if "right" in corner:
+        h_offset = x - (screen_w - logo_w - margin)
+    else:
+        h_offset = x - margin
+    if "bottom" in corner:
+        v_offset = y - (screen_h - logo_h - margin)
+    else:
+        v_offset = y - margin
+    h_offset = int(max(lo, min(hi, round(h_offset))))
+    v_offset = int(max(lo, min(hi, round(v_offset))))
+    return corner, h_offset, v_offset
+
+
+def logo_size_to_percent(size):
+    """Map a real size in px (LOGO_SIZE_RANGE) to a 0-100 display percent."""
+    lo, hi = LOGO_SIZE_RANGE
+    size = max(lo, min(hi, int(size or lo)))
+    return round((size - lo) / (hi - lo) * 100)
+
+
+def logo_percent_to_size(percent):
+    """Inverse of logo_size_to_percent -- 0-100 display percent to real px."""
+    lo, hi = LOGO_SIZE_RANGE
+    percent = max(0, min(100, int(percent or 0)))
+    return int(round(lo + (hi - lo) * (percent / 100.0)))
+
+
+def logo_opacity_to_percent(opacity):
+    return round(max(0.0, min(1.0, float(opacity or 0.0))) * 100)
+
+
+def logo_percent_to_opacity(percent):
+    percent = max(10, min(100, int(percent or 10)))
+    return round(percent / 100.0, 2)
+
+
+# ── Logo Studio v1: timing presets ───────────────────────────────────────────
+#
+# Every preset maps to the exact real `timing` sub-dict shape the overlay
+# already reads (see ChannelBugOverlay / normalize_timing above) plus,
+# for a couple of presets, the sibling top-level `fade` field. Nothing here
+# invents a setting the overlay doesn't understand -- "random_interval" is
+# the one real extension this pass adds (see pick_periodic_interval_minutes
+# and ChannelBugOverlay's periodic-timer handling), and every preset that
+# uses it is exercised by tools/test_channel_logos.py.
+
+
+def _timing_preset(**overrides):
+    base = dict(_TIMING_DEFAULTS)
+    base.update({
+        "always_visible": False,
+        "on_channel_tune": False,
+        "on_program_start": False,
+        "periodic": False,
+        "random_interval": False,
+    })
+    base.update(overrides)
+    return normalize_timing(base)
+
+
+LOGO_TIMING_PRESETS = (
+    {
+        "id": "always",
+        "label": "Always On",
+        "description": "The logo stays on screen the whole time, fading in gently when you tune in.",
+        "timing": _timing_preset(always_visible=True),
+        "fade": True,
+    },
+    {
+        "id": "show_start",
+        "label": "Show Start Only",
+        "description": "Appears briefly when you tune to this channel, then fades away.",
+        "timing": _timing_preset(on_channel_tune=True, duration_seconds=5),
+        "fade": None,
+    },
+    {
+        "id": "interval",
+        "label": "Fade In Every Few Minutes",
+        "description": "Fades in on a fixed schedule, every few minutes.",
+        "timing": _timing_preset(on_channel_tune=True, periodic=True, duration_seconds=5, periodic_interval_minutes=10),
+        "fade": None,
+    },
+    {
+        "id": "random_pop_in",
+        "label": "Random Pop-Ins",
+        "description": "Pops in unpredictably every few minutes -- never on a fixed clock.",
+        "timing": _timing_preset(
+            on_channel_tune=True, periodic=True, random_interval=True,
+            duration_seconds=5, interval_min_minutes=3, interval_max_minutes=12,
+        ),
+        "fade": None,
+    },
+    {
+        "id": "random_short_bumps",
+        "label": "Random Short Bumps",
+        "description": "Quick, frequent flashes of the logo at randomized short intervals.",
+        "timing": _timing_preset(
+            on_channel_tune=True, periodic=True, random_interval=True,
+            duration_seconds=3, interval_min_minutes=2, interval_max_minutes=6,
+        ),
+        "fade": None,
+    },
+    {
+        "id": "mostly_hidden",
+        "label": "Mostly Hidden",
+        "description": "Rarely appears, and only for a moment when it does.",
+        "timing": _timing_preset(
+            periodic=True, random_interval=True,
+            duration_seconds=3, interval_min_minutes=20, interval_max_minutes=45,
+        ),
+        "fade": None,
+    },
+    {
+        "id": "classic_cable_bug",
+        "label": "Classic Cable Bug",
+        "description": "Always on, snaps in with no fade -- like an old cable channel bug.",
+        "timing": _timing_preset(always_visible=True),
+        "fade": False,
+    },
+    {
+        "id": "network_promo",
+        "label": "Network Promo Style",
+        "description": "Shows at the start of every program, plus periodic reminders.",
+        "timing": _timing_preset(on_program_start=True, periodic=True, duration_seconds=4, periodic_interval_minutes=15),
+        "fade": None,
+    },
+    {
+        "id": "show_start_plus_random",
+        "label": "Per-Show Start + Random Returns",
+        "description": "Appears at the start of every show, then returns at random moments in between.",
+        "timing": _timing_preset(
+            on_program_start=True, periodic=True, random_interval=True,
+            duration_seconds=4, interval_min_minutes=8, interval_max_minutes=20,
+        ),
+        "fade": None,
+    },
+)
+
+_LOGO_TIMING_PRESETS_BY_ID = {p["id"]: p for p in LOGO_TIMING_PRESETS}
+
+
+def logo_timing_preset_by_id(preset_id):
+    return _LOGO_TIMING_PRESETS_BY_ID.get(preset_id)
+
+
+def channel_logo_excluded_shows(global_settings, channel_name):
+    """The list of show keys this channel's logo is hidden for, regardless
+    of its mode (Default/Custom/Off don't affect this list -- Off already
+    hides the logo for everything, so exclusions are moot there, but
+    Default and Custom both respect it).
+    """
+    gs = global_settings if isinstance(global_settings, dict) else {}
+    overrides = gs.get("channel_overrides") or {}
+    override = overrides.get(channel_name) or {}
+    return normalize_show_exclusions(override.get("excluded_shows"))
+
+
+def is_show_excluded(excluded_shows, show_key):
+    """False (not excluded) whenever show_key can't be determined -- an
+    unresolved show should never accidentally suppress the logo for
+    everything else on the channel.
+    """
+    show_key = str(show_key or "").strip()
+    if not show_key:
+        return False
+    return show_key in (excluded_shows or [])
+
+
+def logo_should_be_visible(enabled, is_commercial, is_vault, is_excluded_show):
+    """The single source of truth for whether the channel bug is even
+    ELIGIBLE to show right now -- independent of which timing mode is
+    active. A timing mode (always/interval/random/...) only controls
+    whether the bug WOULD show when eligible; this gate can only turn
+    eligibility OFF, never force it on.
+    """
+    if not enabled:
+        return False
+    if is_commercial or is_vault or is_excluded_show:
+        return False
+    return True
+
+
+def logo_timing_preset_for_settings(timing, fade):
+    """Best-effort reverse lookup: which preset (if any) exactly matches
+    the given timing dict + fade flag. Returns None for a hand-tuned
+    combination that doesn't match a preset (that's fine -- the UI just
+    shows no preset highlighted in that case).
+    """
+    normalized = normalize_timing(timing)
+    for preset in LOGO_TIMING_PRESETS:
+        if preset["timing"] != normalized:
+            continue
+        if preset["fade"] is not None and bool(fade) != preset["fade"]:
+            continue
+        return preset["id"]
+    return None
