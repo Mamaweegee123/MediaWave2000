@@ -1,12 +1,10 @@
 """Channel dashboard cards — Channel Studio's main "choose a channel" tiles.
 
-Two builders live here: `build_dashboard_channel_card` (the compact tile
-used for every normal channel) and `build_hero_channel_card` (the more
-compact, visually special tile used for the first channel — see its
-docstring for how "first" is picked today). Both are read-only aside
-from the safe, confirmation-gated Remove action (see
-studio_styles.confirm_remove_channel) and the Enabled checkbox, which is
-preview-only for this pass (see its own docstring below for why).
+One builder lives here: `build_dashboard_channel_card`, the compact tile
+used for every channel in the grid. Read-only aside from the safe,
+confirmation-gated Remove action (see studio_styles.confirm_remove_channel)
+and the Enabled checkbox, which is preview-only for this pass (see its
+own docstring below for why).
 
 Now/Next/Later comes from the same TonightSchedule data the Tonight tab
 already uses; nothing here reads or writes real schedule, library, or
@@ -34,6 +32,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from ..channel_logos import find_channel_bug_logo
 from .channel_studio_widgets import FlowLayout
 from .studio_styles import (
     channel_number_font_family,
@@ -45,10 +44,7 @@ from .studio_styles import (
     CHANNEL_NUMBER_COLOR,
 )
 
-_LOGO_CANDIDATE_NAMES = ("logo.png", "logo.jpg", "logo.jpeg", "bug.png", "channel.png")
-
 CARD_WIDTH = 430
-HERO_CARD_WIDTH = CARD_WIDTH * 2 + 16  # visually spans two normal cards, same gutter
 
 _SCHEDULE_ROW_KINDS = ("now", "next", "later")
 _SCHEDULE_ROW_LABELS = {"now": "NOW", "next": "NEXT", "later": "LATER"}
@@ -65,16 +61,10 @@ _SCHEDULE_BADGE_WIDTH = 46
 _SCHEDULE_ROW_SPACING = 8
 _INFO_LABEL_WIDTH = 78
 _INFO_ROW_SPACING = 8
-_HERO_LEFT_COL_WIDTH = 210
-_HERO_BODY_SPACING = 18
 
 _NORMAL_CONTENT_WIDTH = CARD_WIDTH - 2 * _CARD_MARGIN
-_HERO_CONTENT_WIDTH = HERO_CARD_WIDTH - 2 * _CARD_MARGIN
-_HERO_RIGHT_COL_WIDTH = _HERO_CONTENT_WIDTH - _HERO_LEFT_COL_WIDTH - _HERO_BODY_SPACING
 
 _NORMAL_SCHEDULE_TEXT_WIDTH = _NORMAL_CONTENT_WIDTH - _PANEL_H_MARGIN - _SCHEDULE_BADGE_WIDTH - _SCHEDULE_ROW_SPACING
-_HERO_SCHEDULE_TEXT_WIDTH = _HERO_RIGHT_COL_WIDTH - _PANEL_H_MARGIN - _SCHEDULE_BADGE_WIDTH - _SCHEDULE_ROW_SPACING
-_HERO_INFO_VALUE_WIDTH = _HERO_RIGHT_COL_WIDTH - _PANEL_H_MARGIN - _INFO_LABEL_WIDTH - _INFO_ROW_SPACING
 
 _ENABLED_TOOLTIP = (
     "Preview only — turning channels on or off from Channel Studio isn't "
@@ -84,24 +74,6 @@ _ENABLED_REAL_TOOLTIP = (
     "Updates your real settings immediately. Click Save in Advanced "
     "Configuration to make it stick."
 )
-
-
-def _find_channel_logo_path(root_path):
-    """Best-effort, read-only fallback logo lookup. Never raises."""
-    if not root_path:
-        return ""
-    logos_dir = os.path.join(root_path, "Logos")
-    if not os.path.isdir(logos_dir):
-        return ""
-    try:
-        entries = {name.lower(): name for name in os.listdir(logos_dir)}
-    except OSError:
-        return ""
-    for candidate in _LOGO_CANDIDATE_NAMES:
-        actual = entries.get(candidate)
-        if actual:
-            return os.path.join(logos_dir, actual)
-    return ""
 
 
 def _elide(label, text, max_width):
@@ -138,7 +110,7 @@ def _build_logo_widget(summary, on_set_logo, size=88):
     Falls back to an "Add Channel Logo" button (not blank space) when no
     logo is set, which routes to the channel's Identity tab.
     """
-    logo_path = summary.logo_path or _find_channel_logo_path(summary.root_path)
+    logo_path = summary.logo_path or find_channel_bug_logo(summary.root_path, summary.name)
     if logo_path:
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
@@ -321,6 +293,7 @@ def build_dashboard_channel_card(
     on_toggle_enabled=None,
     on_remove=None,
     commercials_status=None,
+    display_number=None,
 ):
     """Build one channel's dashboard tile for the Choose Channel grid.
 
@@ -338,7 +311,15 @@ def build_dashboard_channel_card(
     headline's own static "commercials on/off" phrase (from
     ChannelStudioSummary.headline) is all that shows, same as before
     this per-channel override status existed.
+
+    `display_number`, when given, replaces `summary.number` for both
+    the CH badge and the `channel_info` handed to Setup -- see
+    channel_actions.card_display_number, which reads the same live My
+    Catalog / Companion Channels number widget a just-finished reorder
+    already wrote to, so a renumber shows up immediately without
+    rebuilding the whole summaries list.
     """
+    number = summary.number if display_number is None else int(display_number)
     card = QFrame()
     card.setObjectName("sectionCard")
     card.setFrameShape(QFrame.NoFrame)
@@ -357,7 +338,7 @@ def build_dashboard_channel_card(
 
     header_row = QHBoxLayout()
     header_row.setSpacing(10)
-    number_lbl = _build_channel_number_label(summary.number)
+    number_lbl = _build_channel_number_label(number)
     header_row.addWidget(number_lbl)
     logo_widget = _build_logo_widget(summary, on_set_logo)
 
@@ -404,7 +385,7 @@ def build_dashboard_channel_card(
     bottom_row.addStretch(1)
     outer.addLayout(bottom_row)
 
-    channel_info = {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
+    channel_info = {"id": summary.channel_id, "name": summary.name, "default_number": number}
 
     btn_row = FlowLayout(h_spacing=8, v_spacing=8)
     setup_btn = QPushButton("⚙  Setup")
@@ -425,170 +406,5 @@ def build_dashboard_channel_card(
     return card
 
 
-def _channel_info_rows(summary, commercials_status=None):
-    """Only real, already-known values — calm fallback text otherwise.
-    Never repeats the Now/Next/Later schedule shown above it.
-
-    `commercials_status`, when given, replaces the static
-    `summary.commercials_label` for the Commercials row with the live,
-    per-channel-override-aware label instead (see
-    channel_actions.commercials_summary_label) -- the static one only
-    ever reflects the global on/off flag, not a per-channel override.
-    """
-    if summary.is_companion:
-        # Location/folder/playlist already has its own panel (see
-        # _build_companion_status_panel) — this stays to just Type/Source
-        # so the two panels don't repeat each other.
-        return [("Type", "Companion channel"), ("Source", "Built in")]
-    is_special = summary.channel_type != "media"
-    rows = [
-        ("Type", "Special channel" if is_special else "Folder channel"),
-        ("Source", "Built in" if is_special else "Local folder"),
-    ]
-    if not is_special:
-        rows.append(("Playback", f"{summary.playback_order_label} order"))
-    rows.append(("Commercials", commercials_status or summary.commercials_label))
-    if summary.content_known:
-        counts = []
-        if summary.show_count:
-            counts.append(f"{summary.show_count} show" + ("s" if summary.show_count != 1 else ""))
-        if summary.movie_count:
-            counts.append(f"{summary.movie_count} movie" + ("s" if summary.movie_count != 1 else ""))
-        if counts:
-            rows.append(("Library", " · ".join(counts)))
-    return rows
-
-
-def _build_channel_info_panel(summary, commercials_status=None):
-    panel = QFrame()
-    panel.setObjectName("channelInfoPanel")
-    panel.setStyleSheet(
-        "QFrame#channelInfoPanel {"
-        " background: rgba(12, 14, 32, 150);"
-        " border: 1px solid rgba(255, 255, 255, 18);"
-        " border-radius: 8px;"
-        "}"
-    )
-    layout = QVBoxLayout(panel)
-    layout.setContentsMargins(10, 8, 10, 8)
-    layout.setSpacing(3)
-
-    heading = QLabel("Channel Info")
-    heading.setObjectName("fieldHelp")
-    heading.setStyleSheet("font-weight: 700; letter-spacing: 1px;")
-    layout.addWidget(heading)
-
-    for label_text, value_text in _channel_info_rows(summary, commercials_status=commercials_status):
-        row = QHBoxLayout()
-        row.setSpacing(_INFO_ROW_SPACING)
-        label_lbl = QLabel(label_text)
-        label_lbl.setObjectName("fieldHelp")
-        label_lbl.setFixedWidth(_INFO_LABEL_WIDTH)
-        row.addWidget(label_lbl)
-        value_lbl = QLabel()
-        value_lbl.setObjectName("sectionNote")
-        _elide(value_lbl, value_text, _HERO_INFO_VALUE_WIDTH)
-        row.addWidget(value_lbl, 1)
-        layout.addLayout(row)
-
-    return panel
-
-
-def build_hero_channel_card(
-    summary,
-    schedule,
-    on_open,
-    on_set_logo=None,
-    enabled=True,
-    on_toggle_enabled=None,
-    on_remove=None,
-    commercials_status=None,
-):
-    """Build the more compact, visually special tile for the Choose
-    Channel grid's hero slot.
-
-    Callers only build this for the most-recently-customized channel
-    (tracked in studio_state.py and set whenever Setup is used — see
-    channel_studio_pages.py) — never a permanent "featured" pick, and
-    never shown at all until the user has opened Setup on something.
-    That's the whole reason for the "Finished Customizing?" badge: it's
-    written for a channel the user was just working on, not a favorite.
-    The same channel this card shows always still has its own tile in
-    the regular grid below — this is a contextual duplicate, not a
-    replacement.
-
-    `commercials_status`, when given, replaces the Channel Info panel's
-    static Commercials row the same way it does on the dashboard card
-    — see `_channel_info_rows`.
-    """
-    card = QFrame()
-    card.setObjectName("sectionCard")
-    card.setFrameShape(QFrame.NoFrame)
-    card.setFixedWidth(HERO_CARD_WIDTH)
-    card.setStyleSheet(
-        "QFrame#sectionCard {"
-        " background: rgba(20, 24, 50, 238);"
-        " border: 1.5px solid rgba(120, 170, 255, 140);"
-        " border-radius: 12px;"
-        "}"
-    )
-    _apply_card_shadow(card)
-    outer = QVBoxLayout(card)
-    outer.setContentsMargins(18, 14, 18, 14)
-    outer.setSpacing(10)
-
-    badge_row = QHBoxLayout()
-    badge = QLabel("Finished Customizing?")
-    badge.setObjectName("statusBadge")
-    badge_row.addWidget(badge)
-    badge_row.addStretch(1)
-    outer.addLayout(badge_row)
-
-    body_row = QHBoxLayout()
-    body_row.setSpacing(_HERO_BODY_SPACING)
-
-    left_widget = QWidget()
-    left_widget.setFixedWidth(_HERO_LEFT_COL_WIDTH)
-    left_col = QVBoxLayout(left_widget)
-    left_col.setContentsMargins(0, 0, 0, 0)
-    left_col.setSpacing(8)
-    left_col.addWidget(_build_channel_number_label(summary.number, point_size=26, glow=True))
-    name_lbl = QLabel()
-    name_lbl.setObjectName("sectionHeader")
-    _elide(name_lbl, summary.name, _HERO_LEFT_COL_WIDTH - 10)
-    left_col.addWidget(name_lbl)
-    left_col.addWidget(_build_logo_widget(summary, on_set_logo, size=78))
-    left_col.addWidget(_build_enabled_checkbox(enabled, on_toggle=on_toggle_enabled))
-    left_col.addStretch(1)
-    body_row.addWidget(left_widget)
-
-    right_col = QVBoxLayout()
-    right_col.setSpacing(8)
-    if summary.is_companion:
-        right_col.addWidget(_build_companion_status_panel(summary, _HERO_SCHEDULE_TEXT_WIDTH))
-    else:
-        right_col.addWidget(_build_schedule_panel(schedule, _HERO_SCHEDULE_TEXT_WIDTH, row_height=22))
-    right_col.addWidget(_build_channel_info_panel(summary, commercials_status=commercials_status))
-    body_row.addLayout(right_col, 1)
-
-    outer.addLayout(body_row)
-
-    channel_info = {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
-
-    btn_row = FlowLayout(h_spacing=10, v_spacing=8)
-    setup_btn = QPushButton("⚙  Setup")
-    style_setup_button(setup_btn)
-    setup_btn.clicked.connect(lambda: on_open(channel_info))
-    btn_row.addWidget(setup_btn)
-    if summary.is_companion and on_remove is not None:
-        remove_btn = QPushButton("🚫  Disable")
-        style_remove_button(remove_btn)
-        remove_btn.clicked.connect(lambda: confirm_disable_companion_channel(card, summary.name, on_remove))
-    else:
-        remove_btn = QPushButton("🗑  Remove")
-        style_remove_button(remove_btn)
-        remove_btn.clicked.connect(lambda: confirm_remove_channel(card, summary.name))
-    btn_row.addWidget(remove_btn)
-    outer.addLayout(btn_row)
 
     return card
