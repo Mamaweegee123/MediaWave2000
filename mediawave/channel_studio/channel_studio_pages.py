@@ -4,8 +4,13 @@ The only top-level page in Channel Studio. Picking a channel opens its
 own five-tab view (see channel_studio_cards.py) — there is nothing else
 to navigate to from here. Aside from a read-only list of existing
 channel names/numbers/logos and the small preview state in
-studio_state.py (last-edited channel, grid display order), no
-scheduling, library, or settings data is read or written from this page.
+studio_state.py (grid display order), no scheduling, library, or
+settings data is read or written from this page.
+
+No hero/featured card: every channel gets exactly one tile, in the
+regular grid. studio_state.py's last-edited-channel helpers still exist
+for backward compatibility with any state file written by an older
+build, but nothing here calls them anymore.
 """
 
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
@@ -18,15 +23,10 @@ from .channel_studio_dialogs import show_preview_dialog
 from .channel_studio_header import build_channel_studio_header
 from .channel_studio_model import ChannelStudioSummary
 from .channel_studio_widgets import build_channel_studio_footer, build_empty_state
-from .channel_card import build_dashboard_channel_card, build_hero_channel_card
+from .channel_card import build_dashboard_channel_card
 from .draggable_grid import DraggableGrid
 from .reorder import apply_saved_order
-from .studio_state import (
-    load_channel_order,
-    load_last_edited_channel_id,
-    save_channel_order,
-    save_last_edited_channel_id,
-)
+from .studio_state import load_channel_order, save_channel_order
 from .studio_styles import style_setup_button
 
 _COMPANION_TYPE_BY_ID = {cid: ctype for ctype, cid in companion_adapter.COMPANION_CHANNEL_IDS.items()}
@@ -66,24 +66,18 @@ def _channel_enabled(channel_id, catalog_channel_settings):
     return bool(row.get("enabled", True))
 
 
-def _build_choose_hint():
-    """Shown above the grid instead of a hero card until the user has
-    opened Setup on at least one channel — no empty hero placeholder,
-    no blank gap.
-    """
-    label = QLabel("Choose a channel to start customizing.")
-    label.setObjectName("sectionNote")
-    return label
-
-
 def _build_reorder_hint():
     label = QLabel(_REORDER_HINT_TEXT)
     label.setObjectName("sectionNote")
     return label
 
 
-def _channel_info_for(summary):
-    return {"id": summary.channel_id, "name": summary.name, "default_number": summary.number}
+def _channel_info_for(summary, number=None):
+    return {
+        "id": summary.channel_id,
+        "name": summary.name,
+        "default_number": summary.number if number is None else number,
+    }
 
 
 class _RefreshOnShowWidget(QWidget):
@@ -115,7 +109,7 @@ class _RefreshOnShowWidget(QWidget):
 
 def build_channel_studio_content(dialog):
     """Build the Choose Channel page: the scrollable content (header,
-    hero, grid) and its persistent footer, together — not as two
+    grid) and its persistent footer, together — not as two
     independent builds — so the footer's Reorder Channels button can
     share reorder-mode state with the grid it toggles. Returns
     `(content, footer)`; see channel_studio.py for how callers place
@@ -144,11 +138,6 @@ def build_channel_studio_content(dialog):
     ]
     state_path = _state_path(dialog)
     catalog_channel_settings = getattr(dialog, "catalog_channel_settings", None)
-
-    hero_container = QWidget()
-    hero_layout = QVBoxLayout(hero_container)
-    hero_layout.setContentsMargins(0, 0, 0, 0)
-    hero_layout.setSpacing(0)
 
     reorder_hint_container = QWidget()
     reorder_hint_layout = QVBoxLayout(reorder_hint_container)
@@ -266,38 +255,13 @@ def build_channel_studio_content(dialog):
         _open_channel(channel_info, initial_tab=_LOGO_TAB_INDEX)
 
     def _open_from_setup(channel_info):
-        """The Setup button's handler, from either the hero card or a
-        grid card: marks this channel as most-recently-customized (so
-        it becomes/stays the hero), opens its detail screen, then
-        refreshes both the hero and the grid once it closes.
+        """The Setup button's handler: opens the channel's detail
+        screen, then refreshes the grid once it closes (a Setup edit
+        can change what a card shows -- logo, commercial status,
+        enabled state, ...).
         """
-        save_last_edited_channel_id(state_path, channel_info.get("id", ""))
         _open_channel(channel_info, initial_tab=0)
-        _rebuild_hero()
         _rebuild_grid(current_filter["text"])
-
-    def _rebuild_hero():
-        _clear(hero_layout)
-        if not number_sorted:
-            return
-
-        last_edited_id = load_last_edited_channel_id(state_path)
-        hero_summary = summaries_by_id.get(last_edited_id) if last_edited_id else None
-        if hero_summary is None:
-            hero_layout.addWidget(_build_choose_hint())
-            return
-
-        hero_layout.addWidget(
-            build_hero_channel_card(
-                hero_summary,
-                schedules_by_id.get(hero_summary.channel_id),
-                on_open=_open_from_setup,
-                on_set_logo=lambda checked=False, info=_channel_info_for(hero_summary): _open_logo(info),
-                enabled=_local_enabled(hero_summary.channel_id),
-                on_toggle_enabled=lambda checked, cid=hero_summary.channel_id: _toggle_local_enabled(cid, checked),
-                commercials_status=channel_actions.card_commercials_status(dialog, hero_summary.name),
-            )
-        )
 
     def _rebuild_grid(filter_text=""):
         current_filter["text"] = filter_text or ""
@@ -325,9 +289,7 @@ def build_channel_studio_content(dialog):
         if reorder_state["active"]:
             # Reorder mode always shows every channel, unfiltered — dragging
             # a partially-filtered view would make "where did the rest go"
-            # confusing. The grid always includes every channel, including
-            # whichever one the hero card is featuring — the hero is a
-            # duplicate contextual preview, not a replacement.
+            # confusing.
             visible_local = ordered
             visible_companions = companions
         else:
@@ -340,7 +302,8 @@ def build_channel_studio_content(dialog):
 
         entries = []
         for summary in visible_local:
-            channel_info = _channel_info_for(summary)
+            number = channel_actions.card_display_number(dialog, summary)
+            channel_info = _channel_info_for(summary, number)
             card = build_dashboard_channel_card(
                 summary,
                 schedules_by_id.get(summary.channel_id),
@@ -349,10 +312,12 @@ def build_channel_studio_content(dialog):
                 enabled=_local_enabled(summary.channel_id),
                 on_toggle_enabled=lambda checked, cid=summary.channel_id: _toggle_local_enabled(cid, checked),
                 commercials_status=channel_actions.card_commercials_status(dialog, summary.name),
+                display_number=number,
             )
             entries.append((summary.channel_id, card))
         for summary in visible_companions:
-            channel_info = _channel_info_for(summary)
+            number = channel_actions.card_display_number(dialog, summary)
+            channel_info = _channel_info_for(summary, number)
             card = build_dashboard_channel_card(
                 summary,
                 None,
@@ -361,6 +326,7 @@ def build_channel_studio_content(dialog):
                 enabled=True,
                 on_toggle_enabled=lambda checked, ct=summary.channel_type: _toggle_companion_enabled(ct, checked),
                 on_remove=lambda ct=summary.channel_type: _toggle_companion_enabled(ct, False),
+                display_number=number,
             )
             entries.append((summary.channel_id, card))
 
@@ -371,15 +337,14 @@ def build_channel_studio_content(dialog):
 
     def _toggle_reorder(checked=False):
         if reorder_state["active"]:
-            # Exiting reorder mode: persist wherever the grid ended up.
-            # Local folder channels: display order only — real channel
-            # numbers, scheduling, and playback order are all untouched.
-            # Companion channels: also resequence their REAL channel
-            # numbers (weatherstar/radiowave/youtube_channel_number) to
-            # match their new relative order among each other, so the
-            # Companion Channels tab picks up the same move — see
-            # companion_adapter.resequence_companion_numbers for why
-            # this can never renumber a local channel or collide.
+            # Exiting reorder mode: persist wherever the grid ended up,
+            # and finalize real channel numbers to match -- both pools
+            # redistribute only the numbers they already occupy (see
+            # channel_actions.resequence_local_channels_on_dialog /
+            # companion_adapter.resequence_companion_numbers), so a
+            # local channel can never collide with or renumber a
+            # companion, or vice versa. While dragging, numbers are left
+            # alone -- only Done Reordering commits them.
             if grid_ref["widget"] is not None:
                 final_order = grid_ref["widget"].current_order()
                 save_channel_order(state_path, final_order)
@@ -388,6 +353,9 @@ def build_channel_studio_content(dialog):
                 ]
                 if len(companion_order) >= 2:
                     channel_actions.resequence_companions_on_dialog(dialog, companion_order)
+                local_order = [cid for cid in final_order if cid in summaries_by_id]
+                if len(local_order) >= 2:
+                    channel_actions.resequence_local_channels_on_dialog(dialog, local_order)
             reorder_state["active"] = False
         else:
             reorder_state["active"] = True
@@ -411,11 +379,9 @@ def build_channel_studio_content(dialog):
         on_search_changed=_rebuild_grid,
     )
     layout.addWidget(header)
-    layout.addWidget(hero_container)
     layout.addWidget(reorder_hint_container)
     layout.addWidget(grid_container)
 
-    _rebuild_hero()
     _rebuild_grid()
     layout.addStretch(1)
 
@@ -424,6 +390,6 @@ def build_channel_studio_content(dialog):
         on_reorder=_toggle_reorder,
     )
 
-    content.on_show = lambda: (_rebuild_hero(), _rebuild_grid(current_filter["text"]))
+    content.on_show = lambda: _rebuild_grid(current_filter["text"])
 
     return content, footer
