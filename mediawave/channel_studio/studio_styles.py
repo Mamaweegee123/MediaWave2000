@@ -161,6 +161,39 @@ def style_choice_button(button, active):
     return button
 
 
+def style_slider(slider):
+    """A themed QSlider matching Channel Studio's dark panels -- used by
+    Logo Studio's opacity/size sliders. No app-wide QSlider styling
+    exists yet, so this is scoped to the slider instance, not global QSS.
+    """
+    slider.setStyleSheet(
+        """
+        QSlider::groove:horizontal {
+            background: rgba(255, 255, 255, 30);
+            height: 4px;
+            border-radius: 2px;
+        }
+        QSlider::sub-page:horizontal {
+            background: rgba(96, 144, 255, 220);
+            height: 4px;
+            border-radius: 2px;
+        }
+        QSlider::handle:horizontal {
+            background: rgba(230, 235, 250, 240);
+            border: 1px solid rgba(140, 175, 255, 230);
+            width: 14px;
+            height: 14px;
+            margin: -6px 0;
+            border-radius: 7px;
+        }
+        QSlider::handle:horizontal:hover {
+            background: rgba(255, 255, 255, 255);
+        }
+        """
+    )
+    return slider
+
+
 def schedule_row_badge_style(kind):
     """Inline stylesheet for a colored NOW/NEXT/LATER pill label.
     `kind` is one of "now", "next", "later".
