@@ -236,6 +236,33 @@ check("suppression checks Vault (on-demand) playback mode", 'playback_mode == "o
 check("suppression checks per-channel show exclusions", "channel_logo_excluded_shows" in suppression_source and "is_show_excluded" in suppression_source)
 
 
+section("Timing dropdown: trimmed public preset list")
+_REMOVED_DROPDOWN_IDS = ("mostly_hidden", "classic_cable_bug", "network_promo", "show_start_plus_random")
+check(
+    "the trimmed dropdown list is exactly the 5 simple presets the spec asked for",
+    logo_mod.LOGO_TIMING_PRESETS_DROPDOWN_IDS == ("always", "show_start", "interval", "random_pop_in", "random_short_bumps"),
+    logo_mod.LOGO_TIMING_PRESETS_DROPDOWN_IDS,
+)
+for removed_id in _REMOVED_DROPDOWN_IDS:
+    check(f"'{removed_id}' is not in the trimmed dropdown list", removed_id not in logo_mod.LOGO_TIMING_PRESETS_DROPDOWN_IDS)
+    check(f"'{removed_id}' still exists in the real preset table (old saved settings still resolve)", logo_mod.logo_timing_preset_by_id(removed_id) is not None)
+for kept_id in logo_mod.LOGO_TIMING_PRESETS_DROPDOWN_IDS:
+    check(f"'{kept_id}' still resolves to a real preset", logo_mod.logo_timing_preset_by_id(kept_id) is not None)
+check(
+    "every LOGO_TIMING_PRESETS entry still exists (the dropdown filter doesn't shrink the real table)",
+    len(logo_mod.LOGO_TIMING_PRESETS) == 9,
+    len(logo_mod.LOGO_TIMING_PRESETS),
+)
+# A channel using a removed preset should still resolve to that preset id from the
+# real lookup (so its status text stays honest) -- only the dropdown hides it.
+removed_preset = logo_mod.logo_timing_preset_by_id("classic_cable_bug")
+fade_value = removed_preset["fade"] if removed_preset["fade"] is not None else True
+check(
+    "a channel using a removed preset still round-trips to its real id outside the dropdown",
+    logo_mod.logo_timing_preset_for_settings(removed_preset["timing"], fade_value) == "classic_cable_bug",
+)
+
+
 print(f"\n{'='*50}")
 print(f"Results: {len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

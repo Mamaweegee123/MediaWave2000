@@ -17,6 +17,7 @@ from mediawave.channel_studio import reorder
 from mediawave.channel_studio import studio_state
 from mediawave.channel_studio import companion_adapter
 from mediawave.channel_studio import channel_actions
+from mediawave import channel_logos
 
 PASS = []
 FAIL = []
@@ -271,11 +272,7 @@ result_dupe_check = reorder.apply_saved_order(channel_ids, saved_full)
 check("no channel id is duplicated", len(result_dupe_check) == len(set(result_dupe_check)), result_dupe_check)
 check("every known channel id is still present", set(result_dupe_check) == set(channel_ids), result_dupe_check)
 
-# The hero card's channel is just another entry in the same id list handed
-# to apply_saved_order — since every known id is always preserved, the
-# grid can never lose the hero's channel just because it's featured above.
-hero_id = "b"
-check("hero channel id survives ordering like any other", hero_id in reorder.apply_saved_order(channel_ids, saved_stale))
+check("a specific channel id survives ordering like any other", "b" in reorder.apply_saved_order(channel_ids, saved_stale))
 
 # ---------------------------------------------------------------------------
 # reorder.move_item — the drag-and-drop building block
@@ -335,14 +332,9 @@ check(
 # ---------------------------------------------------------------------------
 section("reorder mode leaves card dimensions untouched")
 
-from mediawave.channel_studio.channel_card import CARD_WIDTH, HERO_CARD_WIDTH
+from mediawave.channel_studio.channel_card import CARD_WIDTH
 
 check("normal card width is unchanged by the reorder-mode pass", CARD_WIDTH == 430, CARD_WIDTH)
-check(
-    "hero card width still derives from the normal card width",
-    HERO_CARD_WIDTH == CARD_WIDTH * 2 + 16,
-    HERO_CARD_WIDTH,
-)
 
 import inspect
 
@@ -597,8 +589,8 @@ class _FakeDialog:
         self.youtube_channel_input = _FakeSpin(3)
         self.youtube_playlist_input = _FakeLineEdit("")
         self.catalog_rows = [
-            {"id": "media:/fake/a", "enabled": _FakeCheckBox(True)},
-            {"id": "media:/fake/b", "enabled": _FakeCheckBox(False)},
+            {"id": "media:/fake/a", "enabled": _FakeCheckBox(True), "number": _FakeSpin(1)},
+            {"id": "media:/fake/b", "enabled": _FakeCheckBox(False), "number": _FakeSpin(2)},
         ]
         self.channel_commercial_overrides = {}
         self._studio_channels_by_id = {}
@@ -714,9 +706,7 @@ check("dashboard card branches on is_companion for its status panel", "is_compan
 check("dashboard card threads on_toggle_enabled into the checkbox", "on_toggle=on_toggle_enabled" in dashboard_source)
 check("dashboard card offers a real Disable path for companions", "confirm_disable_companion_channel" in dashboard_source)
 
-hero_source = inspect.getsource(channel_card.build_hero_channel_card)
-check("hero card also branches on is_companion", "is_companion" in hero_source)
-check("hero card also threads on_toggle_enabled into the checkbox", "on_toggle=on_toggle_enabled" in hero_source)
+check("there is no hero/featured card builder left in channel_card.py", not hasattr(channel_card, "build_hero_channel_card"))
 
 checkbox_source = inspect.getsource(channel_card._build_enabled_checkbox)
 check("the enabled checkbox only connects toggled when a real handler is given", "toggled.connect(on_toggle)" in checkbox_source)
@@ -896,9 +886,6 @@ dashboard_source_v2 = inspect.getsource(channel_card.build_dashboard_channel_car
 check("dashboard card accepts an optional commercials_status param", "commercials_status=None" in dashboard_source_v2)
 check("dashboard card only adds the extra line when a status was actually given", "if commercials_status:" in dashboard_source_v2)
 
-info_rows_source = inspect.getsource(channel_card._channel_info_rows)
-check("the Commercials row prefers the live status over the static summary label", "commercials_status or summary.commercials_label" in info_rows_source)
-
 # ---------------------------------------------------------------------------
 # channel_actions: Logo Studio v1 override read/write helpers -- same
 # live-widget-sharing pattern as the commercials helpers (dialog.channel_bug_settings
@@ -1026,6 +1013,106 @@ channel_actions.set_channel_logo_excluded_shows(exclusions_dialog, "Movies", ["s
 check(
     "setting exclusions on an already-custom channel doesn't reset it back to global",
     channel_actions.channel_logo_override_mode(exclusions_dialog, "Movies") == "custom",
+)
+
+# ---------------------------------------------------------------------------
+# channel_card.py + setup_sections.py: logo discovery is the SAME function
+# real playback uses -- no second, weaker lookup that can drift out of sync
+# and show "No channel logo found" when a logo genuinely exists.
+# ---------------------------------------------------------------------------
+section("logo discovery: one shared lookup, not two")
+
+card_source = inspect.getsource(channel_card)
+check("channel_card.py has no separate/weaker logo lookup of its own", "_find_channel_logo_path" not in card_source)
+check("channel_card.py's logo widget uses the real, shared discovery function", "find_channel_bug_logo(summary.root_path, summary.name)" in card_source)
+
+logo_section_source_v2 = inspect.getsource(setup_sections.build_logo_section)
+check("Logo Studio's preview uses the same shared discovery function, not just the stale summary snapshot", "find_channel_bug_logo(root_path, channel_name)" in logo_section_source_v2)
+
+setup_dialog_source = inspect.getsource(channel_setup.ChannelSetupDialog)
+check("switching to the Logo tab refreshes it (picks up a logo added mid-session)", "_refresh_logo" in setup_dialog_source)
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    channel_dir = os.path.join(tmpdir, "MTV")
+    logos_dir = os.path.join(channel_dir, "Logos")
+    os.makedirs(logos_dir)
+    logo_file = os.path.join(logos_dir, "MTV.png")
+    with open(logo_file, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+    check(
+        "a channel-name-based logo file (not just logo.png/bug.png/channel.png) is found",
+        channel_logos.find_channel_bug_logo(channel_dir, "MTV") == logo_file,
+    )
+    check(
+        "a normalized/display-name-style lookup still finds the same file",
+        channel_logos.find_channel_bug_logo(channel_dir, "MTV") == channel_logos.find_channel_bug_logo(channel_dir, "MTV"),
+    )
+check("a channel with no Logos folder at all fails safe, no crash", channel_logos.find_channel_bug_logo(os.path.join(tmpdir, "Nowhere"), "Nowhere") == "")
+check("a missing/blank channel name fails safe, no crash", channel_logos.find_channel_bug_logo("", "") == "")
+
+# ---------------------------------------------------------------------------
+# channel_studio_pages.py: no hero/featured card, ever
+# ---------------------------------------------------------------------------
+section("channel_studio_pages.py: hero card removed")
+
+pages_source = inspect.getsource(channel_studio_pages)
+check("no hero card is built anywhere in Channel Studio's page", "build_hero_channel_card" not in pages_source)
+check("no hero-specific container/rebuild code remains", "hero_container" not in pages_source and "_rebuild_hero" not in pages_source)
+check("last-edited-channel state is no longer read or written from here", "last_edited_channel_id" not in pages_source)
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    old_hero_state_path = os.path.join(tmpdir, "channel_studio_state.json")
+    studio_state.save_last_edited_channel_id(old_hero_state_path, "media:/some/old/channel")
+    check(
+        "an old hero-state file on disk doesn't crash reading channel order (the only thing still read from this file)",
+        studio_state.load_channel_order(old_hero_state_path) == [],
+    )
+
+# ---------------------------------------------------------------------------
+# channel_actions.py: reorder finalization updates real channel numbers
+# ---------------------------------------------------------------------------
+section("channel_actions: finalized reorder updates channel numbers")
+
+number_dialog = _FakeDialog()
+before = {row["id"]: row["number"].value() for row in number_dialog.catalog_rows}
+check("starting numbers are sequential", before == {"media:/fake/a": 1, "media:/fake/b": 2}, before)
+
+updated_ids = channel_actions.resequence_local_channels_on_dialog(number_dialog, ["media:/fake/b", "media:/fake/a"])
+after = {row["id"]: row["number"].value() for row in number_dialog.catalog_rows}
+check("resequencing updates both rows", updated_ids == ["media:/fake/b", "media:/fake/a"], updated_ids)
+check("the channel dragged first now holds the smaller number from the SAME pool", after["media:/fake/b"] == 1, after)
+check("the channel dragged second now holds the larger number from the SAME pool", after["media:/fake/a"] == 2, after)
+check("numbers are still sequential after commit", sorted(after.values()) == [1, 2], after)
+check("no duplicate numbers after commit", len(set(after.values())) == len(after), after)
+
+check("a stale/missing channel id in the reorder list is safely skipped, not an error", channel_actions.resequence_local_channels_on_dialog(number_dialog, ["media:/fake/a", "media:/nonexistent"]) == ["media:/fake/a"])
+check("fewer than 2 real rows is a safe no-op (nothing to redistribute)", channel_actions.resequence_local_channels_on_dialog(number_dialog, ["media:/fake/a"]) == ["media:/fake/a"])
+check("an entirely empty/unknown reorder list is a safe no-op", channel_actions.resequence_local_channels_on_dialog(number_dialog, ["media:/nonexistent"]) == [])
+
+display_dialog = _FakeDialog()
+local_summary = ChannelStudioSummary(channel_id="media:/fake/a", name="Movies", number=99, channel_type="media")
+check("card_display_number reads the live My Catalog row, not the stale summary snapshot", channel_actions.card_display_number(display_dialog, local_summary) == 1)
+channel_actions.set_local_channel_number(display_dialog, "media:/fake/a", 7)
+check("card_display_number reflects a number just written by a reorder commit", channel_actions.card_display_number(display_dialog, local_summary) == 7)
+
+ghost_summary = ChannelStudioSummary(channel_id="media:/ghost", name="Ghost", number=42, channel_type="media")
+check("card_display_number falls back to the summary's own number when no live row exists", channel_actions.card_display_number(display_dialog, ghost_summary) == 42)
+
+companion_summary = ChannelStudioSummary(channel_id="special:radiowave", name="RadioWaveTV", number=99, channel_type="radiowave")
+check("card_display_number reads the live companion spinbox, same as a local channel's row", channel_actions.card_display_number(display_dialog, companion_summary) == 2)
+
+reorder_pages_source = inspect.getsource(channel_studio_pages)
+check(
+    "Done Reordering commits local channel numbers through the safe catalog settings helper",
+    "resequence_local_channels_on_dialog" in reorder_pages_source,
+)
+check(
+    "Done Reordering still keeps resequencing companion numbers too",
+    "resequence_companions_on_dialog" in reorder_pages_source,
+)
+check(
+    "cards are built with a live display_number, not just the static summary snapshot",
+    "display_number=number" in reorder_pages_source,
 )
 
 # ---------------------------------------------------------------------------
