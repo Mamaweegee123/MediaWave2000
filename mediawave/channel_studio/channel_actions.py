@@ -201,6 +201,72 @@ def set_local_channel_enabled(dialog, channel_id, enabled):
     return True
 
 
+def local_channel_number_from_dialog(dialog, channel_id):
+    """Current live channel number for a local folder channel, or None
+    if no matching My Catalog row exists.
+    """
+    row = local_channel_row(dialog, channel_id)
+    if row is None:
+        return None
+    return int(row["number"].value())
+
+
+def set_local_channel_number(dialog, channel_id, number):
+    """Real channel-number write for a local folder channel: sets the
+    same spinbox My Catalog's own row uses. Returns True if a row was
+    found and updated, False otherwise (safe no-op -- never raises).
+    """
+    row = local_channel_row(dialog, channel_id)
+    if row is None:
+        return False
+    row["number"].setValue(int(number))
+    return True
+
+
+def resequence_local_channels_on_dialog(dialog, ordered_channel_ids):
+    """Reassign real channel numbers among the local folder channels
+    named in `ordered_channel_ids` (desired left-to-right order) by
+    redistributing the SAME pool of numbers they already occupy --
+    mirrors companion_adapter.resequence_companion_numbers exactly, so
+    this can never collide with a companion channel's number or invent
+    a new one; a local channel's number always stays within the set of
+    numbers local channels already held. Channel ids with no matching
+    My Catalog row are safely skipped. Returns the list of channel ids
+    actually updated, in order. A single (or empty) channel is a safe
+    no-op -- there's nothing to redistribute.
+    """
+    rows = []
+    for channel_id in ordered_channel_ids or []:
+        row = local_channel_row(dialog, channel_id)
+        if row is not None:
+            rows.append((channel_id, row))
+    if len(rows) < 2:
+        return [channel_id for channel_id, _ in rows]
+    pool = sorted(int(row["number"].value()) for _, row in rows)
+    updated = []
+    for (channel_id, row), number in zip(rows, pool):
+        row["number"].setValue(number)
+        updated.append(channel_id)
+    return updated
+
+
+def card_display_number(dialog, summary):
+    """The channel number to show on `summary`'s card right now -- live
+    from the same widget My Catalog / Companion Channels tabs edit
+    (and a just-finished reorder already wrote to), falling back to the
+    summary's own snapshot number when no live widget exists yet. Lets
+    a reorder's renumbering show up immediately without rebuilding the
+    whole summaries list.
+    """
+    if summary.channel_type in _COMPANION_NUMBER_ATTR:
+        widget = _widget(dialog, _COMPANION_NUMBER_ATTR[summary.channel_type])
+        if widget is not None:
+            return int(widget.value())
+        return summary.number
+    live = local_channel_number_from_dialog(dialog, summary.channel_id)
+    return summary.number if live is None else live
+
+
 def open_commercial_overrides_for_channel(dialog, channel_name):
     """Open the existing Channel Commercial Overrides dialog, preselected
     to `channel_name` -- reused as-is, not reimplemented (see the
@@ -217,7 +283,7 @@ def open_logo_overrides_for_channel(dialog, channel_name):
     preselected to `channel_name`. This customizes corner/opacity/size/
     timing for the channel's bug -- not the logo image file itself,
     which is always auto-discovered from the channel's own Logos folder
-    (see channel_card._find_channel_logo_path).
+    (see channel_logos.find_channel_bug_logo).
     """
     opener = getattr(dialog, "_open_channel_logo_overrides", None)
     if opener is not None:
