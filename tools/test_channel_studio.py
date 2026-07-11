@@ -603,6 +603,11 @@ class _FakeDialog:
         self.channel_commercial_overrides = {}
         self._studio_channels_by_id = {}
         self.commercials_settings = {"enabled": True, "root_folder": "/fake/commercials", "mode": "between_episodes"}
+        self.channel_bug_settings = {
+            "enabled": True, "corner": "bottom-right", "opacity": 0.75, "size": 80, "margin": 18,
+            "horizontal_offset": 0, "vertical_offset": 0, "placement_area": "overlay",
+            "grayscale_on_video": False, "fade": True,
+        }
         self._parent = None
 
     def parent(self):
@@ -893,6 +898,135 @@ check("dashboard card only adds the extra line when a status was actually given"
 
 info_rows_source = inspect.getsource(channel_card._channel_info_rows)
 check("the Commercials row prefers the live status over the static summary label", "commercials_status or summary.commercials_label" in info_rows_source)
+
+# ---------------------------------------------------------------------------
+# channel_actions: Logo Studio v1 override read/write helpers -- same
+# live-widget-sharing pattern as the commercials helpers (dialog.channel_bug_settings
+# is the same dict My Catalog's Channel Logos tab would read/write).
+# ---------------------------------------------------------------------------
+section("channel_actions: logo override read/write helpers")
+
+logo_dialog = _FakeDialog()
+check("a channel with no override yet is in Default mode", channel_actions.channel_logo_override_mode(logo_dialog, "Movies") == "global")
+check("Default mode maps to the 'Default' label", channel_actions.channel_logo_mode_label(logo_dialog, "Movies") == "Default")
+
+channel_actions.set_channel_logo_override_mode(logo_dialog, "Movies", "custom")
+check("switching to custom creates an override entry", "Movies" in logo_dialog.channel_bug_settings["channel_overrides"])
+check("the new override is seeded from the global corner", logo_dialog.channel_bug_settings["channel_overrides"]["Movies"]["corner"] == "bottom-right")
+check("custom mode maps to the 'Custom' label", channel_actions.channel_logo_mode_label(logo_dialog, "Movies") == "Custom")
+
+channel_actions.set_channel_logo_override_fields(logo_dialog, "Movies", opacity=0.4, size=150)
+check("setting fields updates opacity", logo_dialog.channel_bug_settings["channel_overrides"]["Movies"]["opacity"] == 0.4)
+check("setting fields updates size", logo_dialog.channel_bug_settings["channel_overrides"]["Movies"]["size"] == 150)
+check(
+    "setting fields doesn't clobber fields it wasn't given",
+    logo_dialog.channel_bug_settings["channel_overrides"]["Movies"]["corner"] == "bottom-right",
+)
+
+channel_actions.set_channel_logo_override_mode(logo_dialog, "News", "off")
+check("turning a channel off stores mode='off'", channel_actions.channel_logo_override_mode(logo_dialog, "News") == "off")
+check("off mode maps to the 'Off' label", channel_actions.channel_logo_mode_label(logo_dialog, "News") == "Off")
+check(
+    "a channel that's off doesn't get real playback disabled globally -- only its own override",
+    logo_dialog.channel_bug_settings["enabled"] is True,
+)
+
+fresh_fields_dialog = _FakeDialog()
+channel_actions.set_channel_logo_override_fields(fresh_fields_dialog, "Cartoons", opacity=0.3)
+check(
+    "adjusting a field on a channel with no prior override promotes it straight to custom",
+    channel_actions.channel_logo_override_mode(fresh_fields_dialog, "Cartoons") == "custom",
+)
+
+channel_actions.reset_channel_logo_override(logo_dialog, "Movies")
+check("resetting removes the override entirely", "Movies" not in logo_dialog.channel_bug_settings.get("channel_overrides", {}))
+check("a reset channel is back to Default", channel_actions.channel_logo_mode_label(logo_dialog, "Movies") == "Default")
+check("resetting a channel that never had an override is a safe no-op", channel_actions.reset_channel_logo_override(logo_dialog, "NeverSet") is None)
+
+preset_dialog = _FakeDialog()
+channel_actions.apply_channel_logo_timing_preset(preset_dialog, "Cartoon Network", "random_pop_in")
+check(
+    "applying a preset writes its real timing dict",
+    preset_dialog.channel_bug_settings["channel_overrides"]["Cartoon Network"]["timing"]["random_interval"] is True,
+)
+check(
+    "applying a preset promotes the channel to custom",
+    channel_actions.channel_logo_override_mode(preset_dialog, "Cartoon Network") == "custom",
+)
+check(
+    "channel_logo_current_preset_id recognizes the preset that was just applied",
+    channel_actions.channel_logo_current_preset_id(preset_dialog, "Cartoon Network") == "random_pop_in",
+)
+check(
+    "a channel with no override resolves to whatever preset the global timing matches (here: always-on, the legacy default)",
+    channel_actions.channel_logo_current_preset_id(preset_dialog, "Untouched Channel") == "always",
+)
+check("applying an unknown preset id is a safe no-op", channel_actions.apply_channel_logo_timing_preset(preset_dialog, "Cartoon Network", "not-a-preset") is None)
+
+position_dialog = _FakeDialog()
+expected_pos = channel_actions.channel_logo_preview_position(position_dialog, "Movies", 1280, 720, 80, 80)
+check("channel_logo_preview_position matches the pure resolve_logo_position math", expected_pos == (1182, 622), expected_pos)
+
+channel_actions.set_channel_logo_position_from_drop(position_dialog, "Movies", 0, 0, 1280, 720, 80, 80)
+dropped_override = position_dialog.channel_bug_settings["channel_overrides"]["Movies"]
+check("dropping near the top-left writes the top-left corner", dropped_override["corner"] == "top-left", dropped_override)
+check("dropping writes a custom override", dropped_override["mode"] == "custom")
+
+# ---------------------------------------------------------------------------
+# setup_sections.py: Logo Studio v1 structural checks (source-level, no
+# QApplication -- same pattern the commercials v2 section checks used).
+# ---------------------------------------------------------------------------
+section("setup_sections.py: Logo Studio v1 structural checks")
+
+logo_section_source = inspect.getsource(setup_sections.build_logo_section)
+check("companion channels still get the informational-only card, no controls", "No custom logo for companion channels" in logo_section_source)
+check("the simulated screen preview widget is used", "LogoPreviewScreen(" in logo_section_source)
+check("dropped preview coordinates are unscaled back to real px before writing settings", "/ scale" in logo_section_source)
+check(
+    "opacity and size only write real settings on release, not on every live tick",
+    logo_section_source.count("sliderReleased.connect") == 2,
+)
+check("grayscale is wired to the one real tint the overlay supports", "grayscale_on_video" in logo_section_source)
+check("no fake tint options are offered as if real -- just a short note, not a card", "More effects later" in logo_section_source)
+check("the old per-channel override dialog is still reachable, not replaced", "open_logo_overrides_for_channel" in logo_section_source)
+check("Reset to Default is wired to the real reset helper", "reset_channel_logo_override" in logo_section_source)
+check("timing is a single dropdown built from the real preset table, not a stack of buttons", "QComboBox" in logo_section_source and "LOGO_TIMING_PRESETS" in logo_section_source)
+check("advanced timing detail lives in its own dialog, not the main panel", "LogoTimingDialog(" in logo_section_source)
+check("show exclusions live in their own dialog, not the main panel", "ShowExclusionsDialog(" in logo_section_source)
+check("a missing logo offers to open the Logos folder instead of crashing", "_open_logos_folder" in logo_section_source and "Open Logos Folder" in logo_section_source)
+
+# ---------------------------------------------------------------------------
+# channel_actions: excluded shows + available shows lookup
+# ---------------------------------------------------------------------------
+section("channel_actions: show exclusions and available shows")
+
+exclusions_dialog = _FakeDialog()
+exclusions_dialog._channel_shows_lookup = {
+    "media:/x": [{"title": "Show A", "title_key": "show-a", "media_type": "tv"}],
+}
+check(
+    "available shows reads straight from the existing Airing Rules lookup",
+    channel_actions.channel_logo_available_shows(exclusions_dialog, "media:/x")
+    == [{"title": "Show A", "title_key": "show-a", "media_type": "tv"}],
+)
+check("a channel id with no shows returns an empty list, not an error", channel_actions.channel_logo_available_shows(exclusions_dialog, "media:/nope") == [])
+
+check("a channel with no exclusions yet has an empty list", channel_actions.channel_logo_excluded_shows(exclusions_dialog, "Movies") == [])
+channel_actions.set_channel_logo_excluded_shows(exclusions_dialog, "Movies", ["show-a", "show-a", ""])
+check(
+    "excluded shows are written deduped, with blanks dropped",
+    channel_actions.channel_logo_excluded_shows(exclusions_dialog, "Movies") == ["show-a"],
+)
+check(
+    "writing exclusions doesn't switch the channel to Custom mode -- exclusions are mode-independent",
+    channel_actions.channel_logo_override_mode(exclusions_dialog, "Movies") == "global",
+)
+channel_actions.set_channel_logo_override_mode(exclusions_dialog, "Movies", "custom")
+channel_actions.set_channel_logo_excluded_shows(exclusions_dialog, "Movies", ["show-a"])
+check(
+    "setting exclusions on an already-custom channel doesn't reset it back to global",
+    channel_actions.channel_logo_override_mode(exclusions_dialog, "Movies") == "custom",
+)
 
 # ---------------------------------------------------------------------------
 # Summary
