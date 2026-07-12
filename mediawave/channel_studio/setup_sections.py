@@ -464,10 +464,6 @@ def build_logo_section(dialog, channel_info, summary):
         timing_row_layout.addWidget(timing_combo, 1)
         controls_layout.addWidget(timing_row)
 
-        timing_note = QLabel("The screen above shows placement, not on-air timing.")
-        timing_note.setObjectName("fieldHelp")
-        controls_layout.addWidget(timing_note)
-
         actions_row, _ = build_action_button_row(
             [
                 ("Advanced Timing…", lambda checked=False: _open_advanced_timing()),

@@ -1010,6 +1010,7 @@ check("dropped preview coordinates are unscaled back to real px before writing s
 check("the preview preserves the source logo's aspect ratio instead of forcing a square", "scale_logo_dimensions(" in logo_section_source)
 check("the 4:3/16:9 screen shape toggle is wired to the real per-channel setting", "set_channel_logo_screen_aspect" in logo_section_source and "set_aspect(" in logo_section_source)
 check("the old fake timing-preview playback button is gone", "start_timing_preview" not in logo_section_source and "_preview_timing" not in logo_section_source)
+check("the 'placement, not on-air timing' explanatory note is gone -- Timing dropdown + Advanced Timing are enough", "on-air timing" not in logo_section_source)
 
 logo_studio_source = inspect.getsource(logo_studio)
 check("LogoPreviewScreen no longer simulates timing playback", "start_timing_preview" not in logo_studio_source and "stop_timing_preview" not in logo_studio_source and "_sim_timer" not in logo_studio_source)
