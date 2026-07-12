@@ -115,6 +115,97 @@ check(
 )
 
 
+section("Logo Studio v2: freeform normalized position (replaces corner-snap for the editor)")
+check(
+    "pos_x/pos_y 0.5/0.5 centers the logo in the available room",
+    logo_mod.resolve_freeform_position(0.5, 0.5, 1280, 720, 80, 80) == (600.0, 320.0),
+)
+check(
+    "pos_x/pos_y 0.0/0.0 sits flush at the top-left, no margin",
+    logo_mod.resolve_freeform_position(0.0, 0.0, 1280, 720, 80, 80) == (0.0, 0.0),
+)
+check(
+    "pos_x/pos_y 1.0/1.0 sits flush at the bottom-right, no margin",
+    logo_mod.resolve_freeform_position(1.0, 1.0, 1280, 720, 80, 80) == (1200.0, 640.0),
+)
+check(
+    "out-of-range normalized coordinates are clamped to [0.0, 1.0]",
+    logo_mod.resolve_freeform_position(-5, 5, 1280, 720, 80, 80) == (0.0, 640.0),
+)
+check(
+    "a screen with no room to move (logo fills it) still resolves without dividing by zero",
+    logo_mod.resolve_freeform_position(0.5, 0.5, 80, 80, 80, 80) == (0.0, 0.0),
+)
+
+for px, py in ((0.0, 0.0), (0.25, 0.75), (1.0, 1.0), (0.5, 0.5)):
+    x, y = logo_mod.resolve_freeform_position(px, py, 1280, 720, 80, 80)
+    round_trip = logo_mod.position_to_normalized(x, y, 1280, 720, 80, 80)
+    check(
+        f"position_to_normalized round-trips pos_x/pos_y ({px}, {py})",
+        round_trip == (px, py),
+        round_trip,
+    )
+check(
+    "position_to_normalized reports the midpoint when there's no room to move",
+    logo_mod.position_to_normalized(0, 0, 80, 80, 80, 80) == (0.5, 0.5),
+)
+
+freeform_eff = {"pos_x": 0.25, "pos_y": 0.75, "corner": "bottom-right", "margin": 18}
+check(
+    "resolve_effective_logo_position prefers freeform pos_x/pos_y when present",
+    logo_mod.resolve_effective_logo_position(freeform_eff, 1280, 720, 80, 80)
+    == logo_mod.resolve_freeform_position(0.25, 0.75, 1280, 720, 80, 80),
+)
+legacy_eff = {"corner": "bottom-right", "horizontal_offset": 0, "vertical_offset": 0, "margin": 18}
+check(
+    "resolve_effective_logo_position falls back to corner/margin/offset when no freeform position is stored",
+    logo_mod.resolve_effective_logo_position(legacy_eff, 1280, 720, 80, 80)
+    == logo_mod.resolve_logo_position("bottom-right", 0, 0, 1280, 720, 80, 80, 18),
+)
+partial_eff = {"pos_x": 0.5, "corner": "top-left", "horizontal_offset": 0, "vertical_offset": 0, "margin": 18}
+check(
+    "a half-set freeform position (only pos_x, no pos_y) doesn't take effect -- falls back to corner math",
+    logo_mod.resolve_effective_logo_position(partial_eff, 1280, 720, 80, 80)
+    == logo_mod.resolve_logo_position("top-left", 0, 0, 1280, 720, 80, 80, 18),
+)
+
+
+section("Logo Studio v2: aspect-preserving logo sizing (no more stretching to a forced square)")
+check("a square source logo stays square", logo_mod.scale_logo_dimensions(200, 200, 80) == (80, 80))
+check("a wide source logo is bounded by width, height shrinks proportionally", logo_mod.scale_logo_dimensions(400, 200, 80) == (80, 40))
+check("a tall source logo is bounded by height, width shrinks proportionally", logo_mod.scale_logo_dimensions(200, 400, 80) == (40, 80))
+check("a zero/invalid natural size fails safe, never crashes", logo_mod.scale_logo_dimensions(0, 0, 80) == (80, 80))
+
+
+section("Logo Studio v2: 4:3 / 16:9 screen shape -- a real per-channel setting")
+check("an unset aspect normalizes to 16:9", logo_mod.normalize_screen_aspect(None) == "16:9")
+check("an invalid aspect value falls back to 16:9", logo_mod.normalize_screen_aspect("21:9") == "16:9")
+check("4:3 is accepted as-is", logo_mod.normalize_screen_aspect("4:3") == "4:3")
+check("16:9 dimensions are (16, 9)", logo_mod.screen_aspect_dimensions("16:9") == (16, 9))
+check("4:3 dimensions are (4, 3)", logo_mod.screen_aspect_dimensions("4:3") == (4, 3))
+
+aspect_settings = app.normalize_channel_bug_settings({
+    "channel_overrides": {
+        "Movies": {"mode": "global", "screen_aspect": "4:3"},
+        "News": {"mode": "custom"},
+    },
+})
+check(
+    "screen_aspect is readable even when the channel's logo mode is Default (global)",
+    logo_mod.channel_logo_screen_aspect(aspect_settings, "Movies") == "4:3",
+)
+check("a channel with no screen_aspect set defaults to 16:9", logo_mod.channel_logo_screen_aspect(aspect_settings, "News") == "16:9")
+check("a channel never mentioned at all defaults to 16:9", logo_mod.channel_logo_screen_aspect(aspect_settings, "Nowhere") == "16:9")
+
+default_aspect_settings = app.normalize_channel_bug_settings({
+    "channel_overrides": {"Sports": {"mode": "global", "screen_aspect": "16:9"}},
+})
+check(
+    "setting screen_aspect back to the default (16:9) isn't stored as override noise",
+    "screen_aspect" not in default_aspect_settings["channel_overrides"].get("Sports", {}),
+)
+
+
 section("Logo Studio v1: size/opacity percent mapping")
 check("minimum size maps to 0%", logo_mod.logo_size_to_percent(32) == 0)
 check("maximum size maps to 100%", logo_mod.logo_size_to_percent(256) == 100)

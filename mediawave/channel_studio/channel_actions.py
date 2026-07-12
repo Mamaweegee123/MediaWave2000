@@ -28,14 +28,16 @@ that only needs to duck-type the handful of attributes actually used.
 
 from ..channel_logos import (
     channel_logo_excluded_shows as _channel_logo_excluded_shows,
+    channel_logo_screen_aspect as _channel_logo_screen_aspect,
     get_effective_channel_logo_settings,
     logo_timing_preset_by_id,
     logo_timing_preset_for_settings,
     normalize_channel_bug_override,
     normalize_channel_bug_settings,
+    normalize_screen_aspect,
     normalize_show_exclusions,
-    position_to_corner_offsets,
-    resolve_logo_position,
+    position_to_normalized,
+    resolve_effective_logo_position,
 )
 from .companion_adapter import (
     COMPANION_TYPES,
@@ -465,17 +467,28 @@ def set_channel_logo_override_mode(dialog, channel_name, mode):
     seeds the override from the channel's current effective settings so
     controls start from where the logo already visually is, not from
     the global defaults.
+
+    Mode-independent fields (excluded_shows, screen_aspect) are carried
+    over from whatever override already existed regardless of which way
+    the mode is changing -- neither is part of "effective settings", so
+    without this a mode switch would otherwise silently drop them (they
+    used to only survive by accident, when a caller happened not to
+    replace the whole override dict).
     """
     settings = getattr(dialog, "channel_bug_settings", None)
     if not isinstance(settings, dict):
         return
     overrides = settings.setdefault("channel_overrides", {})
+    existing = overrides.get(channel_name) or {}
     if mode == "custom":
         seed = dict(channel_logo_effective_settings(dialog, channel_name))
         seed["mode"] = "custom"
-        overrides[channel_name] = normalize_channel_bug_override(seed, channel_logo_global_settings(dialog))
     else:
-        overrides[channel_name] = normalize_channel_bug_override({"mode": mode}, channel_logo_global_settings(dialog))
+        seed = {"mode": mode}
+    for mode_independent_key in ("excluded_shows", "screen_aspect"):
+        if mode_independent_key in existing:
+            seed[mode_independent_key] = existing[mode_independent_key]
+    overrides[channel_name] = normalize_channel_bug_override(seed, channel_logo_global_settings(dialog))
 
 
 def set_channel_logo_override_fields(dialog, channel_name, **fields):
@@ -535,29 +548,43 @@ def channel_logo_current_preset_id(dialog, channel_name):
 def channel_logo_preview_position(dialog, channel_name, screen_w, screen_h, logo_w, logo_h):
     """(x, y) top-left position for the preview, in whatever pixel unit
     screen_w/screen_h/logo_w/logo_h are given in -- callers pass a scaled
-    preview-canvas size, not the real video window size.
+    preview-canvas size, not the real video window size. Uses the exact
+    same resolver (resolve_effective_logo_position) real playback does,
+    so a channel that's been dragged in the freeform editor previews at
+    the same normalized position it'll actually play back at.
     """
     eff = channel_logo_effective_settings(dialog, channel_name)
-    return resolve_logo_position(
-        eff.get("corner", "bottom-right"),
-        int(eff.get("horizontal_offset", 0) or 0),
-        int(eff.get("vertical_offset", 0) or 0),
-        screen_w, screen_h, logo_w, logo_h,
-        int(eff.get("margin", 18) or 18),
-    )
+    return resolve_effective_logo_position(eff, screen_w, screen_h, logo_w, logo_h)
 
 
 def set_channel_logo_position_from_drop(dialog, channel_name, x, y, screen_w, screen_h, logo_w, logo_h):
-    """Convert a dropped preview position back to corner + offsets (see
-    position_to_corner_offsets) and write it to the channel's override.
+    """Convert a dropped preview position to normalized [0.0, 1.0]
+    coordinates (see position_to_normalized) and write it to the
+    channel's override -- true freeform placement, not snapped to the
+    nearest of 4 corners the old position_to_corner_offsets scheme used.
     """
-    eff = channel_logo_effective_settings(dialog, channel_name)
-    margin = int(eff.get("margin", 18) or 18)
-    corner, h_offset, v_offset = position_to_corner_offsets(x, y, screen_w, screen_h, logo_w, logo_h, margin)
-    set_channel_logo_override_fields(
-        dialog, channel_name,
-        corner=corner, horizontal_offset=h_offset, vertical_offset=v_offset,
-    )
+    pos_x, pos_y = position_to_normalized(x, y, screen_w, screen_h, logo_w, logo_h)
+    set_channel_logo_override_fields(dialog, channel_name, pos_x=pos_x, pos_y=pos_y)
+
+
+def channel_logo_screen_aspect(dialog, channel_name):
+    """This channel's Logo Studio simulated-screen shape ("16:9"/"4:3")."""
+    settings = getattr(dialog, "channel_bug_settings", None) or {}
+    return _channel_logo_screen_aspect(settings, channel_name)
+
+
+def set_channel_logo_screen_aspect(dialog, channel_name, aspect):
+    """Write this channel's screen shape without disturbing its mode --
+    like set_channel_logo_excluded_shows, this is orthogonal to
+    Default/Custom/Off.
+    """
+    settings = getattr(dialog, "channel_bug_settings", None)
+    if not isinstance(settings, dict):
+        return
+    overrides = settings.setdefault("channel_overrides", {})
+    current = dict(overrides.get(channel_name) or {"mode": "global"})
+    current["screen_aspect"] = normalize_screen_aspect(aspect)
+    overrides[channel_name] = normalize_channel_bug_override(current, channel_logo_global_settings(dialog))
 
 
 def channel_logo_available_shows(dialog, channel_id):

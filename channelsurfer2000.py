@@ -124,6 +124,7 @@ from mediawave.channel_logos import (
     migrate_old_timing_fields as _migrate_old_timing_fields,
     normalize_channel_bug_settings,
     pick_periodic_interval_minutes,
+    resolve_effective_logo_position,
 )
 from mediawave.airing_rules import (
     AIRING_DAYS_OF_WEEK,
@@ -6629,10 +6630,6 @@ class ChannelBugOverlay(QWidget):
         if target.isEmpty():
             target = self.rect()
 
-        corner = self._eff.get("corner", "bottom-right")
-        margin = int(self._eff.get("margin", 18) or 18)
-        horizontal_offset = int(self._eff.get("horizontal_offset", 0) or 0)
-        vertical_offset = int(self._eff.get("vertical_offset", 0) or 0)
         bug_opacity = float(self._eff.get("opacity", 0.75) or 0.75)
         effective_opacity = bug_opacity * self._opacity_anim
 
@@ -6643,18 +6640,12 @@ class ChannelBugOverlay(QWidget):
         pw = draw_pm.width()
         ph = draw_pm.height()
 
-        if "right" in corner:
-            x = target.right() - pw - margin
-        else:
-            x = target.left() + margin
-        if "bottom" in corner:
-            y = target.bottom() - ph - margin
-        else:
-            y = target.top() + margin
-        x += horizontal_offset
-        y += vertical_offset
-        x = max(target.left(), min(x, target.right() - pw))
-        y = max(target.top(), min(y, target.bottom() - ph))
+        # Freeform pos_x/pos_y (set by dragging in Channel Studio's Logo
+        # tab) when present, else the legacy corner + margin + offset
+        # math -- see resolve_effective_logo_position's docstring.
+        x_rel, y_rel = resolve_effective_logo_position(self._eff, target.width(), target.height(), pw, ph)
+        x = int(round(target.left() + x_rel))
+        y = int(round(target.top() + y_rel))
 
         painter = QPainter(self)
         painter.setRenderHint(QPainter.SmoothPixmapTransform, True)

@@ -1,18 +1,22 @@
 """Logo Studio v1's simulated TV screen.
 
-A small, self-contained preview widget: a dark 16:9 "screen" that draws
-the channel's logo at its configured position/size/opacity and lets the
-user drag it around with the mouse. See setup_sections.build_logo_section
-for how this plugs into Channel Setup, and mediawave/channel_logos.py for
-the corner/offset position math this widget's drag behavior is built on
-(this widget only deals in plain pixel geometry -- it never reads or
-writes settings itself, so it stays testable/reusable independent of the
-channel_bug_settings shape).
+A small, self-contained preview widget: a dark "screen" (16:9 or 4:3,
+see set_aspect) that draws the channel's real logo -- at its own aspect
+ratio, never stretched -- at its configured position/size/opacity, and
+lets the user drag it around freely with the mouse. See
+setup_sections.build_logo_section for how this plugs into Channel Setup,
+and mediawave/channel_logos.py for the position math (both the freeform
+normalized-coordinate math and the legacy corner/offset math) this
+widget's drag behavior is built on (this widget only deals in plain
+pixel geometry -- it never reads or writes settings itself, so it stays
+testable/reusable independent of the channel_bug_settings shape).
+
+This is a static preview: it shows where and how big the logo is, not
+when it would appear. Timing (see LogoTimingDialog below) is a separate
+concern edited elsewhere in the Logo tab, not acted out here.
 """
 
-import random
-
-from PySide6.QtCore import QRect, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -39,7 +43,7 @@ class LogoPreviewScreen(QWidget):
     """Drag the logo around; drop position is reported in this widget's
     own pixel space via `logoDropped(x, y, screen_w, screen_h, logo_w,
     logo_h)` -- callers (see channel_actions.set_channel_logo_position_from_drop)
-    convert that to real corner + offset settings and write it back
+    convert that to a real normalized drag position and write it back
     through set_geometry_state(), which is also how any other change
     (a slider, an initial load, a preset) updates what's drawn here.
     """
@@ -58,20 +62,8 @@ class LogoPreviewScreen(QWidget):
         self._logo_h = 60
         self._opacity = 1.0
         self._drag_offset = None  # grab offset within the logo box, or None when not dragging
-
-        # Timing preview: a rough, compressed approximation of a timing
-        # mode's show/hide rhythm -- NOT a frame-accurate simulation of
-        # ChannelBugOverlay (real minutes are compressed to well under a
-        # couple seconds so a cycle is visible right away). Multiplies on
-        # top of the real opacity, so it never has to touch or remember
-        # the "real" opacity value it's layered over.
-        self._sim_active = False
-        self._sim_timing = {}
-        self._sim_phase = "hide"
-        self._sim_multiplier = 1.0
-        self._sim_timer = QTimer(self)
-        self._sim_timer.setSingleShot(True)
-        self._sim_timer.timeout.connect(self._sim_tick)
+        self._aspect_w = PREVIEW_ASPECT_W
+        self._aspect_h = PREVIEW_ASPECT_H
 
     def set_logo(self, pixmap):
         """`pixmap` is a QPixmap or None (shows the "no logo" placeholder)."""
@@ -79,10 +71,28 @@ class LogoPreviewScreen(QWidget):
         self.setCursor(Qt.OpenHandCursor if self._logo_pixmap is not None else Qt.ArrowCursor)
         self.update()
 
+    def set_aspect(self, aspect_w, aspect_h):
+        """Change the simulated screen's shape (e.g. 4:3 vs 16:9) -- the
+        widget's own minimum/preferred height depends on this, so the
+        layout is asked to re-measure it.
+        """
+        aspect_w = max(1, int(aspect_w))
+        aspect_h = max(1, int(aspect_h))
+        if (aspect_w, aspect_h) == (self._aspect_w, self._aspect_h):
+            return
+        self._aspect_w = aspect_w
+        self._aspect_h = aspect_h
+        self.updateGeometry()
+        self.update()
+
     def set_geometry_state(self, x, y, logo_w, logo_h, opacity):
         """Position + size in this widget's own pixel space, plus opacity
-        (0.0-1.0). Called any time the effective settings change --
-        including mid-drag, so a drag never has to fight this method.
+        (0.0-1.0). `logo_w`/`logo_h` should already reflect the logo's
+        real aspect ratio (see channel_logos.scale_logo_dimensions) --
+        this widget draws exactly the box it's given, so a caller that
+        wants no stretching passes a box shaped like the source image.
+        Called any time the effective settings change -- including
+        mid-drag, so a drag never has to fight this method.
         """
         self._logo_x = int(x)
         self._logo_y = int(y)
@@ -94,67 +104,14 @@ class LogoPreviewScreen(QWidget):
     def logo_rect(self):
         return QRect(self._logo_x, self._logo_y, self._logo_w, self._logo_h)
 
-    # ── Timing preview ───────────────────────────────────────────────────
-
-    def start_timing_preview(self, timing):
-        """Play a compressed, approximate loop of `timing` (a real timing
-        dict -- see mediawave/channel_logos.py) so the user gets a feel
-        for how often/long the logo would show, without waiting real
-        minutes. Call stop_timing_preview() to return to the plain,
-        static preview.
-        """
-        self._sim_timing = dict(timing or {})
-        self._sim_active = True
-        if self._sim_timing.get("always_visible"):
-            self._sim_timer.stop()
-            self._sim_multiplier = 1.0
-            self.update()
-            return
-        self._sim_phase = "hide"
-        self._sim_tick()
-
-    def stop_timing_preview(self):
-        self._sim_active = False
-        self._sim_timer.stop()
-        self._sim_multiplier = 1.0
-        self.update()
-
-    def _sim_tick(self):
-        if not self._sim_active:
-            return
-        t = self._sim_timing
-        if self._sim_phase == "hide":
-            self._sim_multiplier = 1.0
-            self._sim_phase = "show"
-            dur_s = float(t.get("duration_seconds", 5) or 5)
-            delay_ms = max(250, min(1200, int(dur_s * 120)))
-        else:
-            self._sim_multiplier = 0.0
-            self._sim_phase = "hide"
-            if t.get("random_interval"):
-                lo = float(t.get("interval_min_minutes", 5) or 5)
-                hi = float(t.get("interval_max_minutes", 20) or 20)
-                minutes = random.uniform(lo, hi) if hi > lo else lo
-            else:
-                minutes = float(t.get("periodic_interval_minutes", 10) or 10)
-            delay_ms = max(400, min(2600, int(minutes * 90)))
-        self.update()
-        self._sim_timer.start(delay_ms)
-
-    def hideEvent(self, event):
-        # Don't let a preview loop keep firing while this section isn't
-        # even visible (e.g. the user switched to another Setup tab).
-        self.stop_timing_preview()
-        super().hideEvent(event)
-
     def sizeHint(self):
-        return QSize(480, 270)
+        return QSize(480, int(480 * self._aspect_h / self._aspect_w))
 
     def hasHeightForWidth(self):
         return True
 
     def heightForWidth(self, width):
-        return max(1, int(width * PREVIEW_ASPECT_H / PREVIEW_ASPECT_W))
+        return max(1, int(width * self._aspect_h / self._aspect_w))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -188,9 +145,8 @@ class LogoPreviewScreen(QWidget):
         painter.drawRect(safe)
 
         if self._logo_pixmap is not None:
-            effective_opacity = self._opacity * (self._sim_multiplier if self._sim_active else 1.0)
-            if effective_opacity > 0.0:
-                painter.setOpacity(effective_opacity)
+            if self._opacity > 0.0:
+                painter.setOpacity(self._opacity)
                 painter.drawPixmap(self.logo_rect(), self._logo_pixmap)
                 painter.setOpacity(1.0)
         else:

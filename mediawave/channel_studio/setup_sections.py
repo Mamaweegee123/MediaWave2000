@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 )
 
 from ..channel_logos import (
+    CHANNEL_BUG_SCREEN_ASPECT_OPTIONS,
     LOGO_TIMING_PRESETS,
     LOGO_TIMING_PRESETS_DROPDOWN_IDS,
     find_channel_bug_logo,
@@ -33,6 +34,8 @@ from ..channel_logos import (
     logo_percent_to_opacity,
     logo_percent_to_size,
     logo_size_to_percent,
+    scale_logo_dimensions,
+    screen_aspect_dimensions,
 )
 
 # The Timing dropdown's own public list -- see LOGO_TIMING_PRESETS_DROPDOWN_IDS's
@@ -130,15 +133,22 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
 
 
 def build_logo_section(dialog, channel_info, summary):
-    """Logo Studio -- a compact interactive visual editor: drag the logo
-    around a simulated screen, resize/opacity via live sliders, pick a
-    timing mode from a dropdown. Every real change funnels through
-    channel_actions.py's channel_logo_* helpers into the exact same
-    channel_bug_settings["channel_overrides"] dict the old Channel Logos
-    (Advanced Configuration) tab's "Customize Individual Channels" dialog
-    already reads and writes -- that dialog is kept intact and reachable
-    here as "Advanced Logo Settings" for anything this panel doesn't
-    expose directly (placement area, per-field manual entry).
+    """Logo Studio -- a compact interactive visual editor: drag the real
+    logo (aspect-preserved, never stretched) freely around a simulated
+    screen, resize/opacity via live sliders, pick the screen's own 4:3/
+    16:9 shape, and pick a timing mode from a dropdown. Every real change
+    funnels through channel_actions.py's channel_logo_* helpers into the
+    exact same channel_bug_settings["channel_overrides"] dict the old
+    Channel Logos (Advanced Configuration) tab's "Customize Individual
+    Channels" dialog already reads and writes -- that dialog is kept
+    intact and reachable here as "Advanced Logo Settings" for anything
+    this panel doesn't expose directly (placement area, per-field manual
+    entry).
+
+    The preview is a static snapshot of position/size/opacity, not a
+    timing simulation -- it never tries to act out when the logo would
+    appear on air; the timing controls (dropdown + Advanced Timing) are
+    still real settings, just not played back visually here.
 
     Deliberately a single compact screen, not a long scroll: the 9
     timing modes live in one dropdown (LogoTimingDialog handles anything
@@ -194,6 +204,7 @@ def build_logo_section(dialog, channel_info, summary):
 
     preview = LogoPreviewScreen()
     preview.set_logo(pixmap)
+    preview.set_aspect(*screen_aspect_dimensions(channel_actions.channel_logo_screen_aspect(dialog, channel_name)))
     body.addWidget(preview, 3)
 
     controls = QWidget()
@@ -216,13 +227,25 @@ def build_logo_section(dialog, channel_info, summary):
     def _preview_scale():
         return max(1, preview.width()) / _LOGO_PREVIEW_REFERENCE_WIDTH
 
+    def _preview_logo_dims(scale):
+        # Preserve the source image's real aspect ratio -- the exact same
+        # "fit inside size x size, keep proportions" rule real playback's
+        # load_channel_bug_pixmap uses, so the preview never stretches a
+        # non-square logo into a forced square box, and matches what
+        # would actually be drawn on air.
+        if pixmap is not None:
+            real_w, real_h = scale_logo_dimensions(pixmap.width(), pixmap.height(), state["size"])
+        else:
+            real_w = real_h = state["size"]
+        return max(16, int(real_w * scale)), max(16, int(real_h * scale))
+
     def _repaint_preview():
         scale = _preview_scale()
-        logo_px = max(16, int(state["size"] * scale))
+        logo_w, logo_h = _preview_logo_dims(scale)
         x, y = channel_actions.channel_logo_preview_position(
-            dialog, channel_name, preview.width(), preview.height(), logo_px, logo_px
+            dialog, channel_name, preview.width(), preview.height(), logo_w, logo_h
         )
-        preview.set_geometry_state(x, y, logo_px, logo_px, state["opacity"])
+        preview.set_geometry_state(x, y, logo_w, logo_h, state["opacity"])
 
     def _open_logos_folder():
         target = os.path.join(root_path, "Logos") if root_path else ""
@@ -233,13 +256,18 @@ def build_logo_section(dialog, channel_info, summary):
 
     def _on_drop(x, y, screen_w, screen_h, logo_w, logo_h):
         # LogoPreviewScreen reports everything in preview-canvas pixels;
-        # unscale back to the same real-px space corner/margin/offset
-        # settings are stored in before handing off to channel_actions.
+        # unscale back to the same real-px space the normalized drag
+        # position is computed in before handing off to channel_actions.
         scale = _preview_scale()
         channel_actions.set_channel_logo_position_from_drop(
             dialog, channel_name,
             x / scale, y / scale, screen_w / scale, screen_h / scale, logo_w / scale, logo_h / scale,
         )
+        _full_render()
+
+    def _set_aspect(aspect):
+        channel_actions.set_channel_logo_screen_aspect(dialog, channel_name, aspect)
+        preview.set_aspect(*screen_aspect_dimensions(aspect))
         _full_render()
 
     preview.resized.connect(_repaint_preview)
@@ -283,10 +311,6 @@ def build_logo_section(dialog, channel_info, summary):
             channel_actions.set_channel_logo_excluded_shows(dialog, channel_name, exclusions_dialog.result_excluded)
             _full_render()
 
-    def _preview_timing():
-        eff = channel_actions.channel_logo_effective_settings(dialog, channel_name)
-        preview.start_timing_preview(eff.get("timing") or {})
-
     def _full_render():
         _clear_controls()
         _sync_state_from_settings()
@@ -326,6 +350,25 @@ def build_logo_section(dialog, channel_info, summary):
             btn.setCursor(Qt.PointingHandCursor)
             style_choice_button(btn, active=(mode == choice_mode))
         controls_layout.addWidget(mode_row)
+
+        # Screen shape -- a real per-channel setting (see
+        # channel_actions.set_channel_logo_screen_aspect), independent of
+        # Default/Custom/Off. Changes the simulated screen's shape
+        # immediately, not just a label.
+        current_aspect = channel_actions.channel_logo_screen_aspect(dialog, channel_name)
+        aspect_row_wrap = QWidget()
+        aspect_row_layout = QHBoxLayout(aspect_row_wrap)
+        aspect_row_layout.setContentsMargins(0, 0, 0, 0)
+        aspect_row_layout.setSpacing(6)
+        aspect_row_layout.addWidget(QLabel("Screen shape:"))
+        aspect_row, aspect_buttons = build_action_button_row(
+            [(label, lambda checked=False, a=label: _set_aspect(a)) for label in CHANNEL_BUG_SCREEN_ASPECT_OPTIONS]
+        )
+        for label, btn in zip(CHANNEL_BUG_SCREEN_ASPECT_OPTIONS, aspect_buttons):
+            btn.setCursor(Qt.PointingHandCursor)
+            style_choice_button(btn, active=(label == current_aspect))
+        aspect_row_layout.addWidget(aspect_row, 1)
+        controls_layout.addWidget(aspect_row_wrap)
 
         opacity_label = QLabel(f"Opacity: {logo_opacity_to_percent(state['opacity'])}%")
         opacity_label.setObjectName("fieldHelp")
@@ -419,12 +462,11 @@ def build_logo_section(dialog, channel_info, summary):
             lambda index, combo=timing_combo: _apply_preset(combo.itemData(index)) if combo.itemData(index) else None
         )
         timing_row_layout.addWidget(timing_combo, 1)
-        preview_btn = QPushButton("▶")
-        preview_btn.setFixedWidth(28)
-        preview_btn.setToolTip("Preview this timing in the simulated screen")
-        preview_btn.clicked.connect(lambda checked=False: _preview_timing())
-        timing_row_layout.addWidget(preview_btn)
         controls_layout.addWidget(timing_row)
+
+        timing_note = QLabel("The screen above shows placement, not on-air timing.")
+        timing_note.setObjectName("fieldHelp")
+        controls_layout.addWidget(timing_note)
 
         actions_row, _ = build_action_button_row(
             [

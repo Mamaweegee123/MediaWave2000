@@ -717,6 +717,7 @@ check("the enabled checkbox only connects toggled when a real handler is given",
 section("setup_sections._companion_type")
 
 from mediawave.channel_studio import setup_sections
+from mediawave.channel_studio import logo_studio
 
 radiowave_summary = ChannelStudioSummary(channel_id="special:radiowave", name="RadioWaveTV", number=1, channel_type="radiowave")
 check(
@@ -956,8 +957,45 @@ check("channel_logo_preview_position matches the pure resolve_logo_position math
 
 channel_actions.set_channel_logo_position_from_drop(position_dialog, "Movies", 0, 0, 1280, 720, 80, 80)
 dropped_override = position_dialog.channel_bug_settings["channel_overrides"]["Movies"]
-check("dropping near the top-left writes the top-left corner", dropped_override["corner"] == "top-left", dropped_override)
+check("dropping at the top-left writes normalized pos_x/pos_y of (0.0, 0.0), not a corner snap", (dropped_override["pos_x"], dropped_override["pos_y"]) == (0.0, 0.0), dropped_override)
 check("dropping writes a custom override", dropped_override["mode"] == "custom")
+
+channel_actions.set_channel_logo_position_from_drop(position_dialog, "Movies", 600, 320, 1280, 720, 80, 80)
+centered_override = position_dialog.channel_bug_settings["channel_overrides"]["Movies"]
+check(
+    "dropping in the middle of the screen writes a real freeform position, not clamped to a corner+offset range",
+    (centered_override["pos_x"], centered_override["pos_y"]) == (0.5, 0.5),
+    centered_override,
+)
+check(
+    "channel_logo_preview_position honors the freeform position that was just dropped",
+    channel_actions.channel_logo_preview_position(position_dialog, "Movies", 1280, 720, 80, 80) == (600.0, 320.0),
+)
+
+# ---------------------------------------------------------------------------
+# channel_actions: Logo Studio v2 screen-shape (4:3/16:9) helpers -- a real
+# per-channel setting independent of Default/Custom/Off mode.
+# ---------------------------------------------------------------------------
+section("channel_actions: logo screen-aspect read/write helpers")
+
+aspect_dialog = _FakeDialog()
+check("a channel with no aspect set yet defaults to 16:9", channel_actions.channel_logo_screen_aspect(aspect_dialog, "Movies") == "16:9")
+
+channel_actions.set_channel_logo_screen_aspect(aspect_dialog, "Movies", "4:3")
+check("setting the aspect to 4:3 sticks", channel_actions.channel_logo_screen_aspect(aspect_dialog, "Movies") == "4:3")
+check(
+    "setting the screen aspect doesn't promote the channel to Custom mode",
+    channel_actions.channel_logo_override_mode(aspect_dialog, "Movies") == "global",
+)
+
+channel_actions.set_channel_logo_override_mode(aspect_dialog, "Movies", "off")
+check(
+    "the screen aspect survives switching the channel to Off",
+    channel_actions.channel_logo_screen_aspect(aspect_dialog, "Movies") == "4:3",
+)
+
+channel_actions.set_channel_logo_screen_aspect(aspect_dialog, "Movies", "16:9")
+check("setting the aspect back to the default (16:9) is a real, honest change", channel_actions.channel_logo_screen_aspect(aspect_dialog, "Movies") == "16:9")
 
 # ---------------------------------------------------------------------------
 # setup_sections.py: Logo Studio v1 structural checks (source-level, no
@@ -969,6 +1007,14 @@ logo_section_source = inspect.getsource(setup_sections.build_logo_section)
 check("companion channels still get the informational-only card, no controls", "No custom logo for companion channels" in logo_section_source)
 check("the simulated screen preview widget is used", "LogoPreviewScreen(" in logo_section_source)
 check("dropped preview coordinates are unscaled back to real px before writing settings", "/ scale" in logo_section_source)
+check("the preview preserves the source logo's aspect ratio instead of forcing a square", "scale_logo_dimensions(" in logo_section_source)
+check("the 4:3/16:9 screen shape toggle is wired to the real per-channel setting", "set_channel_logo_screen_aspect" in logo_section_source and "set_aspect(" in logo_section_source)
+check("the old fake timing-preview playback button is gone", "start_timing_preview" not in logo_section_source and "_preview_timing" not in logo_section_source)
+
+logo_studio_source = inspect.getsource(logo_studio)
+check("LogoPreviewScreen no longer simulates timing playback", "start_timing_preview" not in logo_studio_source and "stop_timing_preview" not in logo_studio_source and "_sim_timer" not in logo_studio_source)
+check("LogoPreviewScreen exposes a real set_aspect for the 4:3/16:9 toggle", "def set_aspect(self, aspect_w, aspect_h):" in logo_studio_source)
+check("the preview's height-for-width uses the widget's own current aspect, not a fixed 16:9 constant", "self._aspect_h / self._aspect_w" in logo_studio_source)
 check(
     "opacity and size only write real settings on release, not on every live tick",
     logo_section_source.count("sliderReleased.connect") == 2,

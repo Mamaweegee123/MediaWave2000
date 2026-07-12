@@ -110,6 +110,26 @@ CHANNEL_BUG_PLACEMENT_LABELS = {
     "video_content": "Video content area",
 }
 
+# Logo Studio's simulated-screen shape -- a per-channel setting (like
+# excluded_shows) independent of Default/Custom/Off mode, so switching
+# modes never resets which shape the user picked for this channel.
+# Purely a Channel Studio preview concept -- real playback happens inside
+# whatever window/aspect the video itself already has, so this never
+# flows into ChannelBugOverlay.
+CHANNEL_BUG_SCREEN_ASPECT_OPTIONS = ("16:9", "4:3")
+CHANNEL_BUG_SCREEN_ASPECT_DEFAULT = "16:9"
+_SCREEN_ASPECT_DIMENSIONS = {"16:9": (16, 9), "4:3": (4, 3)}
+
+
+def normalize_screen_aspect(value):
+    v = str(value or CHANNEL_BUG_SCREEN_ASPECT_DEFAULT)
+    return v if v in CHANNEL_BUG_SCREEN_ASPECT_OPTIONS else CHANNEL_BUG_SCREEN_ASPECT_DEFAULT
+
+
+def screen_aspect_dimensions(aspect):
+    """(w, h) ratio ints for a screen_aspect value, e.g. "4:3" -> (4, 3)."""
+    return _SCREEN_ASPECT_DIMENSIONS.get(normalize_screen_aspect(aspect), (16, 9))
+
 
 def normalize_timing(t):
     if not isinstance(t, dict):
@@ -230,6 +250,16 @@ def normalize_channel_bug_override(override, global_settings):
     excluded_shows = normalize_show_exclusions(override.get("excluded_shows"))
     if excluded_shows:
         result["excluded_shows"] = excluded_shows
+    # Screen shape is a real per-channel Logo Studio setting, but like
+    # excluded_shows it's independent of mode -- picking 4:3 for a
+    # channel shouldn't be undone by switching Default/Custom/Off.
+    # Only stored when it differs from the default, same rationale as
+    # excluded_shows: it keeps untouched channels' saved settings
+    # unchanged.
+    if "screen_aspect" in override:
+        screen_aspect = normalize_screen_aspect(override.get("screen_aspect"))
+        if screen_aspect != CHANNEL_BUG_SCREEN_ASPECT_DEFAULT:
+            result["screen_aspect"] = screen_aspect
     if mode == "custom":
         gs = global_settings or {}
         result["corner"] = str(override.get("corner") or gs.get("corner", "bottom-right"))
@@ -246,6 +276,19 @@ def normalize_channel_bug_override(override, global_settings):
         result["grayscale_on_video"] = bool(override.get("grayscale_on_video") if "grayscale_on_video" in override else gs.get("grayscale_on_video", False))
         result["fade"] = bool(override.get("fade") if override.get("fade") is not None else gs.get("fade", True))
         result["timing"] = migrate_old_timing_fields(override, fallback_timing=gs.get("timing") or {})
+        # Freeform drag position -- normalized [0.0, 1.0] coordinates (see
+        # resolve_freeform_position). Only meaningful once both axes are
+        # set (a real drag always writes both together); a channel that
+        # has never been dragged in the new editor has neither, and
+        # falls back to corner + margin + offset (resolve_effective_logo_position).
+        pos_x = override.get("pos_x")
+        pos_y = override.get("pos_y")
+        if pos_x is not None and pos_y is not None:
+            try:
+                result["pos_x"] = max(0.0, min(1.0, float(pos_x)))
+                result["pos_y"] = max(0.0, min(1.0, float(pos_y)))
+            except (TypeError, ValueError):
+                pass
     return result
 
 
@@ -308,6 +351,8 @@ def get_effective_channel_logo_settings(channel_name, global_settings):
         result["grayscale_on_video"] = ch_override.get("grayscale_on_video", gs.get("grayscale_on_video", False))
         result["fade"] = ch_override.get("fade", gs.get("fade", True))
         result["timing"] = normalize_timing(ch_override.get("timing") or gs.get("timing") or {})
+        result["pos_x"] = ch_override.get("pos_x")
+        result["pos_y"] = ch_override.get("pos_y")
         return result
     return dict(gs)
 
@@ -369,6 +414,71 @@ def resolve_logo_position(corner, horizontal_offset, vertical_offset, screen_w, 
     x = max(0, min(x, screen_w - logo_w))
     y = max(0, min(y, screen_h - logo_h))
     return x, y
+
+
+def scale_logo_dimensions(natural_w, natural_h, size):
+    """(w, h) for a logo bounded inside a size x size box, aspect preserved --
+    the exact same "fit inside a square, keep proportions" rule
+    load_channel_bug_pixmap uses (QPixmap.scaled(size, size, Qt.KeepAspectRatio))
+    for real playback, factored out here so any preview that wants to show
+    the logo at the same effective size computes the identical box instead
+    of stretching the source image to fill a forced square.
+    """
+    size = max(1, int(size or 1))
+    natural_w = max(1, int(natural_w or 1))
+    natural_h = max(1, int(natural_h or 1))
+    scale = min(size / natural_w, size / natural_h)
+    return max(1, round(natural_w * scale)), max(1, round(natural_h * scale))
+
+
+def resolve_freeform_position(pos_x, pos_y, screen_w, screen_h, logo_w, logo_h):
+    """(x, y) top-left position from normalized [0.0, 1.0] coordinates --
+    0.0 means the logo's edge is flush with the screen's left/top edge,
+    1.0 means flush with the right/bottom edge. Because the fraction is
+    applied to the *available room* (screen size minus logo size), the
+    result is always inside the screen by construction -- no separate
+    clamp needed, unlike the corner+offset scheme this supplements.
+    """
+    room_w = max(0, screen_w - logo_w)
+    room_h = max(0, screen_h - logo_h)
+    px = max(0.0, min(1.0, float(pos_x if pos_x is not None else 0.5)))
+    py = max(0.0, min(1.0, float(pos_y if pos_y is not None else 0.5)))
+    return room_w * px, room_h * py
+
+
+def position_to_normalized(x, y, screen_w, screen_h, logo_w, logo_h):
+    """Inverse of resolve_freeform_position -- a dropped top-left pixel
+    position to normalized [0.0, 1.0] coordinates. A screen with no room
+    to move in either axis (logo fills the screen) reports the midpoint
+    (0.5) rather than dividing by zero.
+    """
+    room_w = screen_w - logo_w
+    room_h = screen_h - logo_h
+    pos_x = (x / room_w) if room_w > 0 else 0.5
+    pos_y = (y / room_h) if room_h > 0 else 0.5
+    return max(0.0, min(1.0, pos_x)), max(0.0, min(1.0, pos_y))
+
+
+def resolve_effective_logo_position(eff, screen_w, screen_h, logo_w, logo_h):
+    """The single position resolver for both the Logo Studio preview and
+    real playback (ChannelBugOverlay.paintEvent): freeform normalized
+    pos_x/pos_y when a channel has been dragged in the new editor, else
+    the legacy corner + margin + offset math (resolve_logo_position) for
+    channels that have never been touched by the freeform editor, or
+    whose settings predate it -- so old saved settings keep working
+    unchanged.
+    """
+    pos_x = eff.get("pos_x") if isinstance(eff, dict) else None
+    pos_y = eff.get("pos_y") if isinstance(eff, dict) else None
+    if pos_x is not None and pos_y is not None:
+        return resolve_freeform_position(pos_x, pos_y, screen_w, screen_h, logo_w, logo_h)
+    return resolve_logo_position(
+        eff.get("corner", "bottom-right"),
+        int(eff.get("horizontal_offset", 0) or 0),
+        int(eff.get("vertical_offset", 0) or 0),
+        screen_w, screen_h, logo_w, logo_h,
+        int(eff.get("margin", 18) or 18),
+    )
 
 
 def position_to_corner_offsets(x, y, screen_w, screen_h, logo_w, logo_h, margin):
@@ -548,6 +658,16 @@ def channel_logo_excluded_shows(global_settings, channel_name):
     overrides = gs.get("channel_overrides") or {}
     override = overrides.get(channel_name) or {}
     return normalize_show_exclusions(override.get("excluded_shows"))
+
+
+def channel_logo_screen_aspect(global_settings, channel_name):
+    """This channel's Logo Studio simulated-screen shape ("16:9"/"4:3") --
+    independent of Default/Custom/Off mode, same as excluded_shows above.
+    """
+    gs = global_settings if isinstance(global_settings, dict) else {}
+    overrides = gs.get("channel_overrides") or {}
+    override = overrides.get(channel_name) or {}
+    return normalize_screen_aspect(override.get("screen_aspect"))
 
 
 def is_show_excluded(excluded_shows, show_key):
