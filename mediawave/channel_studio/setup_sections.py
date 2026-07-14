@@ -30,6 +30,7 @@ from ..channel_logos import (
     CHANNEL_BUG_SCREEN_ASPECT_OPTIONS,
     LOGO_TIMING_PRESETS,
     LOGO_TIMING_PRESETS_DROPDOWN_IDS,
+    companion_logo_folder,
     find_channel_bug_logo,
     logo_opacity_to_percent,
     logo_percent_to_opacity,
@@ -247,9 +248,9 @@ def build_logo_section(dialog, channel_info, summary):
     # keeps finding it. Falls back to the snapshot only if the live
     # lookup comes up empty (e.g. root_path unavailable this session).
     # Companions have no root_path at all -- find_channel_bug_logo's
-    # shared_logos_dir fallback (the portable User Content/Logos/ folder)
-    # is the only path that can ever resolve one for them, keyed by their
-    # display name (e.g. "WeatherStar 4000+.png").
+    # shared_logos_dir path checks the stable companion folder first
+    # (e.g. User Content/Logos/WeatherStar/logo.png), then legacy
+    # shared-root aliases for backward compatibility.
     shared_logos_dir = getattr(dialog, "_shared_logos_dir", "")
     logo_path = find_channel_bug_logo(
         root_path,
@@ -267,7 +268,8 @@ def build_logo_section(dialog, channel_info, summary):
         if not candidate.isNull():
             pixmap = candidate
 
-    note = QLabel("Drag the logo on the preview, or fine-tune it here.")
+    note_text = "Place an image named logo.png in this folder." if companion_type else "Drag the logo on the preview, or fine-tune it here."
+    note = QLabel(note_text)
     note.setObjectName("sectionNote")
     note.setWordWrap(True)
     layout.addWidget(note)
@@ -325,14 +327,20 @@ def build_logo_section(dialog, channel_info, summary):
         preview.set_geometry_state(x, y, logo_w, logo_h, state["opacity"])
 
     def _open_logos_folder():
-        # A local channel's own per-folder Logos/ wins when it exists;
-        # otherwise (including every companion, which has no root_path at
-        # all) fall back to the shared User Content/Logos/ folder --
-        # ensure_user_content_structure creates it on every startup, so
-        # it should always exist by the time this runs.
-        target = os.path.join(root_path, "Logos") if root_path else ""
-        if not target or not os.path.isdir(target):
-            target = shared_logos_dir if shared_logos_dir and os.path.isdir(shared_logos_dir) else (root_path or "")
+        if companion_type:
+            target = companion_logo_folder(
+                shared_logos_dir,
+                channel_name,
+                channel_id=channel_id,
+                channel_type=companion_type,
+                display_name=channel_name,
+            )
+            if target:
+                os.makedirs(target, exist_ok=True)
+        else:
+            target = os.path.join(root_path, "Logos") if root_path else ""
+            if target:
+                os.makedirs(target, exist_ok=True)
         if target and os.path.isdir(target):
             QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
@@ -412,8 +420,7 @@ def build_logo_section(dialog, channel_info, summary):
 
         if pixmap is None:
             no_logo_hint = (
-                f"Add a PNG named \"{channel_name}\" to the shared User Content/Logos folder and it'll show up "
-                "automatically -- companion channels don't have a folder of their own."
+                "Place an image named logo.png in this companion's logo folder."
                 if companion_type
                 else "Add a PNG to this channel's Logos folder and it'll show up automatically."
             )

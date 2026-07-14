@@ -41,6 +41,7 @@ from ..channel_logos import (
 )
 from . import channel_identity
 from .companion_adapter import (
+    COMPANION_CHANNEL_IDS,
     COMPANION_NAMES,
     COMPANION_TYPES,
     read_companion_snapshot,
@@ -122,7 +123,12 @@ def set_companion_enabled_on_dialog(dialog, companion_type, enabled):
     lineup at all -- see inject_special_channels in channelsurfer2000.py).
     Returns True if a matching widget was found and updated.
     """
-    return apply_companion_entry_to_dialog(dialog, companion_type, {"enabled": enabled})
+    if not apply_companion_entry_to_dialog(dialog, companion_type, {"enabled": enabled}):
+        return False
+    channel_id = COMPANION_CHANNEL_IDS.get(companion_type, "")
+    if channel_id:
+        _write_channel_setting_field(dialog, channel_id, "enabled", bool(enabled))
+    return True
 
 
 def companion_status_from_dialog(dialog):
@@ -258,6 +264,13 @@ def _companion_name_from_dialog(dialog, companion_type):
     main_app = parent() if callable(parent) else None
     if main_app is None or not hasattr(main_app, "app_settings"):
         return ""
+    channel_id = COMPANION_CHANNEL_IDS.get(companion_type, "")
+    settings = main_app.app_settings.get("catalog_channel_settings")
+    if isinstance(settings, dict):
+        row = settings.get(channel_id) or {}
+        display_name = str(row.get("display_name", "") or "").strip()
+        if display_name:
+            return display_name
     return str(main_app.app_settings.get(_COMPANION_NAME_SETTING_KEY[companion_type], "") or "").strip()
 
 
@@ -272,6 +285,14 @@ def _set_companion_name_on_dialog(dialog, companion_type, name):
     if main_app is None or not hasattr(main_app, "app_settings"):
         return False
     main_app.app_settings[_COMPANION_NAME_SETTING_KEY[companion_type]] = str(name or "").strip()
+    channel_id = COMPANION_CHANNEL_IDS.get(companion_type, "")
+    if channel_id:
+        _write_channel_setting_field(dialog, channel_id, "display_name", str(name or "").strip())
+    settings = getattr(dialog, "catalog_channel_settings", None)
+    if isinstance(settings, dict) and channel_id:
+        row = dict(settings.get(channel_id) or {})
+        row["display_name"] = str(name or "").strip()
+        settings[channel_id] = row
     return True
 
 

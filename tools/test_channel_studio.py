@@ -18,6 +18,7 @@ from mediawave.channel_studio import companion_adapter
 from mediawave.channel_studio import channel_actions
 from mediawave.channel_studio import channel_identity
 from mediawave import channel_logos
+import channelsurfer2000
 from channelsurfer2000 import migrate_legacy_channel_settings, normalize_catalog_channel_settings
 
 PASS = []
@@ -482,6 +483,20 @@ check("the widget itself is now checked", fake_dialog.youtube_enabled.isChecked(
 check("disabling a companion flips it back off", channel_actions.set_companion_enabled_on_dialog(fake_dialog, "youtube", False) is True)
 check("unknown companion type on set_companion_enabled_on_dialog is a safe no-op", channel_actions.set_companion_enabled_on_dialog(fake_dialog, "bogus", True) is False)
 
+class _FakeSettingsApp:
+    def __init__(self):
+        self.app_settings = {"catalog_channel_settings": {}}
+
+
+enabled_main_app = _FakeSettingsApp()
+fake_dialog._parent = enabled_main_app
+channel_actions.set_companion_enabled_on_dialog(fake_dialog, "weatherstar", False)
+check(
+    "companion enabled edits also update unified catalog_channel_settings when a real app is reachable",
+    enabled_main_app.app_settings["catalog_channel_settings"]["special:weatherstar"]["enabled"] is False,
+)
+fake_dialog._parent = None
+
 unified_companion_entries = channel_actions.unified_entries_from_dialog(fake_dialog)
 check("unified_entries_from_dialog sees both companion slots", {"special:radiowave", "special:weatherstar"} <= {e["id"] for e in unified_companion_entries}, unified_companion_entries)
 check("a manual number write (the only way numbers change now) lands on the real spinbox", channel_actions.set_channel_number_on_dialog(fake_dialog, "special:radiowave", 36) is True)
@@ -875,7 +890,7 @@ check(
     "no more informational-only card",
     "No custom logo for companion channels" not in logo_section_source,
 )
-check("Logo Studio resolves through the shared User Content/Logos folder for channels with no folder of their own", "_shared_logos_dir" in logo_section_source)
+check("Logo Studio resolves through stable companion folders under the shared User Content/Logos folder", "_shared_logos_dir" in logo_section_source and "companion_logo_folder" in logo_section_source)
 check("the simulated screen preview widget is used", "LogoPreviewScreen(" in logo_section_source)
 check("dropped preview coordinates are unscaled back to real px before writing settings", "/ scale" in logo_section_source)
 check("the preview preserves the source logo's aspect ratio instead of forcing a square", "scale_logo_dimensions(" in logo_section_source)
@@ -910,6 +925,7 @@ check("timing is a single dropdown built from the real preset table, not a stack
 check("advanced timing detail lives in its own dialog, not the main panel", "LogoTimingDialog(" in logo_section_source)
 check("show exclusions live in their own dialog, not the main panel", "ShowExclusionsDialog(" in logo_section_source)
 check("a missing logo offers to open the Logos folder instead of crashing", "_open_logos_folder" in logo_section_source and "Open Logos Folder" in logo_section_source)
+check("companion logo helper text points users to logo.png, not channel-name filenames", "Place an image named logo.png" in logo_section_source)
 
 # ---------------------------------------------------------------------------
 # channel_actions: excluded shows + available shows lookup
@@ -1207,6 +1223,15 @@ name_main_app = _FakeMainApp()
 name_dialog._parent = name_main_app
 check("set_channel_name_on_dialog renames a companion via its flat display-name setting", channel_actions.set_channel_name_on_dialog(name_dialog, "special:weatherstar", "The Weather Machine") is True)
 check("the companion rename is readable back immediately", channel_actions.channel_name_from_dialog(name_dialog, "special:weatherstar") == "The Weather Machine")
+check(
+    "renaming a companion also updates the unified catalog_channel_settings row",
+    name_main_app.app_settings["catalog_channel_settings"]["special:weatherstar"]["display_name"] == "The Weather Machine",
+)
+advanced_dialog_source = inspect.getsource(channelsurfer2000.AdvancedConfigDialog.collect_all_catalog_channel_settings)
+check(
+    "saving companion settings prefers the current companion display name over stale catalog-row snapshots",
+    "dialog_row.get(\"display_name\"" in advanced_dialog_source and "row.get(\"display_name\"" in advanced_dialog_source,
+)
 check("renaming a local channel also updates the main app's real app_settings, no Save needed", (
     channel_actions.set_channel_name_on_dialog(name_dialog, "media:/fake/a", "4Kids Forever"),
     name_main_app.app_settings["catalog_channel_settings"]["media:/fake/a"]["display_name"],
@@ -1247,9 +1272,6 @@ check("an un-renamed companion's summary falls back to the built-in default", by
 # ---------------------------------------------------------------------------
 section("apply_catalog_channel_customizations: display_name is now live")
 
-import channelsurfer2000
-
-
 class _FakeAppChannel:
     def __init__(self, name, root_path):
         self.name = name
@@ -1287,6 +1309,40 @@ no_rename_app = _FakeAppForRename([no_rename_channel], {no_rename_id: {"enabled"
 no_rename_app.apply_catalog_channel_customizations()
 check("no display_name set -> the channel's original name is left alone", no_rename_channel.name == "Movies")
 check("folder_name is still captured even without a rename", no_rename_channel.folder_name == "Movies")
+
+
+class _FakeRuntimeCompanionApp:
+    configured_weather_channel = channelsurfer2000.ChannelSurfer.configured_weather_channel
+    catalog_channel_id = channelsurfer2000.ChannelSurfer.catalog_channel_id
+    channel_display_number = channelsurfer2000.ChannelSurfer.channel_display_number
+
+    def __init__(self):
+        self.app_settings = {
+            "weatherstar_enabled": False,
+            "weatherstar_channel_number": 1,
+            "weatherstar_location": "Springfield, IL",
+            "weatherstar_display_name": "",
+            "catalog_channel_settings": {
+                "special:weatherstar": {
+                    "enabled": True,
+                    "channel_number": 12,
+                    "display_name": "Local Weather",
+                }
+            },
+        }
+
+
+runtime_companion_app = _FakeRuntimeCompanionApp()
+runtime_weather = runtime_companion_app.configured_weather_channel()
+check("renamed WeatherStar display name reaches live runtime construction", runtime_weather.name == "Local Weather")
+check(
+    "runtime companion enabled state comes from unified catalog settings over stale legacy flat keys",
+    runtime_weather is not None,
+)
+check(
+    "runtime companion number comes from unified catalog settings",
+    channelsurfer2000.companion_catalog_row(runtime_companion_app.app_settings, "weatherstar")["channel_number"] == 12,
+)
 
 # ---------------------------------------------------------------------------
 # Bug found via live/manual verification: migrate_legacy_channel_settings

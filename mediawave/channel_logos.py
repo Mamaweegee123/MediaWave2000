@@ -13,6 +13,11 @@ COMPANION_LOGO_ALIASES = {
     "radiowave": ("RadioWaveTV", "RadioWave", "radiowave"),
     "youtube": ("NetTV", "nettv", "youtube"),
 }
+COMPANION_LOGO_FOLDER_NAMES = {
+    "weatherstar": "WeatherStar",
+    "radiowave": "RadioWave",
+    "youtube": "NetTV",
+}
 COMPANION_ID_TYPES = {
     "special:weatherstar": "weatherstar",
     "special:radiowave": "radiowave",
@@ -69,6 +74,15 @@ def channel_bug_logo_candidate_names(channel_name, channel_id=None, channel_type
         if ":" in raw_id:
             _append_unique(candidates, raw_id.split(":", 1)[1])
     return candidates
+
+
+def companion_logo_folder(shared_logos_dir, channel_name="", channel_id=None, channel_type=None, display_name=None):
+    """Stable companion artwork folder, independent of display name."""
+    if not shared_logos_dir:
+        return ""
+    ctype = companion_logo_type(channel_name, channel_id=channel_id, channel_type=channel_type, display_name=display_name)
+    folder = COMPANION_LOGO_FOLDER_NAMES.get(ctype, "")
+    return os.path.join(shared_logos_dir, folder) if folder else ""
 
 
 def _scan_logo_dir(logos_dir, channel_names, allow_any_image_fallback):
@@ -141,6 +155,42 @@ def _scan_logo_dir(logos_dir, channel_names, allow_any_image_fallback):
     return ""
 
 
+def _scan_companion_logo_dir(logos_dir):
+    """Preferred companion-folder lookup: logo.* first, then one image."""
+    if not os.path.isdir(logos_dir):
+        return ""
+    try:
+        entries = os.listdir(logos_dir)
+    except OSError:
+        return ""
+    lower_entries = {e.lower(): e for e in entries}
+
+    def candidate(name):
+        actual = lower_entries.get(name.lower())
+        if actual:
+            p = os.path.join(logos_dir, actual)
+            if os.path.isfile(p):
+                return p
+        return ""
+
+    for name in ("logo.png", "logo.webp", "logo.jpg", "logo.jpeg"):
+        found = candidate(name)
+        if found:
+            return found
+    for name in CHANNEL_BUG_PREFERRED_NAMES:
+        found = candidate(name)
+        if found:
+            return found
+
+    image_hits = []
+    for entry in sorted(entries, key=str.casefold):
+        ext = os.path.splitext(entry)[1].lower()
+        full = os.path.join(logos_dir, entry)
+        if ext in CHANNEL_BUG_SUPPORTED_EXTS and os.path.isfile(full):
+            image_hits.append(full)
+    return image_hits[0] if len(image_hits) == 1 else ""
+
+
 def channel_bug_logo_lookup_details(root_path, channel_name, shared_logos_dir=None, channel_id=None, channel_type=None, display_name=None):
     """Discover the best logo image for a channel.
 
@@ -174,6 +224,16 @@ def channel_bug_logo_lookup_details(root_path, channel_name, shared_logos_dir=No
         if found:
             return {"path": found, "source": "local", "candidates": candidates}
     if shared_logos_dir:
+        folder = companion_logo_folder(
+            shared_logos_dir,
+            channel_name,
+            channel_id=channel_id,
+            channel_type=channel_type,
+            display_name=display_name,
+        )
+        found = _scan_companion_logo_dir(folder)
+        if found:
+            return {"path": found, "source": "companion-folder", "candidates": candidates}
         found = _scan_logo_dir(shared_logos_dir, candidates, allow_any_image_fallback=False)
         if found:
             return {"path": found, "source": "shared", "candidates": candidates}

@@ -1441,6 +1441,46 @@ def migrate_legacy_channel_settings(app_settings):
     return app_settings
 
 
+def companion_catalog_row(app_settings, companion_type):
+    """Authoritative saved row for a companion, with legacy fallback."""
+    from mediawave.channel_studio.companion_adapter import (
+        COMPANION_CHANNEL_IDS,
+        COMPANION_NAMES,
+    )
+
+    channel_id = COMPANION_CHANNEL_IDS.get(companion_type, "")
+    defaults = catalog_channel_settings_defaults()
+    legacy_enabled = bool((app_settings or {}).get(f"{companion_type}_enabled", False))
+    try:
+        legacy_number = int((app_settings or {}).get(f"{companion_type}_channel_number", 1) or 1)
+    except (TypeError, ValueError):
+        legacy_number = 1
+    defaults.update(
+        {
+            "enabled": legacy_enabled,
+            "channel_number": max(1, min(9999, legacy_number)),
+            "display_name": str((app_settings or {}).get(f"{companion_type}_display_name", "") or "").strip(),
+        }
+    )
+    settings = (app_settings or {}).get("catalog_channel_settings")
+    if isinstance(settings, dict) and channel_id in settings:
+        normalized = normalize_catalog_channel_settings({channel_id: settings.get(channel_id, {})})
+        row = dict(normalized.get(channel_id, defaults))
+    else:
+        row = defaults
+    row["channel_id"] = channel_id
+    row["companion_type"] = companion_type
+    row["default_name"] = COMPANION_NAMES.get(companion_type, "")
+    if not str(row.get("display_name", "") or "").strip():
+        row["display_name"] = str((app_settings or {}).get(f"{companion_type}_display_name", "") or "").strip()
+    return row
+
+
+def companion_display_name(app_settings, companion_type):
+    row = companion_catalog_row(app_settings, companion_type)
+    return str(row.get("display_name", "") or "").strip() or row.get("default_name", "")
+
+
 def catalog_channel_id_from_info(info):
     if not isinstance(info, dict):
         return ""
@@ -5919,8 +5959,8 @@ class Channel:
 class WeatherChannel:
     channel_type = "weatherstar"
 
-    def __init__(self, location, retro=False):
-        self.name = "WeatherStar 4000+"
+    def __init__(self, location, retro=False, name="WeatherStar 4000+"):
+        self.name = (name or "WeatherStar 4000+").strip() or "WeatherStar 4000+"
         self.location = location.strip()
         self.retro = bool(retro)
         self.shows = []
@@ -6148,8 +6188,8 @@ class RadioWaveChannel(Channel):
     channel_type = "radiowave"
     EMPTY_PATH = "radiowave://empty"
 
-    def __init__(self, folder, duration_cache, metadata_cache, empty_reason="", progress_callback=None):
-        super().__init__("RadioWaveTV", duration_cache)
+    def __init__(self, folder, duration_cache, metadata_cache, empty_reason="", progress_callback=None, name="RadioWaveTV"):
+        super().__init__((name or "RadioWaveTV").strip() or "RadioWaveTV", duration_cache)
         self.folder = folder.strip()
         self.track_metadata = {}
         self.start_time = time.time()
@@ -14658,8 +14698,20 @@ class InfoOverlay(QWidget):
             root_path = str(channel.get("root_path", "") or "")
         if not root_path:
             root_path = str(self.state.get("channel_root_path", "") or "")
-        if root_path and channel_name:
-            bug_path = find_channel_bug_logo(root_path, channel_name, shared_logos_dir=shared_channel_logos_dir())
+        channel_id = str(self.state.get("channel_id", "") or "")
+        channel_type = str(self.state.get("channel_type", "") or "")
+        if isinstance(channel, dict):
+            channel_id = channel_id or str(channel.get("channel_id", "") or channel.get("id", "") or "")
+            channel_type = channel_type or str(channel.get("channel_type", "") or "")
+        if channel_name:
+            bug_path = find_channel_bug_logo(
+                root_path,
+                channel_name,
+                shared_logos_dir=shared_channel_logos_dir(),
+                channel_id=channel_id,
+                channel_type=channel_type,
+                display_name=channel_name,
+            )
             if bug_path:
                 return bug_path
         return ""
@@ -20226,15 +20278,15 @@ class AdvancedConfigDialog(QDialog):
 
         self.weatherstar_enabled = QCheckBox("Enable WeatherStar Channel")
         self.weatherstar_enabled.setChecked(
-            bool(settings.get("weatherstar_enabled", False))
+            bool(companion_catalog_row(settings, "weatherstar").get("enabled"))
             and bool(self.weatherstar_location_input.text().strip())
         )
 
         self.radiowave_enabled = QCheckBox("Enable RadioWaveTV music channel")
-        self.radiowave_enabled.setChecked(bool(settings.get("radiowave_enabled", False)))
+        self.radiowave_enabled.setChecked(bool(companion_catalog_row(settings, "radiowave").get("enabled")))
 
         self.youtube_enabled = QCheckBox("Enable NetTV playlist channel")
-        self.youtube_enabled.setChecked(bool(settings.get("youtube_enabled", False)))
+        self.youtube_enabled.setChecked(bool(companion_catalog_row(settings, "youtube").get("enabled")))
 
         self.allow_empty_catalog_tv = QCheckBox("Allow Live TV with no catalog")
         self.allow_empty_catalog_tv.setChecked(bool(settings.get("allow_empty_catalog_tv", False)))
@@ -20968,6 +21020,44 @@ class AdvancedConfigDialog(QDialog):
             }
         return normalize_catalog_channel_settings(settings)
 
+    def collect_all_catalog_channel_settings(self):
+        settings = self.collect_catalog_channel_settings()
+        companion_inputs = {
+            "weatherstar": {
+                "enabled": self.weatherstar_enabled.isChecked() and bool(self.weatherstar_location_input.text().strip()),
+                "channel_number": self.weatherstar_channel_input.value(),
+            },
+            "radiowave": {
+                "enabled": self.radiowave_enabled.isChecked(),
+                "channel_number": self.radiowave_channel_input.value(),
+            },
+            "youtube": {
+                "enabled": self.youtube_enabled.isChecked(),
+                "channel_number": self.youtube_channel_input.value(),
+            },
+        }
+        from mediawave.channel_studio.companion_adapter import COMPANION_CHANNEL_IDS, COMPANION_TYPES
+
+        for companion_type in COMPANION_TYPES:
+            channel_id = COMPANION_CHANNEL_IDS[companion_type]
+            row = dict(self.catalog_channel_settings.get(channel_id, {}))
+            row.update(settings.get(channel_id, {}))
+            row.update(companion_inputs[companion_type])
+            parent = self.parent()
+            parent_settings = getattr(parent, "app_settings", {}) if parent is not None else {}
+            parent_catalog = parent_settings.get("catalog_channel_settings") if isinstance(parent_settings, dict) else {}
+            parent_row = parent_catalog.get(channel_id, {}) if isinstance(parent_catalog, dict) else {}
+            dialog_row = self.catalog_channel_settings.get(channel_id, {})
+            row["display_name"] = (
+                str(dialog_row.get("display_name", "") or "").strip()
+                or str(parent_row.get("display_name", "") or "").strip()
+                or str(parent_settings.get(f"{companion_type}_display_name", "") or "").strip()
+                or str(self._init_settings.get(f"{companion_type}_display_name", "") or "").strip()
+                or str(row.get("display_name", "") or "").strip()
+            )
+            settings[channel_id] = row
+        return normalize_catalog_channel_settings(settings)
+
     def _bug_timing_update_visibility(self):
         """Show/hide duration and interval controls based on timing checkbox state."""
         always = self._bug_t_always.isChecked()
@@ -21468,7 +21558,7 @@ class AdvancedConfigDialog(QDialog):
             "safe_playback_mode": self.safe_playback_mode.isChecked(),
             "nettv_clear_cache_on_exit": self.nettv_clear_cache_on_exit.isChecked(),
             "commercials": commercials,
-            "catalog_channel_settings": self.collect_catalog_channel_settings(),
+            "catalog_channel_settings": self.collect_all_catalog_channel_settings(),
             "channel_bug": self._collect_channel_bug_settings(),
         }
 
@@ -26194,12 +26284,13 @@ class ChannelSurfer(QWidget):
         )
 
     def configured_weather_channel(self):
-        if not self.app_settings.get("weatherstar_enabled"):
+        config = companion_catalog_row(self.app_settings, "weatherstar")
+        if not config.get("enabled"):
             return None
         location = (self.app_settings.get("weatherstar_location") or "").strip()
         if not location:
             return None
-        return WeatherChannel(location, retro=False)
+        return WeatherChannel(location, retro=False, name=config.get("display_name") or config.get("default_name"))
 
     def cached_youtube_playlist_entries(self, playlist_url):
         key = youtube_playlist_cache_key(playlist_url)
@@ -26660,17 +26751,20 @@ class ChannelSurfer(QWidget):
                 channel.update_entries(updated_entries)
 
     def configured_youtube_channel(self):
-        if not self.app_settings.get("youtube_enabled"):
+        config = companion_catalog_row(self.app_settings, "youtube")
+        if not config.get("enabled"):
             return None
         playlist_url = (self.app_settings.get("youtube_playlist_url") or "").strip()
         if not youtube_source_url(playlist_url):
             return None
         entries = self.cached_youtube_playlist_entries(playlist_url)
-        return YouTubePlaylistChannel(playlist_url, entries=entries)
+        return YouTubePlaylistChannel(playlist_url, entries=entries, name=config.get("display_name") or config.get("default_name") or "NetTV")
 
     def configured_radiowave_channel(self):
-        if not self.app_settings.get("radiowave_enabled"):
+        config = companion_catalog_row(self.app_settings, "radiowave")
+        if not config.get("enabled"):
             return None
+        display_name = config.get("display_name") or config.get("default_name") or "RadioWaveTV"
         folder = os.path.realpath(os.path.abspath(os.path.expanduser((self.app_settings.get("radiowave_folder") or "").strip()))) if (self.app_settings.get("radiowave_folder") or "").strip() else ""
         if not folder:
             channel = RadioWaveChannel(
@@ -26678,6 +26772,7 @@ class ChannelSurfer(QWidget):
                 self.duration_cache,
                 self.radiowave_metadata_cache,
                 empty_reason="No music folder is configured yet.",
+                name=display_name,
             )
         elif not os.path.isdir(folder):
             channel = RadioWaveChannel(
@@ -26685,6 +26780,7 @@ class ChannelSurfer(QWidget):
                 self.duration_cache,
                 self.radiowave_metadata_cache,
                 empty_reason="The configured music folder could not be opened.",
+                name=display_name,
             )
         else:
             self.begin_radiowave_progress(folder)
@@ -26694,6 +26790,7 @@ class ChannelSurfer(QWidget):
                     self.duration_cache,
                     self.radiowave_metadata_cache,
                     progress_callback=self.update_radiowave_progress,
+                    name=display_name,
                 )
             except _ParseCancelled:
                 self._parse_cancelled = False
@@ -26727,13 +26824,13 @@ class ChannelSurfer(QWidget):
         special_channels = []
         weather_channel = self.configured_weather_channel()
         if weather_channel:
-            special_channels.append((int(self.app_settings.get("weatherstar_channel_number", 1) or 1), weather_channel))
+            special_channels.append((int(companion_catalog_row(self.app_settings, "weatherstar").get("channel_number", 1) or 1), weather_channel))
         radiowave_channel = self.configured_radiowave_channel()
         if radiowave_channel:
-            special_channels.append((int(self.app_settings.get("radiowave_channel_number", 1) or 1), radiowave_channel))
+            special_channels.append((int(companion_catalog_row(self.app_settings, "radiowave").get("channel_number", 1) or 1), radiowave_channel))
         youtube_channel = self.configured_youtube_channel()
         if youtube_channel:
-            special_channels.append((int(self.app_settings.get("youtube_channel_number", 1) or 1), youtube_channel))
+            special_channels.append((int(companion_catalog_row(self.app_settings, "youtube").get("channel_number", 1) or 1), youtube_channel))
         self.channels = list(base_channels)
         for desired_number, channel in sorted(special_channels, key=lambda item: item[0]):
             insert_index = max(0, min(len(self.channels), desired_number - 1))
@@ -31082,10 +31179,13 @@ class ChannelSurfer(QWidget):
         if getattr(current_channel, "channel_type", "media") in ("weatherstar", "radiowave", "youtube"):
             actions = []
         channel_root = getattr(current_channel, "root_path", "") or ""
+        channel_type = getattr(current_channel, "channel_type", "media") if current_channel is not None else ""
         return {
             "header": "PROGRAM INFO",
             "channel_number": program["channel_number"],
             "channel_name": program["channel_name"],
+            "channel_id": self.catalog_channel_id(current_channel) if current_channel is not None else "",
+            "channel_type": channel_type,
             "channel_root_path": channel_root,
             "channel_line": f"CH {program['channel_number']:02d}  •  {program['channel_name']}",
             "time_line": format_clock_range(program["start"], program["end"]),

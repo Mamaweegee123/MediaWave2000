@@ -274,3 +274,14 @@ def ensure_user_content_structure(base_dir):
             os.makedirs(os.path.join(base_dir, sub), exist_ok=True)
         except OSError:
             pass
+    try:
+        from mediawave.channel_logos import COMPANION_LOGO_FOLDER_NAMES
+
+        logos_dir = os.path.join(base_dir, "Logos")
+        for folder in COMPANION_LOGO_FOLDER_NAMES.values():
+            try:
+                os.makedirs(os.path.join(logos_dir, folder), exist_ok=True)
+            except OSError:
+                pass
+    except Exception:
+        pass
