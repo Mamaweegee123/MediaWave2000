@@ -1176,6 +1176,76 @@ check(
 )
 
 # ---------------------------------------------------------------------------
+# channel_actions.py: unified number read/write/validate dispatch, and the
+# no-restart refresh trigger (manual channel numbering, commit 2)
+# ---------------------------------------------------------------------------
+section("channel_actions: unified channel number dispatch (local + companion)")
+
+
+class _FakeMainApp:
+    def __init__(self):
+        self.app_settings = {"catalog_channel_settings": {}}
+        self.injected = False
+        self.customized = False
+
+    def inject_special_channels(self):
+        self.injected = True
+
+    def apply_catalog_channel_customizations(self):
+        self.customized = True
+
+
+number_dialog2 = _FakeDialog()
+check("channel_number_from_dialog reads a local channel's live spinbox", channel_actions.channel_number_from_dialog(number_dialog2, "media:/fake/a") == 1)
+check("channel_number_from_dialog reads a companion's live spinbox", channel_actions.channel_number_from_dialog(number_dialog2, "special:radiowave") == 2)
+check("channel_number_from_dialog returns None for an unknown local id", channel_actions.channel_number_from_dialog(number_dialog2, "media:/nope") is None)
+
+check("set_channel_number_on_dialog writes a local channel's spinbox", channel_actions.set_channel_number_on_dialog(number_dialog2, "media:/fake/a", 42) is True)
+check("the local spinbox actually changed", number_dialog2.catalog_rows[0]["number"].value() == 42)
+check("set_channel_number_on_dialog writes a companion's spinbox", channel_actions.set_channel_number_on_dialog(number_dialog2, "special:radiowave", 55) is True)
+check("the companion spinbox actually changed", number_dialog2.radiowave_channel_input.value() == 55)
+check("set_channel_number_on_dialog fails safely for an unknown local id", channel_actions.set_channel_number_on_dialog(number_dialog2, "media:/nope", 1) is False)
+
+main_app = _FakeMainApp()
+number_dialog2._parent = main_app
+channel_actions.set_channel_number_on_dialog(number_dialog2, "media:/fake/a", 99)
+check(
+    "writing a number also updates the main app's real app_settings immediately, no Save needed",
+    main_app.app_settings["catalog_channel_settings"]["media:/fake/a"]["channel_number"] == 99,
+)
+
+channel_actions.refresh_live_lineup(number_dialog2)
+check("refresh_live_lineup calls the main app's real recompute methods", main_app.injected and main_app.customized)
+check("refresh_live_lineup is a safe no-op when parent() is None", channel_actions.refresh_live_lineup(_FakeDialog()) is None)
+
+section("channel_actions: manual number validation bridges to channel_identity")
+
+check(
+    "an available number validates ok with a friendly message",
+    channel_actions.validate_channel_number_on_dialog(number_dialog2, "media:/fake/a", 7) == ("ok", "Available"),
+)
+check(
+    "a duplicate number is rejected with the spec's exact wording",
+    channel_actions.validate_channel_number_on_dialog(number_dialog2, "media:/fake/a", 55)
+    == ("duplicate", "Channel number already exists."),
+)
+check(
+    "an out-of-range number is invalid, not a crash",
+    channel_actions.validate_channel_number_on_dialog(number_dialog2, "media:/fake/a", 999999)[0] == "invalid",
+)
+check(
+    "a channel's own current number never conflicts with itself",
+    channel_actions.validate_channel_number_on_dialog(number_dialog2, "media:/fake/a", 99) == ("ok", "Available"),
+)
+
+overview_source = inspect.getsource(setup_sections.build_overview_section)
+check("Overview wires the inline number editor", "build_inline_value_editor" in overview_source)
+check("Overview reads the live channel number through the unified dispatch", "channel_number_from_dialog" in overview_source)
+check("Overview writes through the unified dispatch, not a type-specific helper", "set_channel_number_on_dialog" in overview_source)
+check("Overview validates through the unified dispatch", "validate_channel_number_on_dialog" in overview_source)
+check("applying a number edit triggers the no-restart refresh", "refresh_live_lineup" in overview_source)
+
+# ---------------------------------------------------------------------------
 # channel_identity.py: unified local+companion pool, dedup, validation
 # ---------------------------------------------------------------------------
 section("channel_identity: unified_entries merges local + companion")

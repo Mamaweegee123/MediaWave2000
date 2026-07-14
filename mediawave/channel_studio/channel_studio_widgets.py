@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLayout,
+    QLineEdit,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -319,6 +320,119 @@ def build_channel_studio_footer(total_count, on_reorder=None):
         layout.addWidget(reorder_btn)
 
     return footer, reorder_btn
+
+
+def build_inline_value_editor(initial_value, on_validate, on_apply, label_formatter=None, placeholder=""):
+    """A click-to-edit inline field: a plain clickable label until clicked,
+    then `[ value ] [Apply]` with live validation shown underneath --
+    no popup dialogs. Used by Overview's channel number and name editors
+    (see setup_sections.py's build_overview_section).
+
+    `initial_value`: the current value, as a string.
+    `on_validate(candidate_str) -> ("ok"|"duplicate"|"invalid", message)`:
+        called on every keystroke. Apply is enabled only when the
+        candidate differs from the current value AND validates "ok".
+        `message` is shown as-is after a "✓ "/"⚠ " prefix -- callers
+        supply the exact wording (e.g. "Available" / "Channel number
+        already exists.").
+    `on_apply(candidate_str)`: called only while Apply is enabled, on
+        click or Enter. The editor then collapses back to label mode
+        showing the new value -- callers that need OTHER screens to
+        refresh should do that from inside on_apply (see
+        channel_actions.refresh_live_lineup); this widget only manages
+        its own label/field swap.
+    `label_formatter(value_str) -> str`: how the collapsed label renders
+        the value (e.g. "CH 005" for a number). Defaults to the raw value.
+
+    Returns `(container_widget, api)`; `api.set_value(new_value_str)` lets
+    a caller update the current value from outside (e.g. another screen
+    changed it) -- collapses back to label mode if the editor was open.
+    """
+    formatter = label_formatter or (lambda value: value)
+    state = {"value": str(initial_value)}
+
+    container = QWidget()
+    outer = QVBoxLayout(container)
+    outer.setContentsMargins(0, 0, 0, 0)
+    outer.setSpacing(2)
+
+    row = QHBoxLayout()
+    row.setSpacing(8)
+    outer.addLayout(row)
+
+    label = QLabel(formatter(state["value"]))
+    label.setObjectName("sectionHeader")
+    label.setCursor(Qt.PointingHandCursor)
+    label.setToolTip("Click to edit")
+    row.addWidget(label)
+
+    field = QLineEdit()
+    field.setPlaceholderText(placeholder)
+    field.setMaximumWidth(160)
+    field.setVisible(False)
+    row.addWidget(field)
+
+    apply_btn = QPushButton("Apply")
+    apply_btn.setVisible(False)
+    apply_btn.setEnabled(False)
+    row.addWidget(apply_btn)
+
+    row.addStretch(1)
+
+    status_lbl = QLabel("")
+    status_lbl.setObjectName("fieldHelp")
+    status_lbl.setVisible(False)
+    outer.addWidget(status_lbl)
+
+    def _show_editor(_event=None):
+        label.setVisible(False)
+        field.setText(state["value"])
+        field.setVisible(True)
+        apply_btn.setVisible(True)
+        apply_btn.setEnabled(False)
+        status_lbl.setText("")
+        status_lbl.setVisible(False)
+        field.setFocus()
+        field.selectAll()
+
+    def _show_label():
+        field.setVisible(False)
+        apply_btn.setVisible(False)
+        status_lbl.setVisible(False)
+        label.setText(formatter(state["value"]))
+        label.setVisible(True)
+
+    def _on_text_changed(text):
+        candidate = text.strip()
+        if candidate == state["value"]:
+            apply_btn.setEnabled(False)
+            status_lbl.setVisible(False)
+            return
+        outcome, message = on_validate(candidate)
+        prefix = "✓" if outcome == "ok" else "⚠"
+        status_lbl.setText(f"{prefix} {message}" if message else "")
+        status_lbl.setVisible(bool(message))
+        apply_btn.setEnabled(outcome == "ok")
+
+    def _on_apply(_checked=False):
+        if not apply_btn.isEnabled():
+            return
+        candidate = field.text().strip()
+        on_apply(candidate)
+        state["value"] = candidate
+        _show_label()
+
+    label.mousePressEvent = _show_editor
+    field.textChanged.connect(_on_text_changed)
+    field.returnPressed.connect(_on_apply)
+    apply_btn.clicked.connect(_on_apply)
+
+    class _InlineValueEditorApi:
+        def set_value(self, new_value):
+            state["value"] = str(new_value)
+            _show_label()
+
+    return container, _InlineValueEditorApi()
 
 
 def build_action_button_row(items, fallback=None):

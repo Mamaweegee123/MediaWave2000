@@ -43,7 +43,12 @@ from ..channel_logos import (
 _LOGO_TIMING_DROPDOWN_PRESETS = [p for p in LOGO_TIMING_PRESETS if p["id"] in LOGO_TIMING_PRESETS_DROPDOWN_IDS]
 from . import channel_actions
 from .channel_studio_cards import build_drafts_section
-from .channel_studio_widgets import build_action_button_row, build_info_card, build_schedule_timeline
+from .channel_studio_widgets import (
+    build_action_button_row,
+    build_info_card,
+    build_inline_value_editor,
+    build_schedule_timeline,
+)
 from .logo_studio import LogoPreviewScreen, LogoTimingDialog, ShowExclusionsDialog
 from .studio_styles import style_choice_button, style_slider
 
@@ -90,7 +95,6 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
     source_label = "Built in" if companion_type else "Local folder"
 
     meta_lines = [
-        f"Channel {channel_info.get('default_number', '')}",
         f"Type: {channel_type_label}",
         f"Source: {source_label}",
     ]
@@ -98,6 +102,36 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
         meta_lines.append(f"Playback: {summary.playback_order_label} order")
 
     layout.addWidget(build_info_card(channel_name, None, meta_lines=meta_lines))
+
+    number_row = QHBoxLayout()
+    number_row.setSpacing(10)
+    number_caption = QLabel("Channel number")
+    number_caption.setObjectName("fieldHelp")
+    number_row.addWidget(number_caption)
+
+    current_number = channel_actions.channel_number_from_dialog(dialog, channel_id)
+    if current_number is None:
+        try:
+            current_number = int(channel_info.get("default_number", 1) or 1)
+        except (TypeError, ValueError):
+            current_number = 1
+
+    def _validate_number(candidate, cid=channel_id):
+        return channel_actions.validate_channel_number_on_dialog(dialog, cid, candidate)
+
+    def _apply_number(candidate, cid=channel_id):
+        channel_actions.set_channel_number_on_dialog(dialog, cid, int(candidate))
+        channel_actions.refresh_live_lineup(dialog)
+
+    number_editor, _number_api = build_inline_value_editor(
+        str(current_number),
+        _validate_number,
+        _apply_number,
+        label_formatter=lambda value: f"CH {int(value):03d}",
+    )
+    number_row.addWidget(number_editor)
+    number_row.addStretch(1)
+    layout.addLayout(number_row)
 
     enabled_card = QWidget()
     enabled_layout = QVBoxLayout(enabled_card)

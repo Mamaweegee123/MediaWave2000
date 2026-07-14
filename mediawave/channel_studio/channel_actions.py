@@ -39,6 +39,7 @@ from ..channel_logos import (
     position_to_normalized,
     resolve_effective_logo_position,
 )
+from . import channel_identity
 from .companion_adapter import (
     COMPANION_TYPES,
     read_companion_snapshot,
@@ -267,6 +268,165 @@ def card_display_number(dialog, summary):
         return summary.number
     live = local_channel_number_from_dialog(dialog, summary.channel_id)
     return summary.number if live is None else live
+
+
+def _companion_type_from_id(channel_id):
+    """"special:weatherstar" -> "weatherstar", or None for a local channel
+    id / anything unrecognized. The `special:` ids are literally built as
+    that prefix + the type name everywhere else in the app (see
+    companion_adapter.COMPANION_CHANNEL_IDS), so this is a safe, cheap
+    string check rather than a lookup table.
+    """
+    channel_id = str(channel_id or "")
+    if not channel_id.startswith("special:"):
+        return None
+    companion_type = channel_id.split(":", 1)[1]
+    return companion_type if companion_type in COMPANION_TYPES else None
+
+
+def _local_rows_snapshot(dialog):
+    """channel_identity.unified_entries()'s local-side input, built from
+    every live My Catalog row -- id/name/number/enabled, straight off the
+    real widgets (not a stale settings snapshot).
+    """
+    rows = []
+    for row in getattr(dialog, "catalog_rows", None) or []:
+        rows.append(
+            {
+                "id": row.get("id", ""),
+                "name": row.get("name", ""),
+                "number": row["number"].value(),
+                "enabled": row["enabled"].isChecked(),
+            }
+        )
+    return rows
+
+
+def unified_entries_from_dialog(dialog):
+    """channel_identity.unified_entries() built from the dialog's LIVE
+    widget state -- local rows via dialog.catalog_rows, companions via
+    companion_snapshot_from_dialog(dialog) -- so number/name validation
+    and reorder renumbering always operate on exactly what's on screen
+    right now, matching card_display_number's existing "read live
+    widgets" convention.
+    """
+    return channel_identity.unified_entries(_local_rows_snapshot(dialog), companion_snapshot_from_dialog(dialog))
+
+
+def channel_number_from_dialog(dialog, channel_id):
+    """Current live channel number for ANY channel -- local or companion,
+    dispatched by id prefix, same pattern card_display_number already
+    uses. None if no matching widget exists yet.
+    """
+    companion_type = _companion_type_from_id(channel_id)
+    if companion_type is not None:
+        widget = _widget(dialog, _COMPANION_NUMBER_ATTR[companion_type])
+        return widget.value() if widget is not None else None
+    return local_channel_number_from_dialog(dialog, channel_id)
+
+
+def _write_channel_setting_field(dialog, channel_id, field, value):
+    """Write one field of `channel_id`'s catalog_channel_settings entry
+    directly onto the REAL running app's app_settings (reached through
+    `dialog.parent()` -- see commercial_library_status for the same
+    reach-through-parent pattern) rather than only the dialog's own live
+    widgets. Channel Studio identity edits (number, name) are meant to
+    take effect immediately, without waiting for the dialog's Save button
+    (see refresh_live_lineup below) -- so the setting the main app's
+    apply_catalog_channel_customizations() actually reads needs updating
+    right away, not just at Save. Any other field this row is missing
+    gets filled in by the main app's own normalize_catalog_channel_settings
+    the next time it runs, so this never needs its own copy of the schema
+    defaults. Safe no-op (returns False) if dialog.parent() isn't a real
+    app object with app_settings -- e.g. a test double.
+    """
+    parent = getattr(dialog, "parent", None)
+    main_app = parent() if callable(parent) else None
+    if main_app is None or not hasattr(main_app, "app_settings"):
+        return False
+    settings = main_app.app_settings.get("catalog_channel_settings")
+    if not isinstance(settings, dict):
+        settings = {}
+    row = dict(settings.get(channel_id) or {})
+    row[field] = value
+    settings[channel_id] = row
+    main_app.app_settings["catalog_channel_settings"] = settings
+    return True
+
+
+def set_channel_number_on_dialog(dialog, channel_id, number):
+    """Real channel-number write for ANY channel -- local or companion.
+    Updates the live widget (so My Catalog/Companion Channels tabs and
+    Channel Studio's own card_display_number stay consistent within this
+    dialog session) AND writes straight into the main app's real
+    app_settings (see _write_channel_setting_field) so a subsequent
+    refresh_live_lineup() picks it up without needing Save first. Returns
+    True if a matching widget was found and updated.
+    """
+    number = int(number)
+    companion_type = _companion_type_from_id(channel_id)
+    if companion_type is not None:
+        widget = _widget(dialog, _COMPANION_NUMBER_ATTR[companion_type])
+        if widget is None:
+            return False
+        widget.setValue(number)
+    else:
+        if not set_local_channel_number(dialog, channel_id, number):
+            return False
+    _write_channel_setting_field(dialog, channel_id, "channel_number", number)
+    return True
+
+
+def validate_channel_number_on_dialog(dialog, channel_id, candidate_number):
+    """Thin bridge from the Overview inline number editor to
+    channel_identity's pure validator -- builds a fresh unified snapshot
+    off the dialog's live widgets on every call (cheap: at most a few
+    dozen entries) so the check always reflects exactly what's on screen
+    right now. Returns ("ok"|"duplicate"|"invalid", human_message) --
+    unlike channel_identity.validate_new_number, the detail here is
+    always a ready-to-show message, not a raw conflicting id.
+    """
+    entries = unified_entries_from_dialog(dialog)
+    outcome, detail = channel_identity.validate_new_number(entries, channel_id, candidate_number)
+    if outcome == "ok":
+        return ("ok", "Available")
+    if outcome == "duplicate":
+        return ("duplicate", "Channel number already exists.")
+    return ("invalid", detail or "Enter a valid channel number.")
+
+
+def refresh_live_lineup(dialog):
+    """Immediately propagate a Channel Studio identity edit (number, name,
+    enabled, reorder) to the rest of the app -- Guide, My Catalog,
+    playback metadata -- without waiting for the dialog's Save button.
+
+    Calls the exact same recompute sequence Save already triggers
+    (see open_advanced_configuration, channelsurfer2000.py) -- just
+    eagerly. Every screen already re-reads self.channels/app_settings
+    fresh on render, so calling these is sufficient; no separate
+    observer/pub-sub system is needed. This is a deliberate, narrow
+    exception to "only Save persists" for identity fields specifically --
+    every other My Catalog/Companion Channels setting still waits for
+    Save, same as always.
+
+    Safe no-op if dialog.parent() isn't the real running app (e.g. a test
+    double, or Channel Studio opened standalone) -- never raises.
+    """
+    parent = getattr(dialog, "parent", None)
+    main_app = parent() if callable(parent) else None
+    if main_app is None:
+        return
+    inject = getattr(main_app, "inject_special_channels", None)
+    if callable(inject):
+        inject()
+    apply_customizations = getattr(main_app, "apply_catalog_channel_customizations", None)
+    if callable(apply_customizations):
+        apply_customizations()
+    try:
+        if main_app.video_window.guide_overlay.isVisible():
+            main_app.refresh_guide()
+    except Exception:
+        pass
 
 
 def open_commercial_overrides_for_channel(dialog, channel_name):
