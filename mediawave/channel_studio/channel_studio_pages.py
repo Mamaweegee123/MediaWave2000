@@ -3,20 +3,24 @@
 The only top-level page in Channel Studio. Picking a channel opens its
 own five-tab view (see channel_studio_cards.py) — there is nothing else
 to navigate to from here. Aside from a read-only list of existing
-channel names/numbers/logos and the small preview state in
-studio_state.py (grid display order), no scheduling, library, or
-settings data is read or written from this page.
+channel names/numbers/logos, no scheduling, library, or settings data
+is read or written from this page.
 
 No hero/featured card: every channel gets exactly one tile, in the
 regular grid. studio_state.py's last-edited-channel helpers still exist
 for backward compatibility with any state file written by an older
 build, but nothing here calls them anymore.
+
+The grid has exactly one ordering rule: real channel number, ascending,
+local and companion channels together (see _sorted_summaries below).
+There is no separate display-order state and no drag-and-drop —
+channel number IS the lineup order, and manual renumbering (Overview's
+inline number editor) is the only way to move a channel's position.
 """
 
-from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from . import channel_actions
-from . import channel_identity
 from . import companion_adapter
 from .channel_setup import ChannelSetupDialog
 from .channel_studio_adapter import build_channel_studio_summaries, build_tonight_schedules
@@ -25,10 +29,7 @@ from .channel_studio_header import build_channel_studio_header
 from .channel_studio_model import ChannelStudioSummary
 from .channel_studio_widgets import build_channel_studio_footer, build_empty_state
 from .channel_card import build_dashboard_channel_card
-from .draggable_grid import DraggableGrid
-from .reorder import apply_saved_order
-from .studio_state import load_channel_order, save_channel_order
-from .studio_styles import style_setup_button
+from .channel_grid import build_channel_grid
 
 _COMPANION_TYPE_BY_ID = {cid: ctype for ctype, cid in companion_adapter.COMPANION_CHANNEL_IDS.items()}
 
@@ -38,10 +39,6 @@ _COMPANION_TYPE_BY_ID = {cid: ctype for ctype, cid in companion_adapter.COMPANIO
 # dialog's Identity tab used to be.
 _LOGO_TAB_INDEX = 1
 
-_REORDER_HINT_TEXT = "Drag channels to rearrange them."
-_REORDER_BUTTON_IDLE = "⇅  Reorder Channels"
-_REORDER_BUTTON_ACTIVE = "✓  Done Reordering"
-
 
 def _preview(dialog, title, description):
     show_preview_dialog(dialog, title, description)
@@ -49,10 +46,6 @@ def _preview(dialog, title, description):
 
 def _drafts_path(dialog):
     return getattr(dialog, "_channel_studio_drafts_file", None)
-
-
-def _state_path(dialog):
-    return getattr(dialog, "_channel_studio_state_file", None)
 
 
 def _channel_enabled(channel_id, catalog_channel_settings):
@@ -67,12 +60,6 @@ def _channel_enabled(channel_id, catalog_channel_settings):
     return bool(row.get("enabled", True))
 
 
-def _build_reorder_hint():
-    label = QLabel(_REORDER_HINT_TEXT)
-    label.setObjectName("sectionNote")
-    return label
-
-
 def _channel_info_for(summary, number=None):
     return {
         "id": summary.channel_id,
@@ -83,7 +70,7 @@ def _channel_info_for(summary, number=None):
 
 class _RefreshOnShowWidget(QWidget):
     """Channel Studio's own settings edits already trigger a rebuild (see
-    _toggle_local_enabled/_toggle_companion_enabled/_toggle_reorder in
+    _toggle_local_enabled/_toggle_companion_enabled in
     build_channel_studio_content), but an edit made in a SIBLING tab —
     the Companion Channels tab's own channel-number spinbox, or a My
     Catalog row — has no way to reach into an already-built Channel
@@ -110,11 +97,9 @@ class _RefreshOnShowWidget(QWidget):
 
 def build_channel_studio_content(dialog):
     """Build the Choose Channel page: the scrollable content (header,
-    grid) and its persistent footer, together — not as two
-    independent builds — so the footer's Reorder Channels button can
-    share reorder-mode state with the grid it toggles. Returns
-    `(content, footer)`; see channel_studio.py for how callers place
-    `footer` outside the scrollable area.
+    grid) and its persistent footer, together. Returns `(content,
+    footer)`; see channel_studio.py for how callers place `footer`
+    outside the scrollable area.
     """
     content = _RefreshOnShowWidget()
     layout = QVBoxLayout(content)
@@ -137,13 +122,7 @@ def build_channel_studio_content(dialog):
     local_infos = [
         info for info in infos if info.get("channel_type", "media") not in companion_adapter.COMPANION_TYPES
     ]
-    state_path = _state_path(dialog)
     catalog_channel_settings = getattr(dialog, "catalog_channel_settings", None)
-
-    reorder_hint_container = QWidget()
-    reorder_hint_layout = QVBoxLayout(reorder_hint_container)
-    reorder_hint_layout.setContentsMargins(0, 0, 0, 0)
-    reorder_hint_layout.setSpacing(0)
 
     grid_container = QWidget()
     grid_layout = QVBoxLayout(grid_container)
@@ -166,13 +145,8 @@ def build_channel_studio_content(dialog):
         channels_by_id = getattr(dialog, "_studio_channels_by_id", None) or {}
         schedules = build_tonight_schedules(local_infos, channels_by_id=channels_by_id)
         schedules_by_id = {schedule.channel_id: schedule for schedule in schedules}
-        number_sorted = sorted(summaries, key=lambda s: s.number)
-    else:
-        number_sorted = []
 
     current_filter = {"text": ""}
-    reorder_state = {"active": False}
-    grid_ref = {"widget": None}
 
     def _clear(layout_obj):
         while layout_obj.count():
@@ -180,16 +154,6 @@ def build_channel_studio_content(dialog):
             widget = item.widget()
             if widget is not None:
                 widget.deleteLater()
-
-    def _display_order():
-        """Channel-number order, reshuffled by any saved Channel Studio
-        display order (see reorder.apply_saved_order) — this never
-        touches real channel numbers, scheduling, or playback order.
-        """
-        ids = [s.channel_id for s in number_sorted]
-        ordered_ids = apply_saved_order(ids, load_channel_order(state_path))
-        by_id = {s.channel_id: s for s in number_sorted}
-        return [by_id[cid] for cid in ordered_ids if cid in by_id]
 
     def _local_enabled(channel_id):
         """Real enabled state for a local folder channel: prefers the
@@ -205,9 +169,9 @@ def build_channel_studio_content(dialog):
 
     def _companion_summary_objects():
         """Enabled companions only, read live off the Companion Channels
-        tab's own widgets every time this is called so enable/disable
-        and reorder changes made in Channel Studio (or in the Companion
-        Channels tab itself) show up immediately.
+        tab's own widgets every time this is called so an enable/disable
+        change made in Channel Studio (or in the Companion Channels tab
+        itself) shows up immediately.
         """
         snapshot = channel_actions.companion_snapshot_from_dialog(dialog)
         status = channel_actions.companion_status_from_dialog(dialog)
@@ -264,63 +228,26 @@ def build_channel_studio_content(dialog):
         _open_channel(channel_info, initial_tab=0)
         _rebuild_grid(current_filter["text"])
 
-    def _rebuild_grid(filter_text=""):
-        current_filter["text"] = filter_text or ""
-        if grid_ref["widget"] is not None:
-            # Defensive: if a drag was somehow still active when the grid
-            # is being torn down, cancel it first so its floating overlay
-            # (parented to the window, not to the grid, so it can float
-            # above the QScrollArea without being clipped) doesn't leak.
-            grid_ref["widget"].cancel_drag()
-        _clear(grid_layout)
-        grid_ref["widget"] = None
+    def _sorted_summaries():
+        """Every channel -- local and companion together -- in Channel
+        Studio's one and only lineup order: real channel number
+        ascending, name/id as a stable tie-break (see this module's
+        docstring). Reads each channel's LIVE number (card_display_
+        number), not the summary's own snapshot, so a manual Overview
+        number edit resorts the grid the moment Channel Studio is shown
+        again -- no separate display-order state to keep in sync.
+        """
+        combined = list(summaries_by_id.values()) + _companion_summary_objects()
+        return sorted(
+            combined,
+            key=lambda s: (channel_actions.card_display_number(dialog, s), s.name.casefold(), s.channel_id),
+        )
 
-        ordered = _display_order()
-        companions = _companion_summary_objects()
-
-        if not ordered and not companions:
-            grid_layout.addWidget(
-                build_empty_state(
-                    "No channels yet. Once you create or import one, it'll show up here "
-                    "as a card you can open."
-                )
-            )
-            return
-
-        if reorder_state["active"]:
-            # Reorder mode always shows every channel, unfiltered — dragging
-            # a partially-filtered view would make "where did the rest go"
-            # confusing.
-            visible_local = ordered
-            visible_companions = companions
-        else:
-            needle = current_filter["text"].strip().lower()
-            visible_local = [s for s in ordered if needle in s.name.lower()] if needle else ordered
-            visible_companions = [c for c in companions if needle in c.name.lower()] if needle else companions
-            if not visible_local and not visible_companions:
-                grid_layout.addWidget(build_empty_state(f'No channels match "{filter_text}".'))
-                return
-
-        entries = []
-        for summary in visible_local:
-            number = channel_actions.card_display_number(dialog, summary)
-            channel_info = _channel_info_for(summary, number)
-            card = build_dashboard_channel_card(
-                summary,
-                schedules_by_id.get(summary.channel_id),
-                on_open=_open_from_setup,
-                on_set_logo=lambda checked=False, info=channel_info: _open_logo(info),
-                enabled=_local_enabled(summary.channel_id),
-                on_toggle_enabled=lambda checked, cid=summary.channel_id: _toggle_local_enabled(cid, checked),
-                commercials_status=channel_actions.card_commercials_status(dialog, summary.name),
-                display_number=number,
-                shared_logos_dir=getattr(dialog, "_shared_logos_dir", ""),
-            )
-            entries.append((summary.channel_id, card))
-        for summary in visible_companions:
-            number = channel_actions.card_display_number(dialog, summary)
-            channel_info = _channel_info_for(summary, number)
-            card = build_dashboard_channel_card(
+    def _build_card(summary):
+        number = channel_actions.card_display_number(dialog, summary)
+        channel_info = _channel_info_for(summary, number)
+        if summary.channel_id in _COMPANION_TYPE_BY_ID:
+            return build_dashboard_channel_card(
                 summary,
                 None,
                 on_open=_open_from_setup,
@@ -331,50 +258,39 @@ def build_channel_studio_content(dialog):
                 display_number=number,
                 shared_logos_dir=getattr(dialog, "_shared_logos_dir", ""),
             )
-            entries.append((summary.channel_id, card))
+        return build_dashboard_channel_card(
+            summary,
+            schedules_by_id.get(summary.channel_id),
+            on_open=_open_from_setup,
+            on_set_logo=lambda checked=False, info=channel_info: _open_logo(info),
+            enabled=_local_enabled(summary.channel_id),
+            on_toggle_enabled=lambda checked, cid=summary.channel_id: _toggle_local_enabled(cid, checked),
+            commercials_status=channel_actions.card_commercials_status(dialog, summary.name),
+            display_number=number,
+            shared_logos_dir=getattr(dialog, "_shared_logos_dir", ""),
+        )
 
-        grid = DraggableGrid(entries)
-        grid.set_reorder_mode(reorder_state["active"])
-        grid_ref["widget"] = grid
-        grid_layout.addWidget(grid)
+    def _rebuild_grid(filter_text=""):
+        current_filter["text"] = filter_text or ""
+        _clear(grid_layout)
 
-    def _toggle_reorder(checked=False):
-        if reorder_state["active"]:
-            # Exiting reorder mode: persist wherever the grid ended up,
-            # and finalize real channel numbers to match -- ONE unified
-            # renumber across local AND companion channels together (see
-            # channel_identity.renumber_from_order), so a companion
-            # dragged between two local channels gets a real number
-            # reflecting its new position instead of only ever
-            # redistributing within its own type's pool. The number SET
-            # in play never changes -- gaps a user set manually (e.g.
-            # 2/5/8) survive, just reassigned to whichever channels are
-            # now in those positions. While dragging, numbers are left
-            # alone -- only Done Reordering commits them.
-            if grid_ref["widget"] is not None:
-                final_order = grid_ref["widget"].current_order()
-                save_channel_order(state_path, final_order)
-                entries = channel_actions.unified_entries_from_dialog(dialog)
-                new_numbers = channel_identity.renumber_from_order(entries, final_order)
-                if new_numbers:
-                    channel_actions.apply_unified_numbers_to_dialog(dialog, new_numbers)
-                    channel_actions.refresh_live_lineup(dialog)
-            reorder_state["active"] = False
-        else:
-            reorder_state["active"] = True
+        ordered = _sorted_summaries()
+        if not ordered:
+            grid_layout.addWidget(
+                build_empty_state(
+                    "No channels yet. Once you create or import one, it'll show up here "
+                    "as a card you can open."
+                )
+            )
+            return
 
-        if reorder_state["active"]:
-            reorder_btn.setText(_REORDER_BUTTON_ACTIVE)
-            style_setup_button(reorder_btn)
-        else:
-            reorder_btn.setText(_REORDER_BUTTON_IDLE)
-            reorder_btn.setStyleSheet("")
+        needle = current_filter["text"].strip().lower()
+        visible = [s for s in ordered if needle in s.name.lower()] if needle else ordered
+        if not visible:
+            grid_layout.addWidget(build_empty_state(f'No channels match "{filter_text}".'))
+            return
 
-        _clear(reorder_hint_layout)
-        if reorder_state["active"]:
-            reorder_hint_layout.addWidget(_build_reorder_hint())
-
-        _rebuild_grid(current_filter["text"])
+        grid_layout.addWidget(build_channel_grid([_build_card(summary) for summary in visible]))
 
     header = build_channel_studio_header(
         on_create=lambda: _preview(dialog, "Create Channel", "Creating a new channel isn't wired up yet — this is a preview."),
@@ -382,16 +298,12 @@ def build_channel_studio_content(dialog):
         on_search_changed=_rebuild_grid,
     )
     layout.addWidget(header)
-    layout.addWidget(reorder_hint_container)
     layout.addWidget(grid_container)
 
     _rebuild_grid()
     layout.addStretch(1)
 
-    footer, reorder_btn = build_channel_studio_footer(
-        total_count=len(infos),
-        on_reorder=_toggle_reorder,
-    )
+    footer = build_channel_studio_footer(total_count=len(infos))
 
     content.on_show = lambda: _rebuild_grid(current_filter["text"])
 

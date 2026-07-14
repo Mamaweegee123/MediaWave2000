@@ -321,8 +321,8 @@ def build_dashboard_channel_card(
     `display_number`, when given, replaces `summary.number` for both
     the CH badge and the `channel_info` handed to Setup -- see
     channel_actions.card_display_number, which reads the same live My
-    Catalog / Companion Channels number widget a just-finished reorder
-    already wrote to, so a renumber shows up immediately without
+    Catalog / Companion Channels number widget a manual Overview number
+    edit already wrote to, so a renumber shows up immediately without
     rebuilding the whole summaries list.
     """
     number = summary.number if display_number is None else int(display_number)

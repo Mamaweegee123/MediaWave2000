@@ -277,11 +277,12 @@ def _set_companion_name_on_dialog(dialog, companion_type, name):
 
 def card_display_number(dialog, summary):
     """The channel number to show on `summary`'s card right now -- live
-    from the same widget My Catalog / Companion Channels tabs edit
-    (and a just-finished reorder already wrote to), falling back to the
-    summary's own snapshot number when no live widget exists yet. Lets
-    a reorder's renumbering show up immediately without rebuilding the
-    whole summaries list.
+    from the same widget My Catalog / Companion Channels tabs edit (and
+    a manual Overview number edit already wrote to), falling back to
+    the summary's own snapshot number when no live widget exists yet.
+    Lets a manual renumber show up immediately without rebuilding the
+    whole summaries list -- also what Channel Studio's grid sorts by,
+    so a renumber resorts the grid the same moment it takes effect.
     """
     if summary.channel_type in _COMPANION_NUMBER_ATTR:
         widget = _widget(dialog, _COMPANION_NUMBER_ATTR[summary.channel_type])
@@ -328,9 +329,8 @@ def unified_entries_from_dialog(dialog):
     """channel_identity.unified_entries() built from the dialog's LIVE
     widget state -- local rows via dialog.catalog_rows, companions via
     companion_snapshot_from_dialog(dialog) -- so number/name validation
-    and reorder renumbering always operate on exactly what's on screen
-    right now, matching card_display_number's existing "read live
-    widgets" convention.
+    always operates on exactly what's on screen right now, matching
+    card_display_number's existing "read live widgets" convention.
     """
     return channel_identity.unified_entries(_local_rows_snapshot(dialog), companion_snapshot_from_dialog(dialog))
 
@@ -465,31 +465,10 @@ def validate_channel_number_on_dialog(dialog, channel_id, candidate_number):
     return ("invalid", detail or "Enter a valid channel number.")
 
 
-def apply_unified_numbers_to_dialog(dialog, new_numbers):
-    """Write every `{channel_id: number}` pair from
-    channel_identity.renumber_from_order() through the unified dispatch
-    (set_channel_number_on_dialog) -- local or companion, whichever
-    `channel_id` resolves to. This is what lets a Channel Studio drag
-    reorder renumber BOTH pools together in one pass, replacing the old
-    two-separate-resequences approach (each pool could only ever
-    redistribute its own numbers, so a companion dragged between two
-    local channels never got a number reflecting its new position).
-
-    Returns the list of channel ids actually written, in the order
-    `new_numbers` was given (dict insertion order) -- an id that fails to
-    write (no matching row/widget) is silently skipped, never raises.
-    """
-    updated = []
-    for channel_id, number in (new_numbers or {}).items():
-        if set_channel_number_on_dialog(dialog, channel_id, number):
-            updated.append(channel_id)
-    return updated
-
-
 def refresh_live_lineup(dialog):
     """Immediately propagate a Channel Studio identity edit (number, name,
-    enabled, reorder) to the rest of the app -- Guide, My Catalog,
-    playback metadata -- without waiting for the dialog's Save button.
+    enabled) to the rest of the app -- Guide, My Catalog, playback
+    metadata -- without waiting for the dialog's Save button.
 
     Calls the exact same recompute sequence Save already triggers
     (see open_advanced_configuration, channelsurfer2000.py) -- just

@@ -6,15 +6,12 @@ a fixed width (see channel_card.CARD_WIDTH), so the row naturally packs
 two cards when there's room and drops to one per row when there isn't
 — no manual column-count math, no clipping.
 
-Future drag-reorder hook point: this module is the one place that
-decides card order today (the order `cards` arrives in, which mirrors
-`summary.number`). A later pass can make this order mutable — e.g. by
-tracking an in-memory list of channel ids here, updating it on drop,
-and rebuilding the FlowLayout from that list — without touching
-channel_card.py or the Choose Channel page that calls this function.
-Any such reordering should stay preview-only (in-memory) until a real,
-explicit persistence design is agreed on: no channel-number writes, no
-settings/schedule changes, no folder changes.
+Cards are laid out in exactly the order `cards` arrives in -- this
+module has no ordering opinion of its own. The caller (see
+channel_studio_pages.py's _sorted_summaries) is the single source of
+truth for that order: real channel number, ascending. There is no
+drag-and-drop here, on purpose -- channel number is the only way to
+move a channel's position.
 """
 
 from .channel_studio_widgets import FlowLayout

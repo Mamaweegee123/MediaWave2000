@@ -13,7 +13,7 @@ every dedup/validate/renumber function below operates on that single list, so
 it actually lives in on disk.
 
 No Qt, no filesystem, no live channel objects -- just dicts and numbers, same
-testable-without-a-QApplication pattern as reorder.py and companion_adapter.py.
+testable-without-a-QApplication pattern as companion_adapter.py.
 channel_actions.py does the Qt-side work of building a unified_entries() list
 off the real dialog widgets and applying results back.
 """
@@ -197,33 +197,24 @@ def validate_new_name(entries, channel_id, candidate_name):
     return ("ok", None)
 
 
-def renumber_from_order(entries, final_order):
-    """The reorder-finalize algorithm: renumber the channels named in
-    `final_order` (the exact new interleaved local+companion visual order,
-    e.g. DraggableGrid.current_order()) so their real numbers reflect that
-    order, while never changing the SET of numbers in play.
+def sort_unified_entries(entries):
+    """Channel Studio's one and only lineup order: real channel number
+    ascending, local and companion channels interleaved together (no
+    separate per-type ordering), name then id as a stable, deterministic
+    tie-break for equal numbers.
 
-    Takes the sorted list of `final_order`'s own current numbers -- e.g. if
-    those channels currently hold {2, 5, 8}, that stays the exact set
-    afterward -- and zips it position-for-position against the new order:
-    whichever channel is now first gets the smallest number in the set,
-    and so on. This is what makes reordering rewrite real numbers (the
-    channel dragged to the front really does get the lowest number) while
-    still preserving any gaps the user created manually (repositioning
-    never collapses {2, 5, 8} into {1, 2, 3}).
-
-    Returns `{channel_id: new_number}` for every id in `final_order` that
-    matches an entry -- callers apply each to its own native storage. A
-    stale id in `final_order` with no matching entry is silently skipped.
-    Fewer than 2 matched entries is a safe no-op (nothing to redistribute),
-    returning `{}`. Never raises.
+    This only orders -- it never rewrites a number, so manual gaps (e.g.
+    2/5/8/36) are always preserved exactly, and renumbering one channel
+    (e.g. to 36) can only ever change that channel's position, never
+    another entry's number. Disabled entries are included, same as
+    elsewhere in this module; filtering, if any, is the caller's job.
+    Never mutates `entries`; never raises.
     """
-    by_id = {str(entry.get("id")): entry for entry in (entries or [])}
-    ordered_entries = [by_id[str(cid)] for cid in (final_order or []) if str(cid) in by_id]
-    if len(ordered_entries) < 2:
-        return {}
-    number_pool = sorted(int(entry.get("number", 0) or 0) for entry in ordered_entries)
-    return {
-        str(entry.get("id")): number
-        for entry, number in zip(ordered_entries, number_pool)
-    }
+    return sorted(
+        entries or [],
+        key=lambda entry: (
+            int(entry.get("number", 0) or 0),
+            str(entry.get("name", "")).casefold(),
+            str(entry.get("id", "")),
+        ),
+    )

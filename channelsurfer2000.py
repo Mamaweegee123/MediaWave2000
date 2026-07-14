@@ -20301,7 +20301,7 @@ class AdvancedConfigDialog(QDialog):
         self._adv_nav_group.idClicked.connect(self._on_adv_nav_clicked)
 
         # ── Footer: Save/Close (main settings) or Channel Studio's own
-        # (Total Channels / Reorder Channels) ───────────────────────────────
+        # (Total Channels) ────────────────────────────────────────────────
         # A single QStackedWidget, swapped in lockstep with _mode_stack, so
         # switching modes changes footer *content* rather than footer
         # *presence*. A plain QStackedWidget reports the tallest child's

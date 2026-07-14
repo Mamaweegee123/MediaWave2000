@@ -11,8 +11,8 @@ uniformly.
 
 No Qt, no live channel objects, no filesystem -- just dicts and numbers,
 so this stays testable without a QApplication (same pattern as
-reorder.py). `channel_actions.py` does the Qt-side work of reading a
-snapshot off the real dialog widgets and applying one back.
+channel_identity.py). `channel_actions.py` does the Qt-side work of
+reading a snapshot off the real dialog widgets and applying one back.
 """
 
 COMPANION_TYPES = ("weatherstar", "radiowave", "youtube")
