@@ -1345,6 +1345,76 @@ check("no display_name set -> the channel's original name is left alone", no_ren
 check("folder_name is still captured even without a rename", no_rename_channel.folder_name == "Movies")
 
 # ---------------------------------------------------------------------------
+# Bug found via live/manual verification: migrate_legacy_channel_settings
+# unconditionally seeds all 3 companion types into catalog_channel_settings
+# -- including disabled ones. current_catalog_channel_infos()'s "leftover
+# settings not yet seen" loop (for channels whose settings row exists but
+# aren't in self.channels -- normally a local folder that went missing)
+# didn't know to skip companion ids, so a disabled companion's entry got
+# synthesized into a fake channel_type="missing" LOCAL channel info,
+# which then slipped past every "channel_type not in COMPANION_TYPES"
+# filter used to keep companions out of the local-channel pipelines
+# (e.g. Channel Studio's grid, which showed a phantom disabled-companion
+# card as if it were a broken local channel).
+# ---------------------------------------------------------------------------
+section("current_catalog_channel_infos: a disabled companion is never synthesized into a fake 'missing' local channel")
+
+
+class _FakeInfosApp:
+    catalog_channel_id = channelsurfer2000.ChannelSurfer.catalog_channel_id
+    channel_display_number = channelsurfer2000.ChannelSurfer.channel_display_number
+    current_catalog_channel_infos = channelsurfer2000.ChannelSurfer.current_catalog_channel_infos
+
+    def __init__(self, channels, catalog_channel_settings):
+        self.channels = channels
+        self.loaded_media_channels = None
+        self.app_settings = {"catalog_channel_settings": catalog_channel_settings}
+
+
+mtv_infos_channel = _FakeAppChannel("MTV", "/Volumes/Media/MTV")
+mtv_infos_id = f"media:{os.path.realpath('/Volumes/Media/MTV')}"
+infos_app = _FakeInfosApp(
+    [mtv_infos_channel],
+    {
+        mtv_infos_id: {"enabled": True, "channel_number": 1},
+        # All three companion types seeded by migrate_legacy_channel_settings,
+        # every one of them disabled -- none should ever appear in self.channels,
+        # matching a fresh install where the user hasn't enabled any yet.
+        "special:weatherstar": {"enabled": False, "channel_number": 1, "display_name": ""},
+        "special:radiowave": {"enabled": False, "channel_number": 1, "display_name": ""},
+        "special:youtube": {"enabled": False, "channel_number": 1, "display_name": ""},
+    },
+)
+infos = infos_app.current_catalog_channel_infos()
+check(
+    "no disabled companion id appears in the infos list at all",
+    all(not info["id"].startswith("special:") for info in infos),
+    infos,
+)
+check("the real local channel is still present and unaffected", any(info["id"] == mtv_infos_id for info in infos))
+check("exactly one info entry total -- no phantom entries synthesized", len(infos) == 1, infos)
+
+# ---------------------------------------------------------------------------
+# Bug found via live/manual verification: the Companion Channels tab's
+# spinboxes (weatherstar_channel_input/radiowave_channel_input/
+# youtube_channel_input) were seeded straight from the legacy flat
+# weatherstar_channel_number/etc setting -- but repair_duplicate_numbers
+# (channel identity cleanup) writes its fix into catalog_channel_settings'
+# unified entry, never touching the flat key. A companion whose number
+# got auto-repaired on startup would show its OLD, stale number the
+# moment Advanced Configuration opened, silently disagreeing with the
+# real, authoritative number driving Guide/playback sort order.
+# ---------------------------------------------------------------------------
+section("AdvancedConfigDialog: companion spinboxes seed from the authoritative, possibly-repaired entry")
+
+init_source = inspect.getsource(channelsurfer2000.AdvancedConfigDialog.__init__)
+for _companion_type in ("weatherstar", "radiowave", "youtube"):
+    check(
+        f"{_companion_type}_channel_input prefers catalog_channel_settings['special:{_companion_type}'] over the legacy flat key",
+        f'self.catalog_channel_settings.get("special:{_companion_type}"' in init_source,
+    )
+
+# ---------------------------------------------------------------------------
 # Companion channel parity (commit 4): every identity operation available
 # for a local channel is available for a companion too, and the dashboard
 # card gives both the same visual treatment -- no code changes needed

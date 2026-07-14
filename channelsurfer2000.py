@@ -20154,7 +20154,15 @@ class AdvancedConfigDialog(QDialog):
         self.weatherstar_channel_input = QSpinBox()
         self.weatherstar_channel_input.setMinimum(1)
         self.weatherstar_channel_input.setMaximum(999)
-        self.weatherstar_channel_input.setValue(int(settings.get("weatherstar_channel_number", 1) or 1))
+        # Prefer catalog_channel_settings' unified entry over the legacy flat
+        # key -- it's what migrate_legacy_channel_settings seeds and what
+        # apply_catalog_channel_customizations' dedup repair actually writes
+        # to when it resolves a collision, so it's the authoritative,
+        # possibly-just-repaired number; the flat key can be stale the
+        # moment repair runs (it never touches the flat keys).
+        self.weatherstar_channel_input.setValue(
+            int(self.catalog_channel_settings.get("special:weatherstar", {}).get("channel_number") or settings.get("weatherstar_channel_number", 1) or 1)
+        )
 
         self.radiowave_input = QLineEdit()
         self.radiowave_input.setPlaceholderText("Choose a folder of MP3/FLAC/AAC files")
@@ -20172,7 +20180,9 @@ class AdvancedConfigDialog(QDialog):
         self.radiowave_channel_input = QSpinBox()
         self.radiowave_channel_input.setMinimum(1)
         self.radiowave_channel_input.setMaximum(999)
-        self.radiowave_channel_input.setValue(int(settings.get("radiowave_channel_number", 1) or 1))
+        self.radiowave_channel_input.setValue(
+            int(self.catalog_channel_settings.get("special:radiowave", {}).get("channel_number") or settings.get("radiowave_channel_number", 1) or 1)
+        )
 
         self.youtube_playlist_input = QLineEdit()
         self.youtube_playlist_input.setPlaceholderText("Paste a YouTube playlist URL")
@@ -20186,7 +20196,9 @@ class AdvancedConfigDialog(QDialog):
         self.youtube_channel_input = QSpinBox()
         self.youtube_channel_input.setMinimum(1)
         self.youtube_channel_input.setMaximum(999)
-        self.youtube_channel_input.setValue(int(settings.get("youtube_channel_number", 1) or 1))
+        self.youtube_channel_input.setValue(
+            int(self.catalog_channel_settings.get("special:youtube", {}).get("channel_number") or settings.get("youtube_channel_number", 1) or 1)
+        )
 
         self.weatherstar_enabled = QCheckBox("Enable WeatherStar Channel")
         self.weatherstar_enabled.setChecked(
@@ -23500,6 +23512,17 @@ class ChannelSurfer(QWidget):
             )
         for channel_id, row in settings.items():
             if channel_id in seen_ids:
+                continue
+            # Companion ids (special:weatherstar/radiowave/youtube) always
+            # have a catalog_channel_settings entry now -- migrate_legacy_
+            # channel_settings seeds all three unconditionally, even when
+            # disabled -- but a disabled companion is never in self.channels,
+            # so it'd otherwise fall through to here and get manufactured
+            # into a fake "missing" LOCAL channel info. Companions are
+            # never "missing" in this sense; they're just off. The real
+            # Companion Channels / Overview pipeline (companion_adapter.py)
+            # is the only place a disabled companion should ever surface.
+            if channel_id.startswith("special:"):
                 continue
             display_name = row.get("display_name") or channel_id.split(":", 1)[-1]
             infos.append(
