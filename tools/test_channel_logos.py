@@ -206,6 +206,67 @@ check(
 )
 
 
+section("Logo Studio v2: active placement rectangle (4:3/16:9 shape inside a fixed-size preview)")
+check(
+    "16:9 active rect fills the full wide preview area (matches the widget's own natural shape)",
+    logo_mod.compute_active_screen_rect(1280, 720, 16, 9) == (0, 0, 1280, 720),
+)
+check(
+    "4:3 active rect is centered and narrower than the 16:9 widget it sits inside",
+    logo_mod.compute_active_screen_rect(1280, 720, 4, 3) == (160, 0, 960, 720),
+)
+_active_16x9 = logo_mod.compute_active_screen_rect(1280, 720, 16, 9)
+_active_4x3 = logo_mod.compute_active_screen_rect(1280, 720, 4, 3)
+check("the 4:3 active rect is narrower than the 16:9 active rect", _active_4x3[2] < _active_16x9[2])
+check("the 4:3 active rect keeps the full widget height (pillarboxed, not letterboxed)", _active_4x3[3] == 720)
+check(
+    "the 4:3 active rect is horizontally centered inside the widget",
+    _active_4x3[0] == (1280 - _active_4x3[2]) / 2,
+)
+check(
+    "an aspect wider than the box letterboxes instead (shorter, centered vertically, full width)",
+    logo_mod.compute_active_screen_rect(800, 600, 21, 9) == (0, 129, 800, 343),
+)
+check("a zero/invalid size fails safe, never crashes", logo_mod.compute_active_screen_rect(0, 0, 16, 9) == (0, 0, 1, 1))
+
+
+section("Logo Studio v2: freeform clamping + normalization respect the ACTIVE rect, not the full widget")
+_ax, _ay, _aw, _ah = logo_mod.compute_active_screen_rect(1280, 720, 4, 3)  # (160, 0, 960, 720)
+check(
+    "dragging to the bottom-right in the 4:3 active area stays inside that area's own room, not the wider 16:9 widget",
+    logo_mod.resolve_freeform_position(1.0, 1.0, _aw, _ah, 80, 80) == (880.0, 640.0),
+)
+for px, py in ((0.0, 0.0), (0.25, 0.75), (0.5, 0.5), (1.0, 1.0)):
+    x, y = logo_mod.resolve_freeform_position(px, py, _aw, _ah, 80, 80)
+    check(f"a freeform position ({px}, {py}) resolved against the 4:3 active area never leaves that area's own bounds", 0 <= x <= _aw - 80 and 0 <= y <= _ah - 80, (x, y))
+
+check(
+    "the same normalized position (0.75, 0.25) maps to a proportionally equivalent spot in both 16:9 and 4:3 active areas",
+    logo_mod.resolve_freeform_position(0.75, 0.25, 1280, 720, 80, 80) == (900.0, 160.0)
+    and logo_mod.resolve_freeform_position(0.75, 0.25, _aw, _ah, 80, 80) == (660.0, 160.0),
+)
+
+check(
+    "center (0.5, 0.5) stays the center of whichever active area is current",
+    logo_mod.resolve_freeform_position(0.5, 0.5, 1280, 720, 80, 80) == (600.0, 320.0)
+    and logo_mod.resolve_freeform_position(0.5, 0.5, _aw, _ah, 80, 80) == (440.0, 320.0),
+)
+
+# Switching 16:9 <-> 4:3 for the SAME stored normalized position: the pixel
+# position changes (the active area itself moved/narrowed), but it's always
+# contained within whichever active area is now current -- never drifts
+# outside it, and switching back to 16:9 returns to the original spot.
+_stored_pos = (0.9, 0.1)
+_pos_16x9 = logo_mod.resolve_freeform_position(*_stored_pos, 1280, 720, 80, 80)
+_pos_4x3 = logo_mod.resolve_freeform_position(*_stored_pos, _aw, _ah, 80, 80)
+check("switching to 4:3 keeps the stored position inside the 4:3 active area", 0 <= _pos_4x3[0] <= _aw - 80 and 0 <= _pos_4x3[1] <= _ah - 80)
+check("switching back to 16:9 keeps the stored position inside the 16:9 active area", 0 <= _pos_16x9[0] <= 1280 - 80 and 0 <= _pos_16x9[1] <= 720 - 80)
+check(
+    "round-tripping 16:9 -> 4:3 -> 16:9 recovers the exact original normalized position (no drift)",
+    logo_mod.position_to_normalized(*logo_mod.resolve_freeform_position(*_stored_pos, _aw, _ah, 80, 80), _aw, _ah, 80, 80) == _stored_pos,
+)
+
+
 section("Logo Studio v1: size/opacity percent mapping")
 check("minimum size maps to 0%", logo_mod.logo_size_to_percent(32) == 0)
 check("maximum size maps to 100%", logo_mod.logo_size_to_percent(256) == 100)

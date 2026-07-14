@@ -242,8 +242,9 @@ def build_logo_section(dialog, channel_info, summary):
     def _repaint_preview():
         scale = _preview_scale()
         logo_w, logo_h = _preview_logo_dims(scale)
+        active = preview.active_rect()
         x, y = channel_actions.channel_logo_preview_position(
-            dialog, channel_name, preview.width(), preview.height(), logo_w, logo_h
+            dialog, channel_name, active.width(), active.height(), logo_w, logo_h
         )
         preview.set_geometry_state(x, y, logo_w, logo_h, state["opacity"])
 
@@ -254,14 +255,15 @@ def build_logo_section(dialog, channel_info, summary):
         if target and os.path.isdir(target):
             QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
-    def _on_drop(x, y, screen_w, screen_h, logo_w, logo_h):
-        # LogoPreviewScreen reports everything in preview-canvas pixels;
+    def _on_drop(x, y, active_w, active_h, logo_w, logo_h):
+        # LogoPreviewScreen reports everything in active-area-relative
+        # preview-canvas pixels (see LogoPreviewScreen.active_rect);
         # unscale back to the same real-px space the normalized drag
         # position is computed in before handing off to channel_actions.
         scale = _preview_scale()
         channel_actions.set_channel_logo_position_from_drop(
             dialog, channel_name,
-            x / scale, y / scale, screen_w / scale, screen_h / scale, logo_w / scale, logo_h / scale,
+            x / scale, y / scale, active_w / scale, active_h / scale, logo_w / scale, logo_h / scale,
         )
         _full_render()
 

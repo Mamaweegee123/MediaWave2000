@@ -131,6 +131,35 @@ def screen_aspect_dimensions(aspect):
     return _SCREEN_ASPECT_DIMENSIONS.get(normalize_screen_aspect(aspect), (16, 9))
 
 
+def compute_active_screen_rect(width, height, aspect_w, aspect_h):
+    """(x, y, w, h) of the centered "active" placement rectangle inside a
+    width x height box, matching a target aspect_w:aspect_h shape.
+
+    Pillarboxed (narrower than the box, centered horizontally, full
+    height) when the target aspect is narrower than the box's own --
+    e.g. a 4:3 active area inside a 16:9 Logo Studio preview widget.
+    Letterboxed (shorter, centered vertically, full width) in the
+    opposite case. Equals the full box when the aspects already match.
+
+    Pure geometry, no Qt dependency, so it's testable without a
+    QApplication -- Logo Studio's preview widget (see
+    logo_studio.LogoPreviewScreen.active_rect) wraps this in a QRect,
+    and it's also the single source of truth both the widget's drag
+    clamp and its paintEvent use, so they can't drift apart.
+    """
+    width = max(1, int(width))
+    height = max(1, int(height))
+    aspect_w = max(1, int(aspect_w or 1))
+    aspect_h = max(1, int(aspect_h or 1))
+    target_w = height * aspect_w / aspect_h
+    if target_w <= width:
+        x = round((width - target_w) / 2.0)
+        return (x, 0, max(1, round(target_w)), height)
+    target_h = width * aspect_h / aspect_w
+    y = round((height - target_h) / 2.0)
+    return (0, y, width, max(1, round(target_h)))
+
+
 def normalize_timing(t):
     if not isinstance(t, dict):
         t = {}

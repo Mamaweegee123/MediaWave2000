@@ -1,15 +1,24 @@
 """Logo Studio v1's simulated TV screen.
 
-A small, self-contained preview widget: a dark "screen" (16:9 or 4:3,
-see set_aspect) that draws the channel's real logo -- at its own aspect
-ratio, never stretched -- at its configured position/size/opacity, and
-lets the user drag it around freely with the mouse. See
-setup_sections.build_logo_section for how this plugs into Channel Setup,
-and mediawave/channel_logos.py for the position math (both the freeform
-normalized-coordinate math and the legacy corner/offset math) this
-widget's drag behavior is built on (this widget only deals in plain
-pixel geometry -- it never reads or writes settings itself, so it stays
-testable/reusable independent of the channel_bug_settings shape).
+A small, self-contained preview widget: a dark "screen" that draws the
+channel's real logo -- at its own aspect ratio, never stretched -- at
+its configured position/size/opacity, and lets the user drag it freely
+with the mouse. See setup_sections.build_logo_section for how this
+plugs into Channel Setup, and mediawave/channel_logos.py for the
+position math (both the freeform normalized-coordinate math and the
+legacy corner/offset math) this widget's drag behavior is built on
+(this widget only deals in plain pixel geometry -- it never reads or
+writes settings itself, so it stays testable/reusable independent of
+the channel_bug_settings shape).
+
+The outer widget is always this widget's own natural 16:9 shape (see
+sizeHint/heightForWidth) -- the channel's chosen screen shape (see
+set_aspect) instead changes the "active" placement rectangle drawn
+*inside* it (active_rect()): full-width for 16:9, a centered, narrower
+pillarboxed box for 4:3. The active rectangle -- not the outer widget
+-- is the real boundary: the logo can only be dragged within it, and
+its position is normalized against it (see channel_logos.
+compute_active_screen_rect, the pure geometry this wraps in a QRect).
 
 This is a static preview: it shows where and how big the logo is, not
 when it would appear. Timing (see LogoTimingDialog below) is a separate
@@ -30,7 +39,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ..channel_logos import channel_bug_settings_defaults, normalize_timing
+from ..channel_logos import channel_bug_settings_defaults, compute_active_screen_rect, normalize_timing
 
 PREVIEW_ASPECT_W = 16
 PREVIEW_ASPECT_H = 9
@@ -40,8 +49,8 @@ _NO_LOGO_HINT = "Place a PNG in your Logos folder or use the existing logo setti
 
 
 class LogoPreviewScreen(QWidget):
-    """Drag the logo around; drop position is reported in this widget's
-    own pixel space via `logoDropped(x, y, screen_w, screen_h, logo_w,
+    """Drag the logo around; drop position is reported in active_rect()'s
+    own pixel space via `logoDropped(x, y, active_w, active_h, logo_w,
     logo_h)` -- callers (see channel_actions.set_channel_logo_position_from_drop)
     convert that to a real normalized drag position and write it back
     through set_geometry_state(), which is also how any other change
@@ -56,14 +65,14 @@ class LogoPreviewScreen(QWidget):
         self.setMinimumSize(220, 124)
         self.setCursor(Qt.OpenHandCursor)
         self._logo_pixmap = None
-        self._logo_x = 0
+        self._logo_x = 0  # relative to active_rect()'s own top-left, not the widget's
         self._logo_y = 0
         self._logo_w = 60
         self._logo_h = 60
         self._opacity = 1.0
         self._drag_offset = None  # grab offset within the logo box, or None when not dragging
-        self._aspect_w = PREVIEW_ASPECT_W
-        self._aspect_h = PREVIEW_ASPECT_H
+        self._active_aspect_w = PREVIEW_ASPECT_W
+        self._active_aspect_h = PREVIEW_ASPECT_H
 
     def set_logo(self, pixmap):
         """`pixmap` is a QPixmap or None (shows the "no logo" placeholder)."""
@@ -72,21 +81,30 @@ class LogoPreviewScreen(QWidget):
         self.update()
 
     def set_aspect(self, aspect_w, aspect_h):
-        """Change the simulated screen's shape (e.g. 4:3 vs 16:9) -- the
-        widget's own minimum/preferred height depends on this, so the
-        layout is asked to re-measure it.
+        """Change the active placement area's shape (4:3 vs 16:9). The
+        outer widget's own size/shape never changes -- only active_rect()
+        does, so a repaint is all that's needed here.
         """
         aspect_w = max(1, int(aspect_w))
         aspect_h = max(1, int(aspect_h))
-        if (aspect_w, aspect_h) == (self._aspect_w, self._aspect_h):
+        if (aspect_w, aspect_h) == (self._active_aspect_w, self._active_aspect_h):
             return
-        self._aspect_w = aspect_w
-        self._aspect_h = aspect_h
-        self.updateGeometry()
+        self._active_aspect_w = aspect_w
+        self._active_aspect_h = aspect_h
         self.update()
 
+    def active_rect(self):
+        """The active placement rectangle inside this widget, in widget
+        coordinates -- the real boundary the logo can be dragged within.
+        Equals the full widget for 16:9 (this widget's own natural
+        shape); centered and narrower (pillarboxed) for 4:3.
+        """
+        x, y, w, h = compute_active_screen_rect(self.width(), self.height(), self._active_aspect_w, self._active_aspect_h)
+        return QRect(x, y, w, h)
+
     def set_geometry_state(self, x, y, logo_w, logo_h, opacity):
-        """Position + size in this widget's own pixel space, plus opacity
+        """Position + size in active_rect()'s own pixel space (0, 0 is
+        the active rect's top-left, not the widget's), plus opacity
         (0.0-1.0). `logo_w`/`logo_h` should already reflect the logo's
         real aspect ratio (see channel_logos.scale_logo_dimensions) --
         this widget draws exactly the box it's given, so a caller that
@@ -102,16 +120,23 @@ class LogoPreviewScreen(QWidget):
         self.update()
 
     def logo_rect(self):
+        """The logo's box, relative to active_rect()'s own top-left."""
         return QRect(self._logo_x, self._logo_y, self._logo_w, self._logo_h)
 
+    def _absolute_logo_rect(self):
+        """The logo's box in widget coordinates -- what's actually drawn
+        and hit-tested against real mouse positions.
+        """
+        return self.logo_rect().translated(self.active_rect().topLeft())
+
     def sizeHint(self):
-        return QSize(480, int(480 * self._aspect_h / self._aspect_w))
+        return QSize(480, int(480 * PREVIEW_ASPECT_H / PREVIEW_ASPECT_W))
 
     def hasHeightForWidth(self):
         return True
 
     def heightForWidth(self, width):
-        return max(1, int(width * self._aspect_h / self._aspect_w))
+        return max(1, int(width * PREVIEW_ASPECT_H / PREVIEW_ASPECT_W))
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
@@ -123,22 +148,30 @@ class LogoPreviewScreen(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = self.rect()
+        active = self.active_rect()
 
-        gradient = QLinearGradient(0, 0, 0, rect.height())
+        # Base fill everywhere, then the real "screen" gradient + scanline
+        # texture only inside the active area -- anything outside it (the
+        # pillarboxed bars when the channel's shape is narrower than this
+        # widget, e.g. 4:3 inside the 16:9 widget) stays plain and dim,
+        # like a real TV's letterbox/pillarbox bars.
+        painter.fillRect(rect, QColor(5, 6, 8))
+
+        gradient = QLinearGradient(0, active.top(), 0, active.bottom())
         gradient.setColorAt(0.0, QColor(18, 20, 26))
         gradient.setColorAt(1.0, QColor(8, 9, 12))
-        painter.fillRect(rect, gradient)
+        painter.fillRect(active, gradient)
 
         painter.setPen(QPen(QColor(255, 255, 255, 10), 1))
-        for y in range(0, rect.height(), 3):
-            painter.drawLine(0, y, rect.width(), y)
+        for y in range(active.top(), active.bottom(), 3):
+            painter.drawLine(active.left(), y, active.right(), y)
 
-        # A faint TV-safe-area guide (~5% inset) -- purely decorative,
-        # helps the logo read as "on a screen" rather than floating on
-        # a plain rectangle.
-        safe = rect.adjusted(
-            int(rect.width() * 0.05), int(rect.height() * 0.05),
-            -int(rect.width() * 0.05), -int(rect.height() * 0.05),
+        # A faint TV-safe-area guide (~5% inset of the ACTIVE area) --
+        # purely decorative, helps the logo read as "on a screen" rather
+        # than floating on a plain rectangle.
+        safe = active.adjusted(
+            int(active.width() * 0.05), int(active.height() * 0.05),
+            -int(active.width() * 0.05), -int(active.height() * 0.05),
         )
         safe_pen = QPen(QColor(255, 255, 255, 22), 1, Qt.DashLine)
         painter.setPen(safe_pen)
@@ -147,25 +180,31 @@ class LogoPreviewScreen(QWidget):
         if self._logo_pixmap is not None:
             if self._opacity > 0.0:
                 painter.setOpacity(self._opacity)
-                painter.drawPixmap(self.logo_rect(), self._logo_pixmap)
+                painter.drawPixmap(self._absolute_logo_rect(), self._logo_pixmap)
                 painter.setOpacity(1.0)
         else:
             title_font = painter.font()
             title_font.setBold(True)
             painter.setFont(title_font)
             painter.setPen(QColor(200, 210, 230, 210))
-            painter.drawText(rect.adjusted(16, 0, -16, -16), Qt.AlignCenter | Qt.TextWordWrap, _NO_LOGO_TITLE)
+            painter.drawText(active.adjusted(16, 0, -16, -16), Qt.AlignCenter | Qt.TextWordWrap, _NO_LOGO_TITLE)
 
             hint_font = painter.font()
             hint_font.setBold(False)
             hint_font.setPointSize(max(7, hint_font.pointSize() - 2))
             painter.setFont(hint_font)
             painter.setPen(QColor(160, 170, 195, 190))
-            hint_rect = rect.adjusted(24, 0, -24, -14)
+            hint_rect = active.adjusted(24, 0, -24, -14)
             painter.drawText(hint_rect, Qt.AlignHCenter | Qt.AlignBottom | Qt.TextWordWrap, _NO_LOGO_HINT)
 
         painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
         painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        if active != rect:
+            # A brighter border around the active area itself so a
+            # pillarboxed 4:3 shape reads clearly as "this is the real
+            # screen", not just a decorative inset.
+            painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
+            painter.drawRect(active.adjusted(0, 0, -1, -1))
         painter.end()
 
     # ── Drag ─────────────────────────────────────────────────────────────
@@ -177,22 +216,27 @@ class LogoPreviewScreen(QWidget):
         if self._logo_pixmap is None:
             return
         pos = self._event_pos(event)
-        if self.logo_rect().contains(pos):
+        if self._absolute_logo_rect().contains(pos):
             # Grab offset within the logo box -- keeps the cursor's grip
             # point fixed relative to the logo instead of the logo
             # re-centering (and visibly jumping) on the cursor on the
             # first move.
-            self._drag_offset = pos - self.logo_rect().topLeft()
+            self._drag_offset = pos - self._absolute_logo_rect().topLeft()
             self.setCursor(Qt.ClosedHandCursor)
 
     def mouseMoveEvent(self, event):
         if self._drag_offset is None:
             return
         pos = self._event_pos(event)
-        new_x = pos.x() - self._drag_offset.x()
-        new_y = pos.y() - self._drag_offset.y()
-        new_x = max(0, min(new_x, self.width() - self._logo_w))
-        new_y = max(0, min(new_y, self.height() - self._logo_h))
+        active = self.active_rect()
+        # Grab offset + event pos are in widget coordinates; subtract
+        # active's own origin to land back in active_rect()-relative
+        # space, then clamp to the active area -- never the pillarboxed
+        # bars outside it.
+        new_x = pos.x() - self._drag_offset.x() - active.left()
+        new_y = pos.y() - self._drag_offset.y() - active.top()
+        new_x = max(0, min(new_x, active.width() - self._logo_w))
+        new_y = max(0, min(new_y, active.height() - self._logo_h))
         self._logo_x = new_x
         self._logo_y = new_y
         self.update()
@@ -202,7 +246,8 @@ class LogoPreviewScreen(QWidget):
             return
         self._drag_offset = None
         self.setCursor(Qt.OpenHandCursor)
-        self.logoDropped.emit(self._logo_x, self._logo_y, self.width(), self.height(), self._logo_w, self._logo_h)
+        active = self.active_rect()
+        self.logoDropped.emit(self._logo_x, self._logo_y, active.width(), active.height(), self._logo_w, self._logo_h)
 
 
 class LogoTimingDialog(QDialog):

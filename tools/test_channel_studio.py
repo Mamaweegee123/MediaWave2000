@@ -1015,7 +1015,18 @@ check("the 'placement, not on-air timing' explanatory note is gone -- Timing dro
 logo_studio_source = inspect.getsource(logo_studio)
 check("LogoPreviewScreen no longer simulates timing playback", "start_timing_preview" not in logo_studio_source and "stop_timing_preview" not in logo_studio_source and "_sim_timer" not in logo_studio_source)
 check("LogoPreviewScreen exposes a real set_aspect for the 4:3/16:9 toggle", "def set_aspect(self, aspect_w, aspect_h):" in logo_studio_source)
-check("the preview's height-for-width uses the widget's own current aspect, not a fixed 16:9 constant", "self._aspect_h / self._aspect_w" in logo_studio_source)
+check(
+    "the outer widget's own height-for-width stays fixed at the widget's natural 16:9 shape -- only the active area inside it changes",
+    "return max(1, int(width * PREVIEW_ASPECT_H / PREVIEW_ASPECT_W))" in logo_studio_source,
+)
+check(
+    "the active placement rectangle is computed by the shared pure geometry helper, not duplicated ad hoc",
+    "compute_active_screen_rect(" in logo_studio_source,
+)
+check(
+    "dragging and dropping are hit-tested/clamped against the active rect, not the full widget",
+    "active.width() - self._logo_w" in logo_studio_source and "active.height() - self._logo_h" in logo_studio_source,
+)
 check(
     "opacity and size only write real settings on release, not on every live tick",
     logo_section_source.count("sliderReleased.connect") == 2,
