@@ -1006,7 +1006,12 @@ check("setting the aspect back to the default (16:9) is a real, honest change", 
 section("setup_sections.py: Logo Studio v1 structural checks")
 
 logo_section_source = inspect.getsource(setup_sections.build_logo_section)
-check("companion channels still get the informational-only card, no controls", "No custom logo for companion channels" in logo_section_source)
+check(
+    "companion channels get real Logo Studio controls now (unified logo lookup, commit 5) -- "
+    "no more informational-only card",
+    "No custom logo for companion channels" not in logo_section_source,
+)
+check("Logo Studio resolves through the shared User Content/Logos folder for channels with no folder of their own", "_shared_logos_dir" in logo_section_source)
 check("the simulated screen preview widget is used", "LogoPreviewScreen(" in logo_section_source)
 check("dropped preview coordinates are unscaled back to real px before writing settings", "/ scale" in logo_section_source)
 check("the preview preserves the source logo's aspect ratio instead of forcing a square", "scale_logo_dimensions(" in logo_section_source)
@@ -1084,10 +1089,13 @@ section("logo discovery: one shared lookup, not two")
 
 card_source = inspect.getsource(channel_card)
 check("channel_card.py has no separate/weaker logo lookup of its own", "_find_channel_logo_path" not in card_source)
-check("channel_card.py's logo widget uses the real, shared discovery function", "find_channel_bug_logo(summary.root_path, summary.name)" in card_source)
+check("channel_card.py's logo widget uses the real, shared discovery function", "find_channel_bug_logo(summary.root_path, summary.name" in card_source)
 
 logo_section_source_v2 = inspect.getsource(setup_sections.build_logo_section)
-check("Logo Studio's preview uses the same shared discovery function, not just the stale summary snapshot", "find_channel_bug_logo(root_path, channel_name)" in logo_section_source_v2)
+check(
+    "Logo Studio's preview uses the same shared discovery function, not just the stale summary snapshot",
+    "find_channel_bug_logo(root_path, channel_name" in logo_section_source_v2,
+)
 
 setup_dialog_source = inspect.getsource(channel_setup.ChannelSetupDialog)
 check("switching to the Logo tab refreshes it (picks up a logo added mid-session)", "_refresh_logo" in setup_dialog_source)

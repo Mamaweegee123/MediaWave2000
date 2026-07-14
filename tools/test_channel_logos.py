@@ -6,6 +6,7 @@ No GUI launch required.
 import inspect
 import os
 import sys
+import tempfile
 
 REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
@@ -414,6 +415,65 @@ check(
     logo_mod.logo_timing_preset_for_settings(removed_preset["timing"], fade_value) == "classic_cable_bug",
 )
 
+
+section("find_channel_bug_logo: shared User Content/Logos fallback (unified logo lookup)")
+
+with tempfile.TemporaryDirectory() as tmpdir:
+    local_root = os.path.join(tmpdir, "MTV")
+    local_logos = os.path.join(local_root, "Logos")
+    os.makedirs(local_logos)
+    local_logo_file = os.path.join(local_logos, "MTV.png")
+    with open(local_logo_file, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+
+    shared_dir = os.path.join(tmpdir, "Shared Logos")
+    os.makedirs(shared_dir)
+    shared_logo_file = os.path.join(shared_dir, "WeatherStar 4000+.png")
+    with open(shared_logo_file, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+    # A decoy for a DIFFERENT channel, to prove the shared-folder lookup
+    # never falls back to "just grab whatever's in here" the way a
+    # single-channel folder does.
+    with open(os.path.join(shared_dir, "RadioWaveTV.png"), "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+
+    check(
+        "a local channel's own root_path/Logos/ still wins when present -- no behavior change",
+        logo_mod.find_channel_bug_logo(local_root, "MTV", shared_logos_dir=shared_dir) == local_logo_file,
+    )
+    check(
+        "a companion channel (no root_path) resolves from the shared folder by name",
+        logo_mod.find_channel_bug_logo("", "WeatherStar 4000+", shared_logos_dir=shared_dir) == shared_logo_file,
+    )
+    check(
+        "omitting shared_logos_dir entirely still works exactly as before (backward compatible signature)",
+        logo_mod.find_channel_bug_logo(local_root, "MTV") == local_logo_file,
+    )
+    check(
+        "a shared-folder miss (no matching name) fails safe -- empty string, no crash, and does NOT grab an unrelated channel's logo",
+        logo_mod.find_channel_bug_logo("", "NetTV", shared_logos_dir=shared_dir) == "",
+    )
+    check(
+        "a channel with neither a local Logos/ folder nor a shared-folder match fails safe",
+        logo_mod.find_channel_bug_logo("", "", shared_logos_dir=shared_dir) == "",
+    )
+    check(
+        "a nonexistent shared_logos_dir fails safe, no crash",
+        logo_mod.find_channel_bug_logo("", "WeatherStar 4000+", shared_logos_dir=os.path.join(tmpdir, "does-not-exist")) == "",
+    )
+
+check(
+    "ensure_user_content_structure creates the shared Logos/ folder",
+    "Logos" in inspect.getsource(app.ensure_user_content_structure),
+)
+check(
+    "app startup creates the shared Logos folder unconditionally, not just on first run",
+    "ensure_user_content_structure(default_mediawave_user_dir())" in inspect.getsource(app.ChannelSurfer.__init__),
+)
+check(
+    "real playback's channel bug lookup uses the channel's stable folder_name, not the live (possibly renamed) name",
+    "folder_name" in inspect.getsource(app.ChannelSurfer.configure_channel_bug),
+)
 
 print(f"\n{'='*50}")
 print(f"Results: {len(PASS)} passed, {len(FAIL)} failed")

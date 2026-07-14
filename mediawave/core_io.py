@@ -260,8 +260,16 @@ def save_json_file(path, data):
 
 
 def ensure_user_content_structure(base_dir):
-    """Create standard user-content subdirectories inside base_dir if missing."""
-    for sub in ("Channels", "Commercials", "Music", "Fonts", "Themes", "Converted", "Settings", "Cache"):
+    """Create standard user-content subdirectories inside base_dir if missing.
+
+    "Logos" is the shared, portable channel-logo folder every channel --
+    local or companion -- resolves its bug logo through (see
+    mediawave.channel_logos.find_channel_bug_logo's shared_logos_dir
+    fallback); it needs to exist for every user, not just first-run ones,
+    which is why callers should invoke this unconditionally on every
+    startup, not only when guiding a brand-new install.
+    """
+    for sub in ("Channels", "Commercials", "Music", "Fonts", "Themes", "Converted", "Settings", "Cache", "Logos"):
         try:
             os.makedirs(os.path.join(base_dir, sub), exist_ok=True)
         except OSError:

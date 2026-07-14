@@ -313,6 +313,7 @@ def build_channel_studio_content(dialog):
                 on_toggle_enabled=lambda checked, cid=summary.channel_id: _toggle_local_enabled(cid, checked),
                 commercials_status=channel_actions.card_commercials_status(dialog, summary.name),
                 display_number=number,
+                shared_logos_dir=getattr(dialog, "_shared_logos_dir", ""),
             )
             entries.append((summary.channel_id, card))
         for summary in visible_companions:
@@ -327,6 +328,7 @@ def build_channel_studio_content(dialog):
                 on_toggle_enabled=lambda checked, ct=summary.channel_type: _toggle_companion_enabled(ct, checked),
                 on_remove=lambda ct=summary.channel_type: _toggle_companion_enabled(ct, False),
                 display_number=number,
+                shared_logos_dir=getattr(dialog, "_shared_logos_dir", ""),
             )
             entries.append((summary.channel_id, card))
 

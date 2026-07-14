@@ -10,21 +10,18 @@ CHANNEL_BUG_CORNER_OPTIONS = ("top-left", "top-right", "bottom-left", "bottom-ri
 CHANNEL_BUG_OVERRIDE_MODES = ("global", "custom", "off")
 
 
-def find_channel_bug_logo(root_path, channel_name):
-    """Discover the best logo image in <root_path>/Logos/.
+def _scan_logo_dir(logos_dir, channel_name, allow_any_image_fallback):
+    """Look for a channel's logo inside an already-resolved directory.
 
-    The single source of truth for channel logo discovery -- real
-    playback (ChannelBugOverlay.configure in channelsurfer2000.py) and
-    every UI that shows a logo preview (Channel Studio cards, Logo
-    Studio) all call this same function, so "logos work during
-    playback but Channel Studio can't find them" can't happen from a
-    second, weaker lookup drifting out of sync with this one.
-
-    Returns an absolute path string or "" if none found.
+    `allow_any_image_fallback` gates two things that only make sense for
+    a folder scoped to ONE channel (a local channel's own <root>/Logos/):
+    the bare preferred names (logo.png/channel.png/bug.png), and the
+    last-resort "just take whatever image is in here" fallback. Neither
+    is safe for the shared, multi-channel User Content/Logos/ folder --
+    grabbing an arbitrary file there could just as easily return a
+    completely different channel's logo, so a shared-folder lookup only
+    ever matches a real <channel_name>.<ext> file.
     """
-    if not root_path:
-        return ""
-    logos_dir = os.path.join(root_path, "Logos")
     if not os.path.isdir(logos_dir):
         return ""
     try:
@@ -41,20 +38,27 @@ def find_channel_bug_logo(root_path, channel_name):
                 return p
         return ""
 
-    # Exact preferred names
-    for name in CHANNEL_BUG_PREFERRED_NAMES:
-        c = candidate(name)
-        if c:
-            return c
+    if allow_any_image_fallback:
+        # Exact preferred names -- only meaningful in a single-channel folder.
+        for name in CHANNEL_BUG_PREFERRED_NAMES:
+            c = candidate(name)
+            if c:
+                return c
 
-    # <channel_name>.png variants
-    safe_name = re.sub(r"[^\w\-. ]", "", channel_name or "").strip()
+    # <channel_name>.png variants -- safe in either kind of folder.
+    # Allow "+" -- COMPANION_NAMES["weatherstar"] is literally
+    # "WeatherStar 4000+" (see companion_adapter.py), and a filename built
+    # from that real name needs to round-trip through this sanitizer.
+    safe_name = re.sub(r"[^\w\-.+ ]", "", channel_name or "").strip()
     for ext in CHANNEL_BUG_SUPPORTED_EXTS:
         c = candidate(f"{safe_name}{ext}")
         if c:
             return c
 
-    # Any supported image in Logos/, prefer PNG first
+    if not allow_any_image_fallback:
+        return ""
+
+    # Any supported image in the folder, prefer PNG first.
     png_hits = []
     other_hits = []
     for entry in sorted(entries):
@@ -70,6 +74,39 @@ def find_channel_bug_logo(root_path, channel_name):
         return png_hits[0]
     if other_hits:
         return other_hits[0]
+    return ""
+
+
+def find_channel_bug_logo(root_path, channel_name, shared_logos_dir=None):
+    """Discover the best logo image for a channel.
+
+    The single source of truth for channel logo discovery -- real
+    playback (ChannelBugOverlay.configure in channelsurfer2000.py) and
+    every UI that shows a logo preview (Channel Studio cards, Logo
+    Studio) all call this same function, so "logos work during
+    playback but Channel Studio can't find them" can't happen from a
+    second, weaker lookup drifting out of sync with this one.
+
+    Looks first in <root_path>/Logos/ (unchanged from before -- existing
+    local-channel setups keep working exactly as they did, and never even
+    reach the fallback below). If nothing is found there (including when
+    `root_path` is empty, as for every companion channel -- WeatherStar,
+    RadioWaveTV, NetTV -- which have no folder of their own), falls back
+    to `shared_logos_dir` (the portable User Content/Logos/ folder every
+    channel can use, keyed by channel name -- e.g. "MTV.png",
+    "WeatherStar.png"). This is what finally gives companion channels a
+    real logo path.
+
+    Returns an absolute path string or "" if none found.
+    """
+    if root_path:
+        found = _scan_logo_dir(os.path.join(root_path, "Logos"), channel_name, allow_any_image_fallback=True)
+        if found:
+            return found
+    if shared_logos_dir:
+        found = _scan_logo_dir(shared_logos_dir, channel_name, allow_any_image_fallback=False)
+        if found:
+            return found
     return ""
 
 _TIMING_DEFAULTS = {

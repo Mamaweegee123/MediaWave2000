@@ -215,17 +215,6 @@ def build_logo_section(dialog, channel_info, summary):
     layout.setSpacing(8)
 
     companion_type = _companion_type(channel_info, summary)
-    if companion_type:
-        layout.addWidget(
-            build_info_card(
-                "No custom logo for companion channels",
-                "WeatherStar, RadioWaveTV, and NetTV use their own built-in on-screen look "
-                "there's no channel logo image to set here.",
-            )
-        )
-        layout.addStretch(1)
-        return page
-
     channel_name = channel_info.get("name", "Channel")
     channel_id = channel_info.get("id", "")
     root_path = getattr(summary, "root_path", "") if summary is not None else ""
@@ -235,7 +224,12 @@ def build_logo_section(dialog, channel_info, summary):
     # real playback (which calls this same function fresh every tune)
     # keeps finding it. Falls back to the snapshot only if the live
     # lookup comes up empty (e.g. root_path unavailable this session).
-    logo_path = find_channel_bug_logo(root_path, channel_name) or (
+    # Companions have no root_path at all -- find_channel_bug_logo's
+    # shared_logos_dir fallback (the portable User Content/Logos/ folder)
+    # is the only path that can ever resolve one for them, keyed by their
+    # display name (e.g. "WeatherStar 4000+.png").
+    shared_logos_dir = getattr(dialog, "_shared_logos_dir", "")
+    logo_path = find_channel_bug_logo(root_path, channel_name, shared_logos_dir=shared_logos_dir) or (
         getattr(summary, "logo_path", "") if summary is not None else ""
     )
     pixmap = None
@@ -302,9 +296,14 @@ def build_logo_section(dialog, channel_info, summary):
         preview.set_geometry_state(x, y, logo_w, logo_h, state["opacity"])
 
     def _open_logos_folder():
+        # A local channel's own per-folder Logos/ wins when it exists;
+        # otherwise (including every companion, which has no root_path at
+        # all) fall back to the shared User Content/Logos/ folder --
+        # ensure_user_content_structure creates it on every startup, so
+        # it should always exist by the time this runs.
         target = os.path.join(root_path, "Logos") if root_path else ""
         if not target or not os.path.isdir(target):
-            target = root_path or ""
+            target = shared_logos_dir if shared_logos_dir and os.path.isdir(shared_logos_dir) else (root_path or "")
         if target and os.path.isdir(target):
             QDesktopServices.openUrl(QUrl.fromLocalFile(target))
 
@@ -383,10 +382,16 @@ def build_logo_section(dialog, channel_info, summary):
         )
 
         if pixmap is None:
+            no_logo_hint = (
+                f"Add a PNG named \"{channel_name}\" to the shared User Content/Logos folder and it'll show up "
+                "automatically -- companion channels don't have a folder of their own."
+                if companion_type
+                else "Add a PNG to this channel's Logos folder and it'll show up automatically."
+            )
             controls_layout.addWidget(
                 build_info_card(
                     "No logo image found",
-                    "Add a PNG to this channel's Logos folder and it'll show up automatically.",
+                    no_logo_hint,
                     buttons=[("Open Logos Folder", lambda checked=False: _open_logos_folder())],
                 )
             )

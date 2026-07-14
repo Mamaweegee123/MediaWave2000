@@ -456,6 +456,17 @@ def default_user_content_subdir(name):
     return os.path.join(base_dir, name) if name else base_dir
 
 
+def shared_channel_logos_dir():
+    """The portable User Content/Logos/ folder every channel -- local or
+    companion -- can resolve its bug logo through when it has no logo of
+    its own in a per-folder Logos/ directory (see
+    mediawave.channel_logos.find_channel_bug_logo's shared_logos_dir
+    fallback, and ensure_user_content_structure, which creates this
+    folder on every startup).
+    """
+    return default_user_content_subdir("Logos")
+
+
 def existing_picker_start(*candidates):
     for candidate in candidates:
         if not candidate:
@@ -1482,7 +1493,7 @@ def load_channel_bug_pixmap(root_path, channel_name, size):
     cache_key = (root_path, channel_name, size)
     if cache_key in _CHANNEL_BUG_CACHE:
         return _CHANNEL_BUG_CACHE[cache_key]
-    path = find_channel_bug_logo(root_path, channel_name)
+    path = find_channel_bug_logo(root_path, channel_name, shared_logos_dir=shared_channel_logos_dir())
     if not path:
         _CHANNEL_BUG_CACHE[cache_key] = None
         return None
@@ -14624,7 +14635,7 @@ class InfoOverlay(QWidget):
         if not root_path:
             root_path = str(self.state.get("channel_root_path", "") or "")
         if root_path and channel_name:
-            bug_path = find_channel_bug_logo(root_path, channel_name)
+            bug_path = find_channel_bug_logo(root_path, channel_name, shared_logos_dir=shared_channel_logos_dir())
             if bug_path:
                 return bug_path
         return ""
@@ -20033,6 +20044,7 @@ class AdvancedConfigDialog(QDialog):
         self._channel_shows_lookup = channel_shows_lookup if isinstance(channel_shows_lookup, dict) else {}
         self._channel_genre_lookup = channel_genre_lookup if isinstance(channel_genre_lookup, dict) else {}
         self._channel_logo_lookup = channel_logo_lookup if isinstance(channel_logo_lookup, dict) else {}
+        self._shared_logos_dir = shared_channel_logos_dir()
         self._studio_channels_by_id = studio_channels_by_id if isinstance(studio_channels_by_id, dict) else {}
         self._channel_studio_drafts_file = CHANNEL_STUDIO_DRAFTS_FILE
         self._channel_studio_state_file = CHANNEL_STUDIO_STATE_FILE
@@ -22280,6 +22292,12 @@ class ChannelSurfer(QWidget):
         self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
         migrate_legacy_channel_settings(self.app_settings)
         self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
+        # Unconditional, not just on first run (_show_first_run_guidance
+        # only fires when no catalog_path is set yet) -- every user needs
+        # the shared Logos/ folder to exist for the unified channel logo
+        # lookup, not only brand-new installs. os.makedirs(exist_ok=True)
+        # makes this a safe, cheap no-op for anyone who already has it.
+        ensure_user_content_structure(default_mediawave_user_dir())
         if self.app_settings.get("safe_playback_mode", False):
             os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
         migrated_commercials = json.dumps(self.app_settings.get("commercials", {}), sort_keys=True)
@@ -23826,7 +23844,12 @@ class ChannelSurfer(QWidget):
             return
         settings = normalize_channel_bug_settings(self.app_settings.get("channel_bug", {}))
         root_path = getattr(ch, "root_path", "") if ch is not None else ""
-        channel_name = getattr(ch, "name", "") if ch is not None else ""
+        # folder_name (set once in apply_catalog_channel_customizations,
+        # before any rename) is what this channel's own per-folder
+        # Logos/ directory is actually keyed by -- using the live,
+        # possibly-renamed .name here would silently stop finding an
+        # existing logo file the moment the channel is renamed.
+        channel_name = (getattr(ch, "folder_name", None) or getattr(ch, "name", "")) if ch is not None else ""
         self.video_window.channel_bug.configure(settings, channel_name, root_path)
         self.video_window.channel_bug.on_channel_tune()
         self._sync_channel_bug_suppression()
@@ -23934,21 +23957,31 @@ class ChannelSurfer(QWidget):
         catalog_settings = normalize_catalog_channel_settings(
             self.app_settings.get("catalog_channel_settings", {})
         )
+        shared_logos_dir = shared_channel_logos_dir()
         for channel in getattr(self, "channels", []):
             cid = self.catalog_channel_id(channel)
             studio_channels_by_id[cid] = channel
+            root_path = getattr(channel, "root_path", "")
+            # folder_name (the channel's original, pre-rename identity --
+            # see apply_catalog_channel_customizations) is what a local
+            # channel's own per-folder Logos/ directory is actually keyed
+            # by; falls back to name for a channel that hasn't gone
+            # through a customization pass yet this session. Every
+            # channel gets a lookup attempt here, local or companion --
+            # companions have no root_path, so only the shared folder
+            # fallback can ever resolve for them.
+            channel_name_for_logo = getattr(channel, "folder_name", None) or getattr(channel, "name", "")
+            try:
+                channel_logo_lookup[cid] = find_channel_bug_logo(root_path, channel_name_for_logo, shared_logos_dir=shared_logos_dir)
+            except Exception:
+                channel_logo_lookup[cid] = ""
             if getattr(channel, "channel_type", "media") != "media":
                 continue
-            root_path = getattr(channel, "root_path", "")
             show_files = getattr(channel, "shows", [])
             try:
                 channel_shows_lookup[cid] = gather_channel_shows(root_path, show_files)
             except Exception:
                 channel_shows_lookup[cid] = []
-            try:
-                channel_logo_lookup[cid] = find_channel_bug_logo(root_path, getattr(channel, "name", ""))
-            except Exception:
-                channel_logo_lookup[cid] = ""
             tags_str = catalog_settings.get(cid, {}).get("vault_genre_tags", "")
             channel_genre_lookup[cid] = [
                 t.strip() for t in tags_str.split(",") if t.strip()

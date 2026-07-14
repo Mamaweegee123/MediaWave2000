@@ -104,13 +104,18 @@ def _apply_card_shadow(widget):
     widget.setGraphicsEffect(effect)
 
 
-def _build_logo_widget(summary, on_set_logo, size=88):
+def _build_logo_widget(summary, on_set_logo, size=88, shared_logos_dir=""):
     """The channel's logo/bug — shown once per card, never duplicated.
 
     Falls back to an "Add Channel Logo" button (not blank space) when no
     logo is set, which routes to the channel's Identity tab.
+
+    `shared_logos_dir`, when given, is the portable User Content/Logos/
+    folder every channel can resolve a logo through when it has none of
+    its own — the only path that can ever find one for a companion
+    channel (summary.root_path is always empty for those).
     """
-    logo_path = summary.logo_path or find_channel_bug_logo(summary.root_path, summary.name)
+    logo_path = summary.logo_path or find_channel_bug_logo(summary.root_path, summary.name, shared_logos_dir=shared_logos_dir)
     if logo_path:
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():
@@ -294,6 +299,7 @@ def build_dashboard_channel_card(
     on_remove=None,
     commercials_status=None,
     display_number=None,
+    shared_logos_dir="",
 ):
     """Build one channel's dashboard tile for the Choose Channel grid.
 
@@ -340,7 +346,7 @@ def build_dashboard_channel_card(
     header_row.setSpacing(10)
     number_lbl = _build_channel_number_label(number)
     header_row.addWidget(number_lbl)
-    logo_widget = _build_logo_widget(summary, on_set_logo)
+    logo_widget = _build_logo_widget(summary, on_set_logo, shared_logos_dir=shared_logos_dir)
 
     # Measure the two fixed-size neighbors so the title column gets
     # exactly what's left — see the _elide docstring for why a guess
