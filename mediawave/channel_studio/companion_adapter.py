@@ -38,10 +38,12 @@ COMPANION_INFO_LABELS = {
 
 def empty_snapshot():
     """The all-disabled starting point every read_companion_snapshot()
-    result is built on top of.
+    result is built on top of. `name` is blank here -- blank means "use
+    the built-in COMPANION_NAMES default", same convention
+    read_companion_snapshot and companion_summaries use.
     """
     return {
-        companion_type: {"enabled": False, "number": 1, "detail": ""}
+        companion_type: {"enabled": False, "number": 1, "detail": "", "name": ""}
         for companion_type in COMPANION_TYPES
     }
 
@@ -49,11 +51,17 @@ def empty_snapshot():
 def read_companion_snapshot(raw):
     """Normalize a raw settings-like dict (the same key names
     AdvancedConfigDialog.values()/app_settings use: weatherstar_enabled,
-    weatherstar_channel_number, weatherstar_location, radiowave_enabled,
-    radiowave_channel_number, radiowave_folder, youtube_enabled,
-    youtube_channel_number, youtube_playlist_url) into this module's
-    snapshot shape. Never raises -- malformed or missing fields just fall
-    back to disabled defaults.
+    weatherstar_channel_number, weatherstar_location,
+    weatherstar_display_name, radiowave_enabled, radiowave_channel_number,
+    radiowave_folder, radiowave_display_name, youtube_enabled,
+    youtube_channel_number, youtube_playlist_url, youtube_display_name)
+    into this module's snapshot shape. Never raises -- malformed or
+    missing fields just fall back to disabled defaults.
+
+    `name` is blank when the user hasn't renamed a companion yet --
+    companion_summaries falls back to the built-in COMPANION_NAMES in
+    that case, same as the type's hardcoded default before this field
+    existed.
     """
     raw = raw if isinstance(raw, dict) else {}
 
@@ -68,16 +76,19 @@ def read_companion_snapshot(raw):
             "enabled": bool(raw.get("weatherstar_enabled", False)),
             "number": _int(raw.get("weatherstar_channel_number", 1)),
             "detail": str(raw.get("weatherstar_location", "") or "").strip(),
+            "name": str(raw.get("weatherstar_display_name", "") or "").strip(),
         },
         "radiowave": {
             "enabled": bool(raw.get("radiowave_enabled", False)),
             "number": _int(raw.get("radiowave_channel_number", 1)),
             "detail": str(raw.get("radiowave_folder", "") or "").strip(),
+            "name": str(raw.get("radiowave_display_name", "") or "").strip(),
         },
         "youtube": {
             "enabled": bool(raw.get("youtube_enabled", False)),
             "number": _int(raw.get("youtube_channel_number", 1)),
             "detail": str(raw.get("youtube_playlist_url", "") or "").strip(),
+            "name": str(raw.get("youtube_display_name", "") or "").strip(),
         },
     }
 
@@ -110,7 +121,7 @@ def companion_summaries(snapshot, status_by_type=None):
         results.append(
             {
                 "channel_id": COMPANION_CHANNEL_IDS[companion_type],
-                "name": COMPANION_NAMES[companion_type],
+                "name": str(entry.get("name") or "").strip() or COMPANION_NAMES[companion_type],
                 "number": int(entry.get("number", 1) or 1),
                 "channel_type": companion_type,
                 "companion_info_label": COMPANION_INFO_LABELS[companion_type],

@@ -1246,6 +1246,114 @@ check("Overview validates through the unified dispatch", "validate_channel_numbe
 check("applying a number edit triggers the no-restart refresh", "refresh_live_lineup" in overview_source)
 
 # ---------------------------------------------------------------------------
+# channel_actions.py: unified name read/write/validate dispatch (channel
+# name editing, commit 3) -- display_name actually applying to a live
+# channel.name is covered separately below since it needs the real
+# Channel class from channelsurfer2000.py, not the fake dialog.
+# ---------------------------------------------------------------------------
+section("channel_actions: unified channel name dispatch (local + companion)")
+
+name_dialog = _FakeDialog()
+name_dialog.catalog_rows[0]["name"] = "4Kids"
+name_dialog.catalog_rows[1]["name"] = "Movies"
+
+check("channel_name_from_dialog reads a local channel's row name", channel_actions.channel_name_from_dialog(name_dialog, "media:/fake/a") == "4Kids")
+check("channel_name_from_dialog falls back to the built-in default for an unrenamed companion", channel_actions.channel_name_from_dialog(name_dialog, "special:weatherstar") == "WeatherStar 4000+")
+check("channel_name_from_dialog returns None for an unknown local id", channel_actions.channel_name_from_dialog(name_dialog, "media:/nope") is None)
+
+check("set_channel_name_on_dialog renames a local channel's row", channel_actions.set_channel_name_on_dialog(name_dialog, "media:/fake/a", "4Kids Classic") is True)
+check("the row's name string actually changed", name_dialog.catalog_rows[0]["name"] == "4Kids Classic")
+check("channel_name_from_dialog reflects the rename immediately", channel_actions.channel_name_from_dialog(name_dialog, "media:/fake/a") == "4Kids Classic")
+check("set_channel_name_on_dialog rejects a blank name", channel_actions.set_channel_name_on_dialog(name_dialog, "media:/fake/a", "   ") is False)
+check("a blank-name rejection doesn't touch the existing name", name_dialog.catalog_rows[0]["name"] == "4Kids Classic")
+check("set_channel_name_on_dialog fails safely for an unknown local id", channel_actions.set_channel_name_on_dialog(name_dialog, "media:/nope", "X") is False)
+
+name_main_app = _FakeMainApp()
+name_dialog._parent = name_main_app
+check("set_channel_name_on_dialog renames a companion via its flat display-name setting", channel_actions.set_channel_name_on_dialog(name_dialog, "special:weatherstar", "The Weather Machine") is True)
+check("the companion rename is readable back immediately", channel_actions.channel_name_from_dialog(name_dialog, "special:weatherstar") == "The Weather Machine")
+check("renaming a local channel also updates the main app's real app_settings, no Save needed", (
+    channel_actions.set_channel_name_on_dialog(name_dialog, "media:/fake/a", "4Kids Forever"),
+    name_main_app.app_settings["catalog_channel_settings"]["media:/fake/a"]["display_name"],
+)[1] == "4Kids Forever")
+
+section("channel_actions: manual name validation bridges to channel_identity")
+
+check("a normal rename validates ok", channel_actions.validate_channel_name_on_dialog(name_dialog, "media:/fake/a", "Something New") == ("ok", "Looks good"))
+check("a blank candidate is invalid, not a crash", channel_actions.validate_channel_name_on_dialog(name_dialog, "media:/fake/a", "   ")[0] == "invalid")
+
+overview_name_source = inspect.getsource(setup_sections.build_overview_section)
+check("Overview wires a second inline editor for the channel name", overview_name_source.count("build_inline_value_editor") >= 2)
+check("Overview reads the live channel name through the unified dispatch", "channel_name_from_dialog" in overview_name_source)
+check("Overview writes the name through the unified dispatch", "set_channel_name_on_dialog" in overview_name_source)
+check("Overview validates the name through the unified dispatch", "validate_channel_name_on_dialog" in overview_name_source)
+
+section("companion_adapter: real per-companion display names (commit 3)")
+
+named_snapshot = companion_adapter.read_companion_snapshot({
+    "weatherstar_enabled": True,
+    "weatherstar_channel_number": 4,
+    "weatherstar_display_name": "The Weather Machine",
+    "radiowave_enabled": True,
+    "radiowave_channel_number": 5,
+})
+check("a configured display name is read from the flat setting", named_snapshot["weatherstar"]["name"] == "The Weather Machine")
+check("an unset display name reads as blank, not a crash", named_snapshot["radiowave"]["name"] == "")
+
+named_summaries = companion_adapter.companion_summaries(named_snapshot)
+by_type = {s["channel_type"]: s for s in named_summaries}
+check("a renamed companion's summary uses the real name", by_type["weatherstar"]["name"] == "The Weather Machine")
+check("an un-renamed companion's summary falls back to the built-in default", by_type["radiowave"]["name"] == "RadioWaveTV")
+
+# ---------------------------------------------------------------------------
+# channelsurfer2000.py: display_name actually applies to a live channel's
+# real .name attribute (commit 3's other half -- this was previously dead
+# code for real channels)
+# ---------------------------------------------------------------------------
+section("apply_catalog_channel_customizations: display_name is now live")
+
+import channelsurfer2000
+
+
+class _FakeAppChannel:
+    def __init__(self, name, root_path):
+        self.name = name
+        self.root_path = root_path
+        self.channel_type = "media"
+
+
+class _FakeAppForRename:
+    catalog_channel_id = channelsurfer2000.ChannelSurfer.catalog_channel_id
+    catalog_category_for_channel = channelsurfer2000.ChannelSurfer.catalog_category_for_channel
+    catalog_settings_for_channel = channelsurfer2000.ChannelSurfer.catalog_settings_for_channel
+    apply_catalog_channel_customizations = channelsurfer2000.ChannelSurfer.apply_catalog_channel_customizations
+
+    def __init__(self, channels, catalog_channel_settings):
+        self.channels = channels
+        self.current_channel = 0
+        self.guide_selection = 0
+        self.app_settings = {"catalog_channel_settings": catalog_channel_settings}
+        self.status = _FakeLineEdit("")
+
+
+rename_channel = _FakeAppChannel("MTV", "/Volumes/Media/MTV")
+rename_channel_id = f"media:{os.path.realpath('/Volumes/Media/MTV')}"
+rename_app = _FakeAppForRename(
+    [rename_channel],
+    {rename_channel_id: {"enabled": True, "channel_number": 5, "display_name": "MTV Classic"}},
+)
+rename_app.apply_catalog_channel_customizations()
+check("a stored display_name is applied to the channel's real .name attribute", rename_channel.name == "MTV Classic")
+check("the channel's original, folder-derived name is preserved separately", rename_channel.folder_name == "MTV")
+
+no_rename_channel = _FakeAppChannel("Movies", "/Volumes/Media/Movies")
+no_rename_id = f"media:{os.path.realpath('/Volumes/Media/Movies')}"
+no_rename_app = _FakeAppForRename([no_rename_channel], {no_rename_id: {"enabled": True, "channel_number": 1}})
+no_rename_app.apply_catalog_channel_customizations()
+check("no display_name set -> the channel's original name is left alone", no_rename_channel.name == "Movies")
+check("folder_name is still captured even without a rename", no_rename_channel.folder_name == "Movies")
+
+# ---------------------------------------------------------------------------
 # channel_identity.py: unified local+companion pool, dedup, validation
 # ---------------------------------------------------------------------------
 section("channel_identity: unified_entries merges local + companion")

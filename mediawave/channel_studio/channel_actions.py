@@ -41,6 +41,7 @@ from ..channel_logos import (
 )
 from . import channel_identity
 from .companion_adapter import (
+    COMPANION_NAMES,
     COMPANION_TYPES,
     read_companion_snapshot,
     resequence_companion_numbers,
@@ -83,6 +84,10 @@ def companion_snapshot_from_dialog(dialog):
         raw[f"{companion_type}_enabled"] = bool(enabled_box.isChecked()) if enabled_box is not None else False
         raw[f"{companion_type}_channel_number"] = number_spin.value() if number_spin is not None else 1
         raw[f"{companion_type}_detail_field"] = detail_input.text().strip() if detail_input is not None else ""
+        # No live widget holds a companion's display name today (see
+        # _companion_name_from_dialog) -- it lives directly on the main
+        # app's real app_settings, read through dialog.parent().
+        raw[f"{companion_type}_display_name"] = _companion_name_from_dialog(dialog, companion_type)
     # read_companion_snapshot reads type-specific field names (weatherstar_location,
     # radiowave_folder, youtube_playlist_url) -- map the generic one above onto them.
     raw["weatherstar_location"] = raw.pop("weatherstar_detail_field", "")
@@ -226,6 +231,65 @@ def set_local_channel_number(dialog, channel_id, number):
     return True
 
 
+_COMPANION_NAME_SETTING_KEY = {
+    "weatherstar": "weatherstar_display_name",
+    "radiowave": "radiowave_display_name",
+    "youtube": "youtube_display_name",
+}
+
+
+def local_channel_name_from_dialog(dialog, channel_id):
+    """Current live name for a local folder channel -- My Catalog has no
+    editable name widget (just a static label), so this is the row's own
+    name string, already reflecting any earlier rename this session.
+    None if no matching row exists.
+    """
+    row = local_channel_row(dialog, channel_id)
+    return row.get("name", "") if row is not None else None
+
+
+def set_local_channel_name(dialog, channel_id, name):
+    """Real channel-name write for a local folder channel: updates the My
+    Catalog row's own name string (so a later Save's
+    collect_catalog_channel_settings() persists the new name, not the
+    old one -- see channelsurfer2000.py). Returns True if a row was found
+    and updated, False otherwise (safe no-op -- never raises).
+    """
+    row = local_channel_row(dialog, channel_id)
+    if row is None:
+        return False
+    row["name"] = str(name or "").strip()
+    return True
+
+
+def _companion_name_from_dialog(dialog, companion_type):
+    """Companions have no live name widget today (the Companion Channels
+    tab only edits enabled/number/location-or-folder-or-playlist) -- the
+    current name lives directly on the main app's real app_settings, read
+    through dialog.parent() the same way _write_channel_setting_field
+    writes it. Blank (not yet renamed) is a valid, common result.
+    """
+    parent = getattr(dialog, "parent", None)
+    main_app = parent() if callable(parent) else None
+    if main_app is None or not hasattr(main_app, "app_settings"):
+        return ""
+    return str(main_app.app_settings.get(_COMPANION_NAME_SETTING_KEY[companion_type], "") or "").strip()
+
+
+def _set_companion_name_on_dialog(dialog, companion_type, name):
+    """Writes a companion's display name straight onto the main app's real
+    app_settings (through dialog.parent()) -- there's no live widget to
+    mirror it onto, unlike enabled/number. Returns True if a real app
+    object was reachable, False otherwise (safe no-op).
+    """
+    parent = getattr(dialog, "parent", None)
+    main_app = parent() if callable(parent) else None
+    if main_app is None or not hasattr(main_app, "app_settings"):
+        return False
+    main_app.app_settings[_COMPANION_NAME_SETTING_KEY[companion_type]] = str(name or "").strip()
+    return True
+
+
 def resequence_local_channels_on_dialog(dialog, ordered_channel_ids):
     """Reassign real channel numbers among the local folder channels
     named in `ordered_channel_ids` (desired left-to-right order) by
@@ -323,6 +387,54 @@ def channel_number_from_dialog(dialog, channel_id):
         widget = _widget(dialog, _COMPANION_NUMBER_ATTR[companion_type])
         return widget.value() if widget is not None else None
     return local_channel_number_from_dialog(dialog, channel_id)
+
+
+def channel_name_from_dialog(dialog, channel_id):
+    """Current live channel name for ANY channel -- local or companion.
+    Local channels read the My Catalog row's name string; companions
+    fall back to their built-in COMPANION_NAMES default until renamed.
+    """
+    companion_type = _companion_type_from_id(channel_id)
+    if companion_type is not None:
+        return _companion_name_from_dialog(dialog, companion_type) or COMPANION_NAMES[companion_type]
+    return local_channel_name_from_dialog(dialog, channel_id)
+
+
+def set_channel_name_on_dialog(dialog, channel_id, name):
+    """Real channel-name write for ANY channel -- local or companion.
+
+    Local channels: updates the My Catalog row's name string (so a later
+    Save's collect_catalog_channel_settings() persists the new name, not
+    the stale one -- see channelsurfer2000.py) and pushes the same value
+    straight into the main app's real app_settings (see
+    _write_channel_setting_field) for immediate, no-restart effect.
+    Companions: writes the new weatherstar_display_name/etc setting
+    directly, since no live widget exists for it yet. Returns True if
+    the channel was found and updated, False otherwise (safe no-op --
+    never raises; a blank name is rejected here too).
+    """
+    name = str(name or "").strip()
+    if not name:
+        return False
+    companion_type = _companion_type_from_id(channel_id)
+    if companion_type is not None:
+        return _set_companion_name_on_dialog(dialog, companion_type, name)
+    if not set_local_channel_name(dialog, channel_id, name):
+        return False
+    _write_channel_setting_field(dialog, channel_id, "display_name", name)
+    return True
+
+
+def validate_channel_name_on_dialog(dialog, channel_id, candidate_name):
+    """Thin bridge from the Overview inline name editor to
+    channel_identity's pure validator -- see
+    validate_channel_number_on_dialog for the equivalent number bridge.
+    """
+    entries = unified_entries_from_dialog(dialog)
+    outcome, detail = channel_identity.validate_new_name(entries, channel_id, candidate_name)
+    if outcome == "ok":
+        return ("ok", "Looks good")
+    return ("invalid", detail or "Enter a valid channel name.")
 
 
 def _write_channel_setting_field(dialog, channel_id, field, value):

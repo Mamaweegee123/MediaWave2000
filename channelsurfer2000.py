@@ -23560,6 +23560,20 @@ class ChannelSurfer(QWidget):
         for index, channel in enumerate(self.channels):
             channel_id = self.catalog_channel_id(channel)
             row = settings.get(channel_id, {})
+            # Capture the channel's original, folder-derived name exactly
+            # once, before any user rename is applied below -- physical,
+            # folder-keyed lookups (today's per-channel Logos/ discovery;
+            # see find_channel_bug_logo) still need this stable identity
+            # even after the user-facing name changes. Renaming a channel
+            # can currently orphan its existing Logos/<old name>.png from
+            # discovery until the logo lookup pipeline is rewired to read
+            # folder_name instead of name (tracked for the unified logo
+            # lookup pass).
+            if not hasattr(channel, "folder_name"):
+                channel.folder_name = getattr(channel, "name", "") or "Channel"
+            display_name = str(row.get("display_name", "") or "").strip()
+            if display_name:
+                channel.name = display_name
             try:
                 display_number = int(row.get("channel_number", 0) or 0)
             except (TypeError, ValueError):

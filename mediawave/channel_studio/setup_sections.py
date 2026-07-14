@@ -88,11 +88,12 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
     layout.setContentsMargins(2, 4, 2, 4)
     layout.setSpacing(10)
 
-    channel_name = channel_info.get("name", "Channel")
     channel_id = channel_info.get("id", "")
     companion_type = _companion_type(channel_info, summary)
     channel_type_label = "Companion channel" if companion_type else "Folder channel"
     source_label = "Built in" if companion_type else "Local folder"
+
+    channel_name = channel_actions.channel_name_from_dialog(dialog, channel_id) or channel_info.get("name", "Channel")
 
     meta_lines = [
         f"Type: {channel_type_label}",
@@ -102,6 +103,24 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
         meta_lines.append(f"Playback: {summary.playback_order_label} order")
 
     layout.addWidget(build_info_card(channel_name, None, meta_lines=meta_lines))
+
+    name_row = QHBoxLayout()
+    name_row.setSpacing(10)
+    name_caption = QLabel("Channel name")
+    name_caption.setObjectName("fieldHelp")
+    name_row.addWidget(name_caption)
+
+    def _validate_name(candidate, cid=channel_id):
+        return channel_actions.validate_channel_name_on_dialog(dialog, cid, candidate)
+
+    def _apply_name(candidate, cid=channel_id):
+        channel_actions.set_channel_name_on_dialog(dialog, cid, candidate)
+        channel_actions.refresh_live_lineup(dialog)
+
+    name_editor, _name_api = build_inline_value_editor(channel_name, _validate_name, _apply_name)
+    name_row.addWidget(name_editor)
+    name_row.addStretch(1)
+    layout.addLayout(name_row)
 
     number_row = QHBoxLayout()
     number_row.setSpacing(10)
