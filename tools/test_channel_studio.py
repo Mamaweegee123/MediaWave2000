@@ -13,7 +13,6 @@ if REPO_ROOT not in sys.path:
 
 from mediawave.channel_studio import channel_studio_adapter as adapter
 from mediawave.channel_studio.channel_studio_model import ChannelStudioSummary, TonightSchedule
-from mediawave.channel_studio import reorder
 from mediawave.channel_studio import studio_state
 from mediawave.channel_studio import companion_adapter
 from mediawave.channel_studio import channel_actions
@@ -241,123 +240,59 @@ check("airing_rules_config left untouched", original_airing_rules == airing_rule
 check("channel info dict left untouched", original_info == info)
 
 # ---------------------------------------------------------------------------
-# reorder.apply_saved_order — merging a saved display order with reality
+# Drag-and-drop reordering is removed entirely -- Channel Studio's grid
+# order comes from real channel numbers only (see channel_identity.
+# sort_unified_entries below for the pure sort rule, and the structural
+# checks further down for the modules/state this pass deleted).
 # ---------------------------------------------------------------------------
-section("reorder.apply_saved_order")
-
-channel_ids = ["a", "b", "c", "d"]
-
-saved_full = ["c", "a", "b", "d"]
-result_full = reorder.apply_saved_order(channel_ids, saved_full)
-check("saved order applied when it covers everything", result_full == saved_full, result_full)
-
-saved_stale = ["z", "c", "a", "y"]
-result_stale = reorder.apply_saved_order(channel_ids, saved_stale)
-check("stale/missing ids in saved order are dropped", "z" not in result_stale and "y" not in result_stale, result_stale)
-check("known ids from saved order still lead", result_stale[:2] == ["c", "a"], result_stale)
-
-saved_partial = ["d", "b"]
-result_partial = reorder.apply_saved_order(channel_ids, saved_partial)
-check(
-    "channels not in saved order are appended, in original order",
-    result_partial == ["d", "b", "a", "c"],
-    result_partial,
-)
-
-result_empty_saved = reorder.apply_saved_order(channel_ids, [])
-check("no saved order falls back to original order", result_empty_saved == channel_ids, result_empty_saved)
-
-result_no_ids = reorder.apply_saved_order([], saved_full)
-check("no known channels is a safe empty result", result_no_ids == [], result_no_ids)
-
-result_dupe_check = reorder.apply_saved_order(channel_ids, saved_full)
-check("no channel id is duplicated", len(result_dupe_check) == len(set(result_dupe_check)), result_dupe_check)
-check("every known channel id is still present", set(result_dupe_check) == set(channel_ids), result_dupe_check)
-
-check("a specific channel id survives ordering like any other", "b" in reorder.apply_saved_order(channel_ids, saved_stale))
-
-# ---------------------------------------------------------------------------
-# reorder.move_item — the drag-and-drop building block
-# ---------------------------------------------------------------------------
-section("reorder.move_item")
-
-base_order = ["a", "b", "c", "d"]
-moved_forward = reorder.move_item(base_order, 0, 2)
-check("move item forward in the list", moved_forward == ["b", "c", "a", "d"], moved_forward)
-
-moved_backward = reorder.move_item(base_order, 3, 0)
-check("move item backward in the list", moved_backward == ["d", "a", "b", "c"], moved_backward)
-
-moved_noop = reorder.move_item(base_order, 1, 1)
-check("moving an item to its own spot is a no-op", moved_noop == base_order, moved_noop)
-
-moved_negative = reorder.move_item(base_order, -1, 2)
-check("negative from_index is ignored safely", moved_negative == base_order, moved_negative)
-
-moved_out_of_range_from = reorder.move_item(base_order, 99, 0)
-check("out-of-range from_index is ignored safely", moved_out_of_range_from == base_order, moved_out_of_range_from)
-
-moved_out_of_range_to = reorder.move_item(base_order, 0, 99)
-check(
-    "out-of-range to_index is clamped, not ignored",
-    moved_out_of_range_to == ["b", "c", "d", "a"],
-    moved_out_of_range_to,
-)
-
-check("move_item on an empty list is a safe no-op", reorder.move_item([], 0, 1) == [])
-check("original list object is not mutated", base_order == ["a", "b", "c", "d"])
-
-# ---------------------------------------------------------------------------
-# reorder.overlay_top_left — the drag-ghost cursor-hotspot math
-# ---------------------------------------------------------------------------
-section("reorder.overlay_top_left")
-
-check(
-    "clicking a card's own top-left keeps the overlay under the cursor exactly",
-    reorder.overlay_top_left((500, 300), (0, 0)) == (500, 300),
-)
-check(
-    "clicking mid-card offsets the overlay by that same amount",
-    reorder.overlay_top_left((500, 300), (200, 120)) == (300, 180),
-)
-check(
-    "cursor moving by (dx, dy) moves the overlay by the same (dx, dy)",
-    reorder.overlay_top_left((520, 340), (200, 120)) == (320, 220),
-)
-check(
-    "negative press offsets (clicking above/left of the overlay origin) still work",
-    reorder.overlay_top_left((100, 100), (-10, -10)) == (110, 110),
-)
-
-# ---------------------------------------------------------------------------
-# Reorder mode must not change card geometry constants
-# ---------------------------------------------------------------------------
-section("reorder mode leaves card dimensions untouched")
-
-from mediawave.channel_studio.channel_card import CARD_WIDTH
-
-check("normal card width is unchanged by the reorder-mode pass", CARD_WIDTH == 430, CARD_WIDTH)
+section("reorder removal: modules and state are actually gone")
 
 import inspect
 
-from mediawave.channel_studio import draggable_grid
+from mediawave.channel_studio.channel_card import CARD_WIDTH
+from mediawave.channel_studio import channel_studio_widgets
+from mediawave.channel_studio import channel_studio_pages
 
-reorder_mode_source = inspect.getsource(draggable_grid._Slot.set_reorder_mode)
+check("normal card width is unchanged by the reorder-removal pass", CARD_WIDTH == 430, CARD_WIDTH)
+
+try:
+    import mediawave.channel_studio.draggable_grid  # noqa: F401
+    check("draggable_grid.py no longer exists", False)
+except ModuleNotFoundError:
+    check("draggable_grid.py no longer exists", True)
+
+try:
+    import mediawave.channel_studio.reorder  # noqa: F401
+    check("reorder.py no longer exists", False)
+except ModuleNotFoundError:
+    check("reorder.py no longer exists", True)
+
+check("channel_identity no longer offers a drag-reorder renumber algorithm", not hasattr(channel_identity, "renumber_from_order"))
+check("channel_actions no longer offers the reorder-only unified-number writer", not hasattr(channel_actions, "apply_unified_numbers_to_dialog"))
+check("studio_state no longer reads a saved display order", not hasattr(studio_state, "load_channel_order"))
+check("studio_state no longer writes a saved display order", not hasattr(studio_state, "save_channel_order"))
+
+footer_params = list(inspect.signature(channel_studio_widgets.build_channel_studio_footer).parameters)
+check("the footer builder no longer takes a reorder callback", footer_params == ["total_count"], footer_params)
+
+widgets_source = inspect.getsource(channel_studio_widgets)
+check("no Reorder Channels button text remains anywhere in the shared widgets module", "Reorder Channels" not in widgets_source)
+
+pages_source_reorder_check = inspect.getsource(channel_studio_pages)
 check(
-    "reorder-mode styling uses outline, not border, so it can't change sizeHint",
-    "outline" in reorder_mode_source and "border:" not in reorder_mode_source,
-    reorder_mode_source,
-)
-check(
-    "reorder-mode styling is scoped to the slot's own object name, not a bare QFrame selector",
-    "QFrame#reorderSlot" in reorder_mode_source and "QFrame {" not in reorder_mode_source,
-    reorder_mode_source,
+    "channel_studio_pages.py no longer references reorder mode, drag state, or a saved display order",
+    not any(
+        needle in pages_source_reorder_check
+        for needle in ("reorder", "Reorder", "DraggableGrid", "channel_order", "apply_saved_order")
+    ),
+    pages_source_reorder_check,
 )
 
 # ---------------------------------------------------------------------------
-# studio_state — last-edited channel and grid display order persistence
+# studio_state — last-edited channel persistence, and safe handling of an
+# old state file that still carries the now-obsolete "channel_order" key
 # ---------------------------------------------------------------------------
-section("studio_state: last-edited channel and channel order")
+section("studio_state: last-edited channel; obsolete channel_order is ignored safely")
 
 import tempfile
 
@@ -366,7 +301,6 @@ with tempfile.TemporaryDirectory() as tmpdir:
 
     check("no path is a safe no-op on save", studio_state.save_last_edited_channel_id(None, "x") is None)
     check("missing file has no last-edited channel", studio_state.load_last_edited_channel_id(state_path) == "")
-    check("missing file has no saved channel order", studio_state.load_channel_order(state_path) == [])
 
     studio_state.save_last_edited_channel_id(state_path, "media:/fake/root")
     check(
@@ -374,33 +308,19 @@ with tempfile.TemporaryDirectory() as tmpdir:
         studio_state.load_last_edited_channel_id(state_path) == "media:/fake/root",
     )
 
-    studio_state.save_channel_order(state_path, ["c", "a", "b"])
-    check(
-        "channel order round-trips",
-        studio_state.load_channel_order(state_path) == ["c", "a", "b"],
-        studio_state.load_channel_order(state_path),
-    )
-    check(
-        "saving channel order doesn't clobber last-edited channel",
-        studio_state.load_last_edited_channel_id(state_path) == "media:/fake/root",
-    )
-
-    studio_state.save_channel_order(state_path, ["z", "y"])
-    check(
-        "saving channel order again overwrites the previous order",
-        studio_state.load_channel_order(state_path) == ["z", "y"],
-    )
-
-    check(
-        "saving with no path is a safe no-op",
-        studio_state.save_channel_order(None, ["a"]) is None,
-    )
+old_build_state_path = os.path.join(tempfile.gettempdir(), "channel_studio_state_old_order_test.json")
+with open(old_build_state_path, "w", encoding="utf-8") as handle:
+    handle.write('{"last_edited_channel_id": "media:/fake/root", "channel_order": ["c", "a", "b"]}')
+check(
+    "an old state file with a leftover channel_order key doesn't crash reading the last-edited channel",
+    studio_state.load_last_edited_channel_id(old_build_state_path) == "media:/fake/root",
+)
+os.remove(old_build_state_path)
 
 malformed_path = os.path.join(tempfile.gettempdir(), "channel_studio_state_malformed_test.json")
 with open(malformed_path, "w", encoding="utf-8") as handle:
     handle.write("not valid json{{{")
 check("malformed state file falls back safely for last-edited", studio_state.load_last_edited_channel_id(malformed_path) == "")
-check("malformed state file falls back safely for channel order", studio_state.load_channel_order(malformed_path) == [])
 os.remove(malformed_path)
 
 # ---------------------------------------------------------------------------
@@ -563,10 +483,10 @@ check("disabling a companion flips it back off", channel_actions.set_companion_e
 check("unknown companion type on set_companion_enabled_on_dialog is a safe no-op", channel_actions.set_companion_enabled_on_dialog(fake_dialog, "bogus", True) is False)
 
 unified_companion_entries = channel_actions.unified_entries_from_dialog(fake_dialog)
-unified_companion_numbers = channel_identity.renumber_from_order(unified_companion_entries, ["special:radiowave", "special:weatherstar"])
-channel_actions.apply_unified_numbers_to_dialog(fake_dialog, unified_companion_numbers)
-check("unified renumbering writes radiowave's new number onto the real spinbox", fake_dialog.radiowave_channel_input.value() == 1, fake_dialog.radiowave_channel_input.value())
-check("unified renumbering writes weatherstar's new number onto the real spinbox", fake_dialog.weatherstar_channel_input.value() == 2, fake_dialog.weatherstar_channel_input.value())
+check("unified_entries_from_dialog sees both companion slots", {"special:radiowave", "special:weatherstar"} <= {e["id"] for e in unified_companion_entries}, unified_companion_entries)
+check("a manual number write (the only way numbers change now) lands on the real spinbox", channel_actions.set_channel_number_on_dialog(fake_dialog, "special:radiowave", 36) is True)
+check("the write is immediately visible on the live widget", fake_dialog.radiowave_channel_input.value() == 36, fake_dialog.radiowave_channel_input.value())
+check("a manual number write to one companion does not touch another's number", fake_dialog.weatherstar_channel_input.value() == 1, fake_dialog.weatherstar_channel_input.value())
 
 # ---------------------------------------------------------------------------
 # channel_actions: local folder channel enable via the My Catalog rows
@@ -641,8 +561,7 @@ check("placeholder entries are excluded from the youtube video count", channel_a
 
 # ---------------------------------------------------------------------------
 # channel_card.py: companion-aware card wiring (structural, no QApplication
-# needed -- mirrors the existing inspect.getsource pattern used above for
-# reorder-mode styling).
+# needed -- mirrors the inspect.getsource pattern used throughout this file).
 # ---------------------------------------------------------------------------
 section("channel_card.py: companion card wiring")
 
@@ -1077,41 +996,31 @@ with tempfile.TemporaryDirectory() as tmpdir:
     old_hero_state_path = os.path.join(tmpdir, "channel_studio_state.json")
     studio_state.save_last_edited_channel_id(old_hero_state_path, "media:/some/old/channel")
     check(
-        "an old hero-state file on disk doesn't crash reading channel order (the only thing still read from this file)",
-        studio_state.load_channel_order(old_hero_state_path) == [],
+        "an old hero-state file on disk doesn't crash reading the last-edited channel (the only thing still read from this file)",
+        studio_state.load_last_edited_channel_id(old_hero_state_path) == "media:/some/old/channel",
     )
 
 # ---------------------------------------------------------------------------
-# channel_actions.py: reorder finalization updates real channel numbers
+# channel_actions.py: manual renumbering (via Overview) is the only way a
+# channel's number changes -- and it never touches any OTHER channel's
+# number, unlike the old drag-reorder finalize step this replaces.
 # ---------------------------------------------------------------------------
-section("channel_actions: finalized reorder updates channel numbers")
+section("channel_actions: a manual number change never touches another channel's number")
 
 number_dialog = _FakeDialog()
 before = {row["id"]: row["number"].value() for row in number_dialog.catalog_rows}
 check("starting numbers are sequential", before == {"media:/fake/a": 1, "media:/fake/b": 2}, before)
 
-number_entries = channel_actions.unified_entries_from_dialog(number_dialog)
-number_new_numbers = channel_identity.renumber_from_order(number_entries, ["media:/fake/b", "media:/fake/a"])
-updated_ids = channel_actions.apply_unified_numbers_to_dialog(number_dialog, number_new_numbers)
+check("manually setting one channel to 36 succeeds", channel_actions.set_channel_number_on_dialog(number_dialog, "media:/fake/a", 36) is True)
 after = {row["id"]: row["number"].value() for row in number_dialog.catalog_rows}
-check("unified renumbering updates both rows", set(updated_ids) == {"media:/fake/b", "media:/fake/a"}, updated_ids)
-check("the channel dragged first now holds the smaller number from the SAME pool", after["media:/fake/b"] == 1, after)
-check("the channel dragged second now holds the larger number from the SAME pool", after["media:/fake/a"] == 2, after)
-check("numbers are still sequential after commit", sorted(after.values()) == [1, 2], after)
-check("no duplicate numbers after commit", len(set(after.values())) == len(after), after)
-
-check(
-    "a stale/missing channel id in the reorder list is safely skipped, not an error",
-    "media:/nonexistent" not in channel_identity.renumber_from_order(number_entries, ["media:/fake/a", "media:/nonexistent"]),
-)
-check("fewer than 2 matched entries is a safe no-op (nothing to redistribute)", channel_identity.renumber_from_order(number_entries, ["media:/fake/a"]) == {})
-check("an entirely empty/unknown reorder list is a safe no-op", channel_identity.renumber_from_order(number_entries, ["media:/nonexistent"]) == {})
+check("the edited channel really holds 36 now", after["media:/fake/a"] == 36, after)
+check("manually changing one channel to 36 does not change any other channel's number", after["media:/fake/b"] == before["media:/fake/b"], after)
 
 display_dialog = _FakeDialog()
 local_summary = ChannelStudioSummary(channel_id="media:/fake/a", name="Movies", number=99, channel_type="media")
 check("card_display_number reads the live My Catalog row, not the stale summary snapshot", channel_actions.card_display_number(display_dialog, local_summary) == 1)
 channel_actions.set_local_channel_number(display_dialog, "media:/fake/a", 7)
-check("card_display_number reflects a number just written by a reorder commit", channel_actions.card_display_number(display_dialog, local_summary) == 7)
+check("card_display_number reflects a number just written by a manual edit", channel_actions.card_display_number(display_dialog, local_summary) == 7)
 
 ghost_summary = ChannelStudioSummary(channel_id="media:/ghost", name="Ghost", number=42, channel_type="media")
 check("card_display_number falls back to the summary's own number when no live row exists", channel_actions.card_display_number(display_dialog, ghost_summary) == 42)
@@ -1119,51 +1028,33 @@ check("card_display_number falls back to the summary's own number when no live r
 companion_summary = ChannelStudioSummary(channel_id="special:radiowave", name="RadioWaveTV", number=99, channel_type="radiowave")
 check("card_display_number reads the live companion spinbox, same as a local channel's row", channel_actions.card_display_number(display_dialog, companion_summary) == 2)
 
-section("channel_actions: mixed local+companion reorder actually interleaves (requirement 6+8)")
+section("channel_identity.sort_unified_entries: local and companion channels interleave correctly by number (requirement 3+8)")
 
-mixed_dialog = _FakeDialog()
-# Starting lineup: media/fake/a=1, media/fake/b=2, weatherstar=1(!), radiowave=2(!) --
-# collides with the locals on paper, but only ENABLED entries matter and
-# fake/b starts disabled, so the real starting pool this reorder touches
-# is {1, 2, 2} across 3 enabled entries; repair isn't run here (that's
-# apply_catalog_channel_customizations' job) -- this test is specifically
-# about renumber_from_order handling a real interleaved drag, so give it
-# a clean, non-colliding starting pool first.
-channel_actions.set_local_channel_number(mixed_dialog, "media:/fake/a", 1)
-channel_actions.set_local_channel_enabled(mixed_dialog, "media:/fake/b", True)
-channel_actions.set_local_channel_number(mixed_dialog, "media:/fake/b", 3)
-channel_actions.set_channel_number_on_dialog(mixed_dialog, "special:weatherstar", 2)
-
-mixed_entries = channel_actions.unified_entries_from_dialog(mixed_dialog)
-# Drag weatherstar to sit BETWEEN the two local channels: a-weatherstar-b.
-mixed_new_numbers = channel_identity.renumber_from_order(mixed_entries, ["media:/fake/a", "special:weatherstar", "media:/fake/b"])
-channel_actions.apply_unified_numbers_to_dialog(mixed_dialog, mixed_new_numbers)
+pages_source = inspect.getsource(channel_studio_pages)
 check(
-    "a companion dragged between two local channels gets a real number reflecting that position, not just its own type's pool",
-    (
-        channel_actions.channel_number_from_dialog(mixed_dialog, "media:/fake/a"),
-        channel_actions.channel_number_from_dialog(mixed_dialog, "special:weatherstar"),
-        channel_actions.channel_number_from_dialog(mixed_dialog, "media:/fake/b"),
-    )
-    == (1, 2, 3),
-)
-
-reorder_pages_source = inspect.getsource(channel_studio_pages)
-check(
-    "Done Reordering commits real numbers through the unified, gap-preserving renumber algorithm",
-    "channel_identity.renumber_from_order" in reorder_pages_source,
+    "the grid rebuild sorts by the LIVE number (card_display_number), not a saved/static order",
+    "card_display_number" in pages_source and "sorted(" in pages_source,
+    pages_source,
 )
 check(
-    "Done Reordering applies the unified result through the unified dispatch, not two separate per-pool resequences",
-    "apply_unified_numbers_to_dialog" in reorder_pages_source,
-)
-check(
-    "Done Reordering refreshes the live lineup immediately -- Guide/My Catalog/playback update with no restart",
-    "refresh_live_lineup" in reorder_pages_source,
+    "a manual Overview edit still refreshes the live lineup immediately -- Guide/My Catalog/playback update with no restart",
+    "refresh_live_lineup" in inspect.getsource(setup_sections.build_overview_section),
 )
 check(
     "cards are built with a live display_number, not just the static summary snapshot",
-    "display_number=number" in reorder_pages_source,
+    "display_number=number" in pages_source,
+)
+
+mixed_entries = [
+    {"id": "media:/fake/a", "name": "Movies", "number": 1, "enabled": True, "is_companion": False},
+    {"id": "special:weatherstar", "name": "WeatherStar 4000+", "number": 2, "enabled": True, "is_companion": True},
+    {"id": "media:/fake/b", "name": "Toonami", "number": 3, "enabled": True, "is_companion": False},
+]
+interleaved = channel_identity.sort_unified_entries(mixed_entries)
+check(
+    "a companion sitting between two local channels by number is rendered between them, not shoved to the end",
+    [e["id"] for e in interleaved] == ["media:/fake/a", "special:weatherstar", "media:/fake/b"],
+    interleaved,
 )
 
 # ---------------------------------------------------------------------------
@@ -1235,6 +1126,34 @@ check("Overview reads the live channel number through the unified dispatch", "ch
 check("Overview writes through the unified dispatch, not a type-specific helper", "set_channel_number_on_dialog" in overview_source)
 check("Overview validates through the unified dispatch", "validate_channel_number_on_dialog" in overview_source)
 check("applying a number edit triggers the no-restart refresh", "refresh_live_lineup" in overview_source)
+
+# ---------------------------------------------------------------------------
+# setup_sections.py: Overview body shows the channel's name/number exactly
+# once each -- one identity card, not the old window-header + duplicate
+# summary card + editable row repetition.
+# ---------------------------------------------------------------------------
+section("setup_sections.py: Overview body has exactly one identity presentation")
+
+overview_identity_source = inspect.getsource(setup_sections.build_overview_section)
+check(
+    "the channel name is only ever wired into ONE editable presentation",
+    overview_identity_source.count("build_inline_value_editor") == 2,
+    overview_identity_source,
+)
+check(
+    "there is exactly one top-level sectionCard frame built directly in Overview (the identity card) -- "
+    "the old duplicate name/type/source summary card is gone",
+    overview_identity_source.count('setObjectName("sectionCard")') == 1,
+    overview_identity_source,
+)
+check(
+    "build_info_card is called exactly once in Overview now (Commercials only) -- "
+    "the old duplicate name-repeating card used it too, and is gone",
+    overview_identity_source.count("build_info_card(") == 1,
+    overview_identity_source,
+)
+check("the real Enabled checkbox still lives in Overview", 'QCheckBox("Enabled")' in overview_identity_source)
+check("Type/Source metadata is folded into the identity card, not a separate card", "channel_type_label" in overview_identity_source and "source_label" in overview_identity_source)
 
 # ---------------------------------------------------------------------------
 # channel_actions.py: unified name read/write/validate dispatch (channel
@@ -1458,12 +1377,11 @@ check("name validation dispatch works identically for local and companion ids", 
     channel_actions.validate_channel_name_on_dialog(parity_dialog, "special:weatherstar", "Another Weather Name")[0],
 ) == ("ok", "ok"))
 
-check("reorder renumbering is unified across both pools -- one algorithm, not two per-pool ones", (
-    hasattr(channel_identity, "renumber_from_order"),
-    hasattr(channel_actions, "apply_unified_numbers_to_dialog"),
+check("number writes are unified across both pools -- one dispatch function, not two per-pool ones", (
+    hasattr(channel_actions, "set_channel_number_on_dialog"),
     not hasattr(channel_actions, "resequence_local_channels_on_dialog"),
     not hasattr(channel_actions, "resequence_companions_on_dialog"),
-) == (True, True, True, True))
+) == (True, True, True))
 
 section("companion parity: unified_entries is type-agnostic (future companion types)")
 
@@ -1565,31 +1483,45 @@ check("a non-numeric candidate is invalid, not a crash", channel_identity.valida
 check("a blank name is rejected", channel_identity.validate_new_name(pool, "media:/a", "   ")[0] == "invalid")
 check("a normal rename is ok", channel_identity.validate_new_name(pool, "media:/a", "4Kids Classic") == ("ok", None))
 
-section("channel_identity: unified reorder renumbering (requirement 8+9)")
+section("channel_identity.sort_unified_entries: channel number is the only source of grid order (requirement 3+4+5)")
 
 lineup = [
-    {"id": "4kids", "name": "4Kids", "number": 1, "enabled": True, "is_companion": False},
-    {"id": "movies", "name": "Movies", "number": 2, "enabled": True, "is_companion": False},
-    {"id": "mtv", "name": "MTV", "number": 3, "enabled": True, "is_companion": False},
-    {"id": "toonami", "name": "Toonami", "number": 4, "enabled": True, "is_companion": False},
+    {"id": "mtv", "name": "MTV", "number": 8, "enabled": True, "is_companion": False},
+    {"id": "toonami", "name": "Toonami", "number": 2, "enabled": True, "is_companion": False},
+    {"id": "4kids", "name": "4Kids", "number": 36, "enabled": True, "is_companion": False},
+    {"id": "movies", "name": "Movies", "number": 5, "enabled": True, "is_companion": False},
 ]
-new_numbers = channel_identity.renumber_from_order(lineup, ["4kids", "movies", "mtv", "toonami"])
-check("dragging 4Kids to the front gives it the smallest number in the pool", new_numbers["4kids"] == 1, new_numbers)
-reordered = channel_identity.renumber_from_order(lineup, ["toonami", "4kids", "movies", "mtv"])
-check("the spec's example: dragging 4Kids above Movies literally renumbers everyone", reordered == {"toonami": 1, "4kids": 2, "movies": 3, "mtv": 4}, reordered)
+sorted_lineup = channel_identity.sort_unified_entries(lineup)
+check(
+    "the grid sorts by real channel number, low to high",
+    [e["id"] for e in sorted_lineup] == ["toonami", "movies", "mtv", "4kids"],
+    sorted_lineup,
+)
+check("sorting never rewrites any entry's number", sorted(e["number"] for e in sorted_lineup) == [2, 5, 8, 36], sorted_lineup)
+check("gaps like 2/5/8/36 are preserved exactly, never normalized to 1/2/3/4", {e["number"] for e in sorted_lineup} == {2, 5, 8, 36})
+check("sort_unified_entries never mutates its input", lineup[0]["number"] == 8, lineup)
 
-gapped = [
-    {"id": "a", "name": "A", "number": 2, "enabled": True, "is_companion": False},
-    {"id": "b", "name": "B", "number": 5, "enabled": True, "is_companion": False},
-    {"id": "c", "name": "C", "number": 8, "enabled": True, "is_companion": True},
+before_edit = [
+    {"id": "a", "name": "Movies", "number": 1, "enabled": True, "is_companion": False},
+    {"id": "b", "name": "MTV", "number": 2, "enabled": True, "is_companion": False},
+    {"id": "c", "name": "Toonami", "number": 3, "enabled": True, "is_companion": False},
 ]
-gap_result = channel_identity.renumber_from_order(gapped, ["c", "a", "b"])
-check("gaps like 2/5/8 survive a reorder, just reassigned", sorted(gap_result.values()) == [2, 5, 8], gap_result)
-check("a companion dragged to the front gets a real number from the shared pool", gap_result["c"] == 2, gap_result)
+after_manual_edit = [dict(e) for e in before_edit]
+after_manual_edit[1]["number"] = 36  # MTV manually renumbered to 36, same as the reported bug
+resorted = channel_identity.sort_unified_entries(after_manual_edit)
+check(
+    "manually renumbering the middle channel to 36 moves only that channel -- the others keep their own numbers",
+    {e["id"]: e["number"] for e in resorted} == {"a": 1, "b": 36, "c": 3},
+    resorted,
+)
+check(
+    "the edited channel lands in the correct low-to-high position, and no other channel inherits 36",
+    [e["id"] for e in resorted] == ["a", "c", "b"],
+    resorted,
+)
 
-check("a stale id in final_order is safely skipped", "ghost" not in channel_identity.renumber_from_order(gapped, ["ghost", "a", "b", "c"]))
-check("fewer than 2 matched entries is a safe no-op", channel_identity.renumber_from_order(gapped, ["a"]) == {})
-check("an entirely empty order is a safe no-op", channel_identity.renumber_from_order(gapped, []) == {})
+check("an empty entry list is a safe no-op", channel_identity.sort_unified_entries([]) == [])
+check("None is a safe no-op, not a crash", channel_identity.sort_unified_entries(None) == [])
 
 section("channel_identity: backward-compat / legacy migration")
 
