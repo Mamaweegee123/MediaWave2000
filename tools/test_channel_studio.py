@@ -17,7 +17,9 @@ from mediawave.channel_studio import reorder
 from mediawave.channel_studio import studio_state
 from mediawave.channel_studio import companion_adapter
 from mediawave.channel_studio import channel_actions
+from mediawave.channel_studio import channel_identity
 from mediawave import channel_logos
+from channelsurfer2000 import migrate_legacy_channel_settings, normalize_catalog_channel_settings
 
 PASS = []
 FAIL = []
@@ -1172,6 +1174,141 @@ check(
     "cards are built with a live display_number, not just the static summary snapshot",
     "display_number=number" in reorder_pages_source,
 )
+
+# ---------------------------------------------------------------------------
+# channel_identity.py: unified local+companion pool, dedup, validation
+# ---------------------------------------------------------------------------
+section("channel_identity: unified_entries merges local + companion")
+
+local_rows = [
+    {"id": "media:/a", "name": "4Kids", "number": 1, "enabled": True},
+    {"id": "media:/b", "name": "Movies", "number": 2, "enabled": True},
+]
+snapshot = companion_adapter.set_companion_enabled(companion_adapter.empty_snapshot(), "weatherstar", True)
+entries = channel_identity.unified_entries(local_rows, snapshot)
+check("unified_entries includes both local rows", sum(1 for e in entries if not e["is_companion"]) == 2, entries)
+check("unified_entries always includes all 3 companion slots", sum(1 for e in entries if e["is_companion"]) == 3, entries)
+check("a disabled companion slot is still present, just enabled=False", any(e["id"] == "special:radiowave" and not e["enabled"] for e in entries), entries)
+check("the enabled companion slot carries through", any(e["id"] == "special:weatherstar" and e["enabled"] for e in entries), entries)
+
+section("channel_identity: duplicate detection ignores disabled entries")
+
+fresh_install = channel_identity.unified_entries([], companion_adapter.empty_snapshot())
+check("three disabled companions defaulting to the same number is NOT reported as a duplicate", channel_identity.find_duplicate_numbers(fresh_install) == {}, fresh_install)
+
+colliding = [
+    {"id": "media:/a", "name": "A", "number": 3, "enabled": True, "is_companion": False},
+    {"id": "media:/b", "name": "B", "number": 3, "enabled": True, "is_companion": False},
+    {"id": "media:/c", "name": "C", "number": 3, "enabled": False, "is_companion": False},
+]
+dupes = channel_identity.find_duplicate_numbers(colliding)
+check("two enabled channels sharing a number are reported", dupes == {3: ["media:/a", "media:/b"]}, dupes)
+
+section("channel_identity: repair_duplicate_numbers preserves gaps, fixes only collisions")
+
+no_collision = [
+    {"id": "a", "name": "A", "number": 2, "enabled": True, "is_companion": False},
+    {"id": "b", "name": "B", "number": 5, "enabled": True, "is_companion": False},
+    {"id": "c", "name": "C", "number": 8, "enabled": True, "is_companion": False},
+]
+repaired, changes = channel_identity.repair_duplicate_numbers(no_collision)
+check("no collisions -> numbers untouched", [e["number"] for e in repaired] == [2, 5, 8], repaired)
+check("no collisions -> empty changelog", changes == [], changes)
+
+with_collision = [
+    {"id": "a", "name": "A", "number": 2, "enabled": True, "is_companion": False},
+    {"id": "b", "name": "B", "number": 2, "enabled": True, "is_companion": False},
+    {"id": "c", "name": "C", "number": 8, "enabled": True, "is_companion": False},
+]
+repaired2, changes2 = channel_identity.repair_duplicate_numbers(with_collision)
+numbers2 = [e["number"] for e in repaired2]
+check("a genuine collision reassigns only the colliding entry", len(set(numbers2)) == 3, repaired2)
+check("the untouched channel (8) keeps its gap", 8 in numbers2, repaired2)
+check("repair never drops an entry", len(repaired2) == len(with_collision))
+check("changelog records exactly one reassignment", len(changes2) == 1, changes2)
+
+unset_and_disabled = [
+    {"id": "a", "name": "A", "number": 0, "enabled": True, "is_companion": False},
+    {"id": "b", "name": "B", "number": 0, "enabled": False, "is_companion": True},
+]
+repaired3, changes3 = channel_identity.repair_duplicate_numbers(unset_and_disabled)
+check("an unset (0) enabled channel gets a real number assigned", repaired3[0]["number"] > 0, repaired3)
+check("a disabled channel is left completely untouched, even at 0", repaired3[1]["number"] == 0, repaired3)
+check("repair never raises on empty input", channel_identity.repair_duplicate_numbers([]) == ([], []))
+
+section("channel_identity: manual number/name validation")
+
+pool = [
+    {"id": "media:/a", "name": "4Kids", "number": 1, "enabled": True, "is_companion": False},
+    {"id": "media:/b", "name": "Movies", "number": 2, "enabled": True, "is_companion": False},
+    {"id": "special:weatherstar", "name": "WeatherStar 4000+", "number": 3, "enabled": True, "is_companion": True},
+]
+check("an available number returns ok", channel_identity.validate_new_number(pool, "media:/a", 7) == ("ok", None))
+check("a duplicate number is rejected with the conflicting id", channel_identity.validate_new_number(pool, "media:/a", 2) == ("duplicate", "media:/b"))
+check("a channel doesn't conflict with its own current number", channel_identity.validate_new_number(pool, "media:/a", 1) == ("ok", None))
+check("a local channel colliding with a companion's number is caught too", channel_identity.validate_new_number(pool, "media:/a", 3)[0] == "duplicate")
+check("an out-of-range number is invalid, not a crash", channel_identity.validate_new_number(pool, "media:/a", 99999)[0] == "invalid")
+check("zero is invalid (0 means unset internally)", channel_identity.validate_new_number(pool, "media:/a", 0)[0] == "invalid")
+check("a non-numeric candidate is invalid, not a crash", channel_identity.validate_new_number(pool, "media:/a", "abc")[0] == "invalid")
+
+check("a blank name is rejected", channel_identity.validate_new_name(pool, "media:/a", "   ")[0] == "invalid")
+check("a normal rename is ok", channel_identity.validate_new_name(pool, "media:/a", "4Kids Classic") == ("ok", None))
+
+section("channel_identity: unified reorder renumbering (requirement 8+9)")
+
+lineup = [
+    {"id": "4kids", "name": "4Kids", "number": 1, "enabled": True, "is_companion": False},
+    {"id": "movies", "name": "Movies", "number": 2, "enabled": True, "is_companion": False},
+    {"id": "mtv", "name": "MTV", "number": 3, "enabled": True, "is_companion": False},
+    {"id": "toonami", "name": "Toonami", "number": 4, "enabled": True, "is_companion": False},
+]
+new_numbers = channel_identity.renumber_from_order(lineup, ["4kids", "movies", "mtv", "toonami"])
+check("dragging 4Kids to the front gives it the smallest number in the pool", new_numbers["4kids"] == 1, new_numbers)
+reordered = channel_identity.renumber_from_order(lineup, ["toonami", "4kids", "movies", "mtv"])
+check("the spec's example: dragging 4Kids above Movies literally renumbers everyone", reordered == {"toonami": 1, "4kids": 2, "movies": 3, "mtv": 4}, reordered)
+
+gapped = [
+    {"id": "a", "name": "A", "number": 2, "enabled": True, "is_companion": False},
+    {"id": "b", "name": "B", "number": 5, "enabled": True, "is_companion": False},
+    {"id": "c", "name": "C", "number": 8, "enabled": True, "is_companion": True},
+]
+gap_result = channel_identity.renumber_from_order(gapped, ["c", "a", "b"])
+check("gaps like 2/5/8 survive a reorder, just reassigned", sorted(gap_result.values()) == [2, 5, 8], gap_result)
+check("a companion dragged to the front gets a real number from the shared pool", gap_result["c"] == 2, gap_result)
+
+check("a stale id in final_order is safely skipped", "ghost" not in channel_identity.renumber_from_order(gapped, ["ghost", "a", "b", "c"]))
+check("fewer than 2 matched entries is a safe no-op", channel_identity.renumber_from_order(gapped, ["a"]) == {})
+check("an entirely empty order is a safe no-op", channel_identity.renumber_from_order(gapped, []) == {})
+
+section("channel_identity: backward-compat / legacy migration")
+
+legacy_settings = {
+    "weatherstar_enabled": True,
+    "weatherstar_channel_number": 9,
+    "radiowave_enabled": False,
+    "radiowave_channel_number": 1,
+    "youtube_enabled": False,
+    "youtube_channel_number": 1,
+    "catalog_channel_settings": {},
+}
+migrate_legacy_channel_settings(legacy_settings)
+check("migration seeds a special:weatherstar entry from the old flat keys", "special:weatherstar" in legacy_settings["catalog_channel_settings"])
+check("migrated entry carries over the real enabled flag", legacy_settings["catalog_channel_settings"]["special:weatherstar"]["enabled"] is True)
+check("migrated entry carries over the real channel number", legacy_settings["catalog_channel_settings"]["special:weatherstar"]["channel_number"] == 9)
+check("the old flat key is left in place, not deleted", legacy_settings["weatherstar_channel_number"] == 9)
+
+already_migrated = dict(legacy_settings)
+already_migrated["weatherstar_channel_number"] = 999  # should NOT overwrite the existing entry
+migrate_legacy_channel_settings(already_migrated)
+check("migration is idempotent -- doesn't overwrite an already-migrated entry", already_migrated["catalog_channel_settings"]["special:weatherstar"]["channel_number"] == 9)
+
+check("migration never raises on a bare empty app_settings", isinstance(migrate_legacy_channel_settings({}), dict))
+check("migration never raises on non-dict input", migrate_legacy_channel_settings(None) is None)
+
+bare_config = {}
+migrate_legacy_channel_settings(bare_config)
+check("a totally bare config still ends up with all 3 companion slots seeded, all disabled by default", len(bare_config["catalog_channel_settings"]) == 3)
+check("normalize_catalog_channel_settings accepts the migrated shape without raising", len(normalize_catalog_channel_settings(bare_config["catalog_channel_settings"])) == 3)
 
 # ---------------------------------------------------------------------------
 # Summary

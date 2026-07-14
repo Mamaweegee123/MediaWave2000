@@ -1389,6 +1389,47 @@ def normalize_catalog_channel_settings(settings):
     return normalized
 
 
+def migrate_legacy_channel_settings(app_settings):
+    """Seed WeatherStar/RadioWaveTV/NetTV into `catalog_channel_settings` as
+    real entries keyed by their existing "special:*" ids, matching local
+    channels' shape -- so both pools can be validated/sorted/renumbered
+    together as one unified pool (see
+    mediawave/channel_studio/channel_identity.py).
+
+    Reads the legacy flat `weatherstar_channel_number`/`weatherstar_enabled`/
+    etc keys once, only if the unified entry doesn't already exist. The flat
+    keys are left in place afterward (superseded, not deleted) so nothing
+    still reading them directly during the transition breaks. Idempotent
+    and safe to call on every startup -- once a `special:*` entry exists,
+    this never overwrites it. Never raises.
+    """
+    if not isinstance(app_settings, dict):
+        return app_settings
+    from mediawave.channel_studio.companion_adapter import (
+        COMPANION_CHANNEL_IDS,
+        COMPANION_TYPES,
+    )
+
+    settings = app_settings.get("catalog_channel_settings")
+    if not isinstance(settings, dict):
+        settings = {}
+    for companion_type in COMPANION_TYPES:
+        channel_id = COMPANION_CHANNEL_IDS[companion_type]
+        if channel_id in settings:
+            continue
+        row = catalog_channel_settings_defaults()
+        row["enabled"] = bool(app_settings.get(f"{companion_type}_enabled", False))
+        try:
+            number = int(app_settings.get(f"{companion_type}_channel_number", 1) or 1)
+        except (TypeError, ValueError):
+            number = 1
+        row["channel_number"] = max(0, min(9999, number))
+        row["display_name"] = str(app_settings.get(f"{companion_type}_display_name", "") or "").strip()
+        settings[channel_id] = row
+    app_settings["catalog_channel_settings"] = settings
+    return app_settings
+
+
 def catalog_channel_id_from_info(info):
     if not isinstance(info, dict):
         return ""
@@ -22237,6 +22278,8 @@ class ChannelSurfer(QWidget):
         self.app_settings["guide_ui_scale"] = guide_ui_scale_for_name(migrated_guide_scale)
         self.app_settings["commercials"] = normalize_commercials_config(self.app_settings.get("commercials", {}))
         self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
+        migrate_legacy_channel_settings(self.app_settings)
+        self.app_settings["catalog_channel_settings"] = normalize_catalog_channel_settings(self.app_settings.get("catalog_channel_settings", {}))
         if self.app_settings.get("safe_playback_mode", False):
             os.environ["QT_FFMPEG_DECODING_HW_DEVICE_TYPES"] = ""
         migrated_commercials = json.dumps(self.app_settings.get("commercials", {}), sort_keys=True)
@@ -23471,9 +23514,48 @@ class ChannelSurfer(QWidget):
         self.app_settings["catalog_channel_settings"] = settings
         if not self.channels:
             return
+        from mediawave.channel_studio.channel_identity import repair_duplicate_numbers
+
         current_id = ""
         if 0 <= self.current_channel < len(self.channels):
             current_id = self.catalog_channel_id(self.channels[self.current_channel])
+
+        # self.channels already holds local AND companion channels together
+        # by this point (inject_special_channels runs first) -- so this is
+        # the one place both pools' numbers can be checked against each
+        # other. Build a raw view (today's existing index+1 fallback for a
+        # channel with no stored number yet), then repair any duplicate --
+        # local-vs-local, companion-vs-companion, or local-vs-companion --
+        # before it ever reaches a screen. See channel_identity.py for why
+        # this can never crash and never loses a channel.
+        raw_rows = []
+        for index, channel in enumerate(self.channels):
+            channel_id = self.catalog_channel_id(channel)
+            row = settings.get(channel_id, {})
+            try:
+                number = int(row.get("channel_number", 0) or 0)
+            except (TypeError, ValueError):
+                number = 0
+            if number <= 0:
+                number = index + 1
+            raw_rows.append(
+                {
+                    "id": channel_id,
+                    "name": getattr(channel, "name", "") or "Channel",
+                    "number": number,
+                    "enabled": bool(row.get("enabled", True)),
+                }
+            )
+        _, changes = repair_duplicate_numbers(raw_rows)
+        if changes:
+            names = ", ".join(f"#{c['old_number']}→#{c['new_number']}" for c in changes)
+            for change in changes:
+                row = dict(settings.get(change["id"], catalog_channel_settings_defaults()))
+                row["channel_number"] = change["new_number"]
+                settings[change["id"]] = row
+            self.app_settings["catalog_channel_settings"] = settings
+            self.status.setText(f"Resolved {len(changes)} duplicate channel number(s) automatically ({names}).")
+
         enabled_rows = []
         for index, channel in enumerate(self.channels):
             channel_id = self.catalog_channel_id(channel)
