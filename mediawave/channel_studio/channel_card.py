@@ -115,7 +115,14 @@ def _build_logo_widget(summary, on_set_logo, size=88, shared_logos_dir=""):
     its own — the only path that can ever find one for a companion
     channel (summary.root_path is always empty for those).
     """
-    logo_path = summary.logo_path or find_channel_bug_logo(summary.root_path, summary.name, shared_logos_dir=shared_logos_dir)
+    logo_path = summary.logo_path or find_channel_bug_logo(
+        summary.root_path,
+        summary.name,
+        shared_logos_dir=shared_logos_dir,
+        channel_id=summary.channel_id,
+        channel_type=summary.channel_type,
+        display_name=summary.name,
+    )
     if logo_path:
         pixmap = QPixmap(logo_path)
         if not pixmap.isNull():

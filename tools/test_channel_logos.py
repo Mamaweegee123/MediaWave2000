@@ -431,6 +431,15 @@ with tempfile.TemporaryDirectory() as tmpdir:
     shared_logo_file = os.path.join(shared_dir, "WeatherStar 4000+.png")
     with open(shared_logo_file, "wb") as f:
         f.write(b"\x89PNG\r\n\x1a\n")
+    weatherstar_alias_file = os.path.join(shared_dir, "WeatherStar.png")
+    with open(weatherstar_alias_file, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+    radiowave_alias_file = os.path.join(shared_dir, "RadioWave.png")
+    with open(radiowave_alias_file, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+    nettv_logo_file = os.path.join(shared_dir, "NetTV.png")
+    with open(nettv_logo_file, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
     # A decoy for a DIFFERENT channel, to prove the shared-folder lookup
     # never falls back to "just grab whatever's in here" the way a
     # single-channel folder does.
@@ -446,12 +455,103 @@ with tempfile.TemporaryDirectory() as tmpdir:
         logo_mod.find_channel_bug_logo("", "WeatherStar 4000+", shared_logos_dir=shared_dir) == shared_logo_file,
     )
     check(
+        "WeatherStar shared logo resolves in the live playback identity path",
+        logo_mod.find_channel_bug_logo(
+            "",
+            "WeatherStar 4000+",
+            shared_logos_dir=shared_dir,
+            channel_id="special:weatherstar",
+            channel_type="weatherstar",
+            display_name="WeatherStar 4000+",
+        ) == shared_logo_file,
+    )
+    check(
+        "WeatherStar user logo wins before fallback rendering would be needed",
+        logo_mod.channel_bug_logo_lookup_details(
+            "",
+            "WeatherStar 4000+",
+            shared_logos_dir=shared_dir,
+            channel_id="special:weatherstar",
+            channel_type="weatherstar",
+        )["source"] == "shared",
+    )
+    check(
+        "renamed WeatherStar still finds the canonical shared logo alias",
+        logo_mod.find_channel_bug_logo(
+            "",
+            "WeatherStar 4000+",
+            shared_logos_dir=shared_dir,
+            channel_id="special:weatherstar",
+            channel_type="weatherstar",
+            display_name="Local Forecast",
+        ) == shared_logo_file,
+    )
+    check(
+        "WeatherStar alias lookup can fall back from 4000+ to WeatherStar.png",
+        logo_mod.find_channel_bug_logo(
+            "",
+            "Local Forecast",
+            shared_logos_dir=shared_dir,
+            channel_id="special:weatherstar",
+            channel_type="weatherstar",
+            display_name="Local Forecast",
+        ) == shared_logo_file,
+    )
+    os.remove(shared_logo_file)
+    check(
+        "WeatherStar shared alias WeatherStar.png resolves when 4000+ is absent",
+        logo_mod.find_channel_bug_logo(
+            "",
+            "Local Forecast",
+            shared_logos_dir=shared_dir,
+            channel_id="special:weatherstar",
+            channel_type="weatherstar",
+            display_name="Local Forecast",
+        ) == weatherstar_alias_file,
+    )
+    with open(shared_logo_file, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+    check(
+        "RadioWave shared logo resolves by companion alias",
+        logo_mod.find_channel_bug_logo(
+            "",
+            "Studio Jukebox",
+            shared_logos_dir=shared_dir,
+            channel_id="special:radiowave",
+            channel_type="radiowave",
+            display_name="Studio Jukebox",
+        ) == os.path.join(shared_dir, "RadioWaveTV.png"),
+    )
+    os.remove(os.path.join(shared_dir, "RadioWaveTV.png"))
+    check(
+        "RadioWave.png shared alias resolves when RadioWaveTV.png is absent",
+        logo_mod.find_channel_bug_logo(
+            "",
+            "Studio Jukebox",
+            shared_logos_dir=shared_dir,
+            channel_id="special:radiowave",
+            channel_type="radiowave",
+            display_name="Studio Jukebox",
+        ) == radiowave_alias_file,
+    )
+    check(
+        "NetTV shared logo resolves by companion alias",
+        logo_mod.find_channel_bug_logo(
+            "",
+            "Playlist Channel",
+            shared_logos_dir=shared_dir,
+            channel_id="special:youtube",
+            channel_type="youtube",
+            display_name="Playlist Channel",
+        ) == nettv_logo_file,
+    )
+    check(
         "omitting shared_logos_dir entirely still works exactly as before (backward compatible signature)",
         logo_mod.find_channel_bug_logo(local_root, "MTV") == local_logo_file,
     )
     check(
         "a shared-folder miss (no matching name) fails safe -- empty string, no crash, and does NOT grab an unrelated channel's logo",
-        logo_mod.find_channel_bug_logo("", "NetTV", shared_logos_dir=shared_dir) == "",
+        logo_mod.find_channel_bug_logo("", "Unknown Channel", shared_logos_dir=shared_dir) == "",
     )
     check(
         "a channel with neither a local Logos/ folder nor a shared-folder match fails safe",
@@ -473,6 +573,20 @@ check(
 check(
     "real playback's channel bug lookup uses the channel's stable folder_name, not the live (possibly renamed) name",
     "folder_name" in inspect.getsource(app.ChannelSurfer.configure_channel_bug),
+)
+configure_source = inspect.getsource(app.ChannelSurfer.configure_channel_bug)
+check(
+    "real playback passes stable companion id/type/display name into the shared logo lookup",
+    "channel_id=channel_id" in configure_source and "channel_type=channel_type" in configure_source and "display_name=display_name" in configure_source,
+)
+cache_source = inspect.getsource(app.load_channel_bug_pixmap)
+check(
+    "playback logo cache no longer stores misses forever",
+    "_CHANNEL_BUG_CACHE[cache_key] = None" not in cache_source,
+)
+check(
+    "playback logo cache keys include the resolved file signature for retune refresh",
+    "st_mtime_ns" in cache_source and "st_size" in cache_source,
 )
 
 print(f"\n{'='*50}")

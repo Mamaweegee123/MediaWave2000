@@ -251,7 +251,14 @@ def build_logo_section(dialog, channel_info, summary):
     # is the only path that can ever resolve one for them, keyed by their
     # display name (e.g. "WeatherStar 4000+.png").
     shared_logos_dir = getattr(dialog, "_shared_logos_dir", "")
-    logo_path = find_channel_bug_logo(root_path, channel_name, shared_logos_dir=shared_logos_dir) or (
+    logo_path = find_channel_bug_logo(
+        root_path,
+        channel_name,
+        shared_logos_dir=shared_logos_dir,
+        channel_id=channel_id,
+        channel_type=getattr(summary, "channel_type", companion_type or ""),
+        display_name=channel_name,
+    ) or (
         getattr(summary, "logo_path", "") if summary is not None else ""
     )
     pixmap = None

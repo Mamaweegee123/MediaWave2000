@@ -8,9 +8,70 @@ CHANNEL_BUG_SUPPORTED_EXTS = (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".gif")
 CHANNEL_BUG_PREFERRED_NAMES = ("logo.png", "channel.png", "bug.png")
 CHANNEL_BUG_CORNER_OPTIONS = ("top-left", "top-right", "bottom-left", "bottom-right")
 CHANNEL_BUG_OVERRIDE_MODES = ("global", "custom", "off")
+COMPANION_LOGO_ALIASES = {
+    "weatherstar": ("WeatherStar 4000+", "WeatherStar 4000", "WeatherStar", "weatherstar"),
+    "radiowave": ("RadioWaveTV", "RadioWave", "radiowave"),
+    "youtube": ("NetTV", "nettv", "youtube"),
+}
+COMPANION_ID_TYPES = {
+    "special:weatherstar": "weatherstar",
+    "special:radiowave": "radiowave",
+    "special:youtube": "youtube",
+}
 
 
-def _scan_logo_dir(logos_dir, channel_name, allow_any_image_fallback):
+def _append_unique(values, value):
+    value = str(value or "").strip()
+    if value and value not in values:
+        values.append(value)
+
+
+def companion_logo_type(channel_name="", channel_id=None, channel_type=None, display_name=None):
+    """Best-effort companion classifier for shared logo aliases."""
+    raw_type = str(channel_type or "").strip().lower()
+    if raw_type in COMPANION_LOGO_ALIASES:
+        return raw_type
+    raw_id = str(channel_id or "").strip().lower()
+    if raw_id in COMPANION_ID_TYPES:
+        return COMPANION_ID_TYPES[raw_id]
+    names = [channel_name, display_name]
+    for name in names:
+        folded = re.sub(r"[^a-z0-9]+", "", str(name or "").lower())
+        if not folded:
+            continue
+        if folded.startswith("weatherstar"):
+            return "weatherstar"
+        if folded.startswith("radiowave"):
+            return "radiowave"
+        if folded in {"nettv", "youtube"} or folded.startswith("nettv"):
+            return "youtube"
+    return ""
+
+
+def channel_bug_logo_candidate_names(channel_name, channel_id=None, channel_type=None, display_name=None):
+    """Ordered names to check for a channel logo file.
+
+    Companions check their canonical names first, then the current display
+    name/stable name/id aliases. That keeps a renamed WeatherStar channel able
+    to find WeatherStar.png while still allowing a user to name a file after
+    the renamed channel if there is no canonical logo.
+    """
+    candidates = []
+    ctype = companion_logo_type(channel_name, channel_id=channel_id, channel_type=channel_type, display_name=display_name)
+    if ctype:
+        for alias in COMPANION_LOGO_ALIASES.get(ctype, ()):
+            _append_unique(candidates, alias)
+    _append_unique(candidates, display_name)
+    _append_unique(candidates, channel_name)
+    raw_id = str(channel_id or "").strip()
+    if raw_id:
+        _append_unique(candidates, raw_id)
+        if ":" in raw_id:
+            _append_unique(candidates, raw_id.split(":", 1)[1])
+    return candidates
+
+
+def _scan_logo_dir(logos_dir, channel_names, allow_any_image_fallback):
     """Look for a channel's logo inside an already-resolved directory.
 
     `allow_any_image_fallback` gates two things that only make sense for
@@ -49,11 +110,14 @@ def _scan_logo_dir(logos_dir, channel_name, allow_any_image_fallback):
     # Allow "+" -- COMPANION_NAMES["weatherstar"] is literally
     # "WeatherStar 4000+" (see companion_adapter.py), and a filename built
     # from that real name needs to round-trip through this sanitizer.
-    safe_name = re.sub(r"[^\w\-.+ ]", "", channel_name or "").strip()
-    for ext in CHANNEL_BUG_SUPPORTED_EXTS:
-        c = candidate(f"{safe_name}{ext}")
-        if c:
-            return c
+    for channel_name in channel_names or []:
+        safe_name = re.sub(r"[^\w\-.+ ]", "", channel_name or "").strip()
+        if not safe_name:
+            continue
+        for ext in CHANNEL_BUG_SUPPORTED_EXTS:
+            c = candidate(f"{safe_name}{ext}")
+            if c:
+                return c
 
     if not allow_any_image_fallback:
         return ""
@@ -77,7 +141,7 @@ def _scan_logo_dir(logos_dir, channel_name, allow_any_image_fallback):
     return ""
 
 
-def find_channel_bug_logo(root_path, channel_name, shared_logos_dir=None):
+def channel_bug_logo_lookup_details(root_path, channel_name, shared_logos_dir=None, channel_id=None, channel_type=None, display_name=None):
     """Discover the best logo image for a channel.
 
     The single source of truth for channel logo discovery -- real
@@ -97,17 +161,55 @@ def find_channel_bug_logo(root_path, channel_name, shared_logos_dir=None):
     "WeatherStar.png"). This is what finally gives companion channels a
     real logo path.
 
+    Returns a dict with path, source, and the ordered candidate names checked.
+    """
+    candidates = channel_bug_logo_candidate_names(
+        channel_name,
+        channel_id=channel_id,
+        channel_type=channel_type,
+        display_name=display_name,
+    )
+    if root_path:
+        found = _scan_logo_dir(os.path.join(root_path, "Logos"), [channel_name], allow_any_image_fallback=True)
+        if found:
+            return {"path": found, "source": "local", "candidates": candidates}
+    if shared_logos_dir:
+        found = _scan_logo_dir(shared_logos_dir, candidates, allow_any_image_fallback=False)
+        if found:
+            return {"path": found, "source": "shared", "candidates": candidates}
+    return {"path": "", "source": "", "candidates": candidates}
+
+
+def find_channel_bug_logo(root_path, channel_name, shared_logos_dir=None, channel_id=None, channel_type=None, display_name=None):
+    """Discover the best logo image for a channel.
+
+    The single source of truth for channel logo discovery -- real
+    playback (ChannelBugOverlay.configure in channelsurfer2000.py) and
+    every UI that shows a logo preview (Channel Studio cards, Logo
+    Studio) all call this same function, so "logos work during
+    playback but Channel Studio can't find them" can't happen from a
+    second, weaker lookup drifting out of sync with this one.
+
+    Looks first in <root_path>/Logos/ (unchanged from before -- existing
+    local-channel setups keep working exactly as they did, and never even
+    reach the fallback below). If nothing is found there (including when
+    `root_path` is empty, as for every companion channel -- WeatherStar,
+    RadioWaveTV, NetTV -- which have no folder of their own), falls back
+    to `shared_logos_dir` (the portable User Content/Logos/ folder every
+    channel can use, keyed by channel name or companion alias -- e.g.
+    "MTV.png", "WeatherStar 4000+.png", "WeatherStar.png").
+
     Returns an absolute path string or "" if none found.
     """
-    if root_path:
-        found = _scan_logo_dir(os.path.join(root_path, "Logos"), channel_name, allow_any_image_fallback=True)
-        if found:
-            return found
-    if shared_logos_dir:
-        found = _scan_logo_dir(shared_logos_dir, channel_name, allow_any_image_fallback=False)
-        if found:
-            return found
-    return ""
+    return channel_bug_logo_lookup_details(
+        root_path,
+        channel_name,
+        shared_logos_dir=shared_logos_dir,
+        channel_id=channel_id,
+        channel_type=channel_type,
+        display_name=display_name,
+    ).get("path", "")
+
 
 _TIMING_DEFAULTS = {
     "always_visible": False,

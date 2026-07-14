@@ -953,12 +953,15 @@ section("logo discovery: one shared lookup, not two")
 
 card_source = inspect.getsource(channel_card)
 check("channel_card.py has no separate/weaker logo lookup of its own", "_find_channel_logo_path" not in card_source)
-check("channel_card.py's logo widget uses the real, shared discovery function", "find_channel_bug_logo(summary.root_path, summary.name" in card_source)
+check(
+    "channel_card.py's logo widget uses the real, shared discovery function with companion identity",
+    "find_channel_bug_logo(" in card_source and "channel_id=summary.channel_id" in card_source and "channel_type=summary.channel_type" in card_source,
+)
 
 logo_section_source_v2 = inspect.getsource(setup_sections.build_logo_section)
 check(
-    "Logo Studio's preview uses the same shared discovery function, not just the stale summary snapshot",
-    "find_channel_bug_logo(root_path, channel_name" in logo_section_source_v2,
+    "Logo Studio's preview uses the same shared discovery function and companion identity, not just the stale summary snapshot",
+    "find_channel_bug_logo(" in logo_section_source_v2 and "channel_id=channel_id" in logo_section_source_v2 and "channel_type=getattr(summary" in logo_section_source_v2,
 )
 
 setup_dialog_source = inspect.getsource(channel_setup.ChannelSetupDialog)
@@ -979,6 +982,28 @@ with tempfile.TemporaryDirectory() as tmpdir:
         "a normalized/display-name-style lookup still finds the same file",
         channel_logos.find_channel_bug_logo(channel_dir, "MTV") == channel_logos.find_channel_bug_logo(channel_dir, "MTV"),
     )
+    shared_dir = os.path.join(tmpdir, "Shared Logos")
+    os.makedirs(shared_dir)
+    weatherstar_file = os.path.join(shared_dir, "WeatherStar.png")
+    with open(weatherstar_file, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n")
+    setup_path = channel_logos.find_channel_bug_logo(
+        "",
+        "Local Forecast",
+        shared_logos_dir=shared_dir,
+        channel_id="special:weatherstar",
+        channel_type="weatherstar",
+        display_name="Local Forecast",
+    )
+    playback_path = channel_logos.find_channel_bug_logo(
+        "",
+        "WeatherStar 4000+",
+        shared_logos_dir=shared_dir,
+        channel_id="special:weatherstar",
+        channel_type="weatherstar",
+        display_name="Local Forecast",
+    )
+    check("Setup and playback resolve the same WeatherStar shared logo path", setup_path == playback_path == weatherstar_file, (setup_path, playback_path))
 check("a channel with no Logos folder at all fails safe, no crash", channel_logos.find_channel_bug_logo(os.path.join(tmpdir, "Nowhere"), "Nowhere") == "")
 check("a missing/blank channel name fails safe, no crash", channel_logos.find_channel_bug_logo("", "") == "")
 

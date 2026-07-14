@@ -728,7 +728,7 @@ _UI_PIXMAP_CACHE = {}
 _SCALED_UI_PIXMAP_CACHE = {}
 _FILE_SIGNATURE_CACHE = {}
 _PERF_STATS = {}
-_CHANNEL_BUG_CACHE = {}  # keyed by (root_path, channel_name) -> QPixmap or None
+_CHANNEL_BUG_CACHE = {}  # keyed by channel/logo identity + file signature + size
 _VAULT_PLACEHOLDER_PIXMAP_CACHE = {}
 _STARFIELD_PIXMAP_CACHE = {}
 _VAULT_PERF_ACTIVE_COUNTERS = None
@@ -1484,29 +1484,40 @@ def gather_channel_shows(root_path, show_files):
     return sorted(results, key=lambda x: x["title"].lower())
 
 
-def load_channel_bug_pixmap(root_path, channel_name, size):
+def load_channel_bug_pixmap(root_path, channel_name, size, channel_id="", channel_type="", display_name=""):
     """Return a cached, pre-scaled QPixmap for the channel bug logo.
 
-    Loads from disk only when the cache is cold or invalidated.
+    Re-resolves the logo path on each configure/tune so dropped-in or
+    replaced logos are picked up without a full app restart. The pixmap itself
+    is reused only while the resolved file's mtime/size signature is unchanged.
     Returns None if no logo exists (caller should use fallback).
     """
-    cache_key = (root_path, channel_name, size)
+    path = find_channel_bug_logo(
+        root_path,
+        channel_name,
+        shared_logos_dir=shared_channel_logos_dir(),
+        channel_id=channel_id,
+        channel_type=channel_type,
+        display_name=display_name,
+    )
+    if not path:
+        return None
+    try:
+        stat = os.stat(path)
+        signature = (path, int(getattr(stat, "st_mtime_ns", int(stat.st_mtime * 1000000000))), int(stat.st_size))
+    except OSError:
+        return None
+    cache_key = (root_path, channel_name, channel_id, channel_type, display_name, size, signature)
     if cache_key in _CHANNEL_BUG_CACHE:
         return _CHANNEL_BUG_CACHE[cache_key]
-    path = find_channel_bug_logo(root_path, channel_name, shared_logos_dir=shared_channel_logos_dir())
-    if not path:
-        _CHANNEL_BUG_CACHE[cache_key] = None
-        return None
     try:
         pixmap = QPixmap(path)
         if pixmap.isNull():
-            _CHANNEL_BUG_CACHE[cache_key] = None
             return None
         pixmap = pixmap.scaled(size, size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
         _CHANNEL_BUG_CACHE[cache_key] = pixmap
         return pixmap
     except Exception:
-        _CHANNEL_BUG_CACHE[cache_key] = None
         return None
 
 
@@ -6472,6 +6483,9 @@ class ChannelBugOverlay(QWidget):
         self._settings = channel_bug_settings_defaults()
         self._eff = channel_bug_settings_defaults()
         self._channel_name = ""
+        self._channel_id = ""
+        self._channel_type = ""
+        self._display_name = ""
         self._root_path = ""
         self._opacity_anim = 0.0            # 0..1 for fade animation
         self._last_tune_time = 0.0          # monotonic; guards against stale EndOfMedia triggers
@@ -6490,7 +6504,7 @@ class ChannelBugOverlay(QWidget):
 
     # ── Configuration ───────────────────────────────────────────────────────
 
-    def configure(self, settings, channel_name, root_path):
+    def configure(self, settings, channel_name, root_path, channel_id="", channel_type="", display_name=""):
         """Call whenever the channel changes or settings change.
 
         settings: normalized channel_bug_settings dict
@@ -6499,6 +6513,9 @@ class ChannelBugOverlay(QWidget):
         """
         self._settings = normalize_channel_bug_settings(settings or {})
         self._channel_name = channel_name or ""
+        self._channel_id = channel_id or ""
+        self._channel_type = channel_type or ""
+        self._display_name = display_name or ""
         self._root_path = root_path or ""
         self._eff = get_effective_channel_logo_settings(self._channel_name, self._settings)
         self._rebuild_pixmap()
@@ -6509,7 +6526,14 @@ class ChannelBugOverlay(QWidget):
     def _rebuild_pixmap(self):
         """(Re)build the pre-scaled bug pixmap and its grayscale variant."""
         size = int(self._eff.get("size", 80) or 80)
-        pm = load_channel_bug_pixmap(self._root_path, self._channel_name, size)
+        pm = load_channel_bug_pixmap(
+            self._root_path,
+            self._channel_name,
+            size,
+            channel_id=self._channel_id,
+            channel_type=self._channel_type,
+            display_name=self._display_name,
+        )
         if pm is not None and not pm.isNull():
             self._bug_pixmap = pm
         else:
@@ -23873,7 +23897,17 @@ class ChannelSurfer(QWidget):
         # possibly-renamed .name here would silently stop finding an
         # existing logo file the moment the channel is renamed.
         channel_name = (getattr(ch, "folder_name", None) or getattr(ch, "name", "")) if ch is not None else ""
-        self.video_window.channel_bug.configure(settings, channel_name, root_path)
+        channel_id = self.catalog_channel_id(ch) if ch is not None else ""
+        channel_type = getattr(ch, "channel_type", "") if ch is not None else ""
+        display_name = getattr(ch, "name", "") if ch is not None else ""
+        self.video_window.channel_bug.configure(
+            settings,
+            channel_name,
+            root_path,
+            channel_id=channel_id,
+            channel_type=channel_type,
+            display_name=display_name,
+        )
         self.video_window.channel_bug.on_channel_tune()
         self._sync_channel_bug_suppression()
 
@@ -23994,8 +24028,17 @@ class ChannelSurfer(QWidget):
             # companions have no root_path, so only the shared folder
             # fallback can ever resolve for them.
             channel_name_for_logo = getattr(channel, "folder_name", None) or getattr(channel, "name", "")
+            channel_type = getattr(channel, "channel_type", "")
+            display_name = getattr(channel, "name", "")
             try:
-                channel_logo_lookup[cid] = find_channel_bug_logo(root_path, channel_name_for_logo, shared_logos_dir=shared_logos_dir)
+                channel_logo_lookup[cid] = find_channel_bug_logo(
+                    root_path,
+                    channel_name_for_logo,
+                    shared_logos_dir=shared_logos_dir,
+                    channel_id=cid,
+                    channel_type=channel_type,
+                    display_name=display_name,
+                )
             except Exception:
                 channel_logo_lookup[cid] = ""
             if getattr(channel, "channel_type", "media") != "media":
