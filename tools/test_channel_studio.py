@@ -1552,6 +1552,56 @@ check("a totally bare config still ends up with all 3 companion slots seeded, al
 check("normalize_catalog_channel_settings accepts the migrated shape without raising", len(normalize_catalog_channel_settings(bare_config["catalog_channel_settings"])) == 3)
 
 # ---------------------------------------------------------------------------
+# Tests: closing the one remaining manual-verification gap -- confirming
+# refresh_live_lineup actually reaches the Guide (not just the two
+# customization methods every earlier check already covers), completing
+# the "My Catalog / Guide / playback all update, no restart" requirement.
+# ---------------------------------------------------------------------------
+section("refresh_live_lineup: reaches the Guide too, not just customization")
+
+
+class _FakeGuideOverlay:
+    def __init__(self, visible):
+        self._visible = visible
+
+    def isVisible(self):
+        return self._visible
+
+
+class _FakeVideoWindow:
+    def __init__(self, guide_visible):
+        self.guide_overlay = _FakeGuideOverlay(guide_visible)
+
+
+class _FakeMainAppWithGuide(_FakeMainApp):
+    def __init__(self, guide_visible):
+        super().__init__()
+        self.video_window = _FakeVideoWindow(guide_visible)
+        self.guide_refreshed = False
+
+    def refresh_guide(self):
+        self.guide_refreshed = True
+
+
+guide_visible_dialog = _FakeDialog()
+guide_visible_app = _FakeMainAppWithGuide(guide_visible=True)
+guide_visible_dialog._parent = guide_visible_app
+channel_actions.refresh_live_lineup(guide_visible_dialog)
+check(
+    "refresh_live_lineup refreshes the Guide immediately when it's on screen -- no restart needed",
+    guide_visible_app.injected and guide_visible_app.customized and guide_visible_app.guide_refreshed,
+)
+
+guide_hidden_dialog = _FakeDialog()
+guide_hidden_app = _FakeMainAppWithGuide(guide_visible=False)
+guide_hidden_dialog._parent = guide_hidden_app
+channel_actions.refresh_live_lineup(guide_hidden_dialog)
+check(
+    "refresh_live_lineup doesn't force-refresh a Guide the user isn't currently looking at",
+    guide_hidden_app.guide_refreshed is False,
+)
+
+# ---------------------------------------------------------------------------
 # Summary
 # ---------------------------------------------------------------------------
 print(f"\n{'='*50}")
