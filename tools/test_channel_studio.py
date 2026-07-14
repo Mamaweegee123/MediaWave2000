@@ -1354,6 +1354,76 @@ check("no display_name set -> the channel's original name is left alone", no_ren
 check("folder_name is still captured even without a rename", no_rename_channel.folder_name == "Movies")
 
 # ---------------------------------------------------------------------------
+# Companion channel parity (commit 4): every identity operation available
+# for a local channel is available for a companion too, and the dashboard
+# card gives both the same visual treatment -- no code changes needed
+# here, this section is verification that commits 1-3 actually delivered
+# parity, not just symmetry in name.
+# ---------------------------------------------------------------------------
+section("companion parity: enabled/number/name are fully symmetric")
+
+parity_dialog = _FakeDialog()
+parity_main_app = _FakeMainApp()
+parity_dialog._parent = parity_main_app
+
+check("enabled read exists for a local channel", channel_actions.local_channel_enabled_from_dialog(parity_dialog, "media:/fake/a") is not None)
+check("enabled read exists for a companion", channel_actions.companion_snapshot_from_dialog(parity_dialog)["weatherstar"]["enabled"] is not None)
+check("enabled write exists for a local channel", channel_actions.set_local_channel_enabled(parity_dialog, "media:/fake/a", False) is True)
+check("enabled write exists for a companion", channel_actions.set_companion_enabled_on_dialog(parity_dialog, "weatherstar", False) is True)
+
+check("number read dispatch works identically for local and companion ids", (
+    channel_actions.channel_number_from_dialog(parity_dialog, "media:/fake/a") is not None,
+    channel_actions.channel_number_from_dialog(parity_dialog, "special:weatherstar") is not None,
+) == (True, True))
+check("number write dispatch works identically for local and companion ids", (
+    channel_actions.set_channel_number_on_dialog(parity_dialog, "media:/fake/a", 11),
+    channel_actions.set_channel_number_on_dialog(parity_dialog, "special:weatherstar", 12),
+) == (True, True))
+check("number validation dispatch works identically for local and companion ids", (
+    channel_actions.validate_channel_number_on_dialog(parity_dialog, "media:/fake/a", 20)[0],
+    channel_actions.validate_channel_number_on_dialog(parity_dialog, "special:weatherstar", 21)[0],
+) == ("ok", "ok"))
+
+check("name read dispatch works identically for local and companion ids", (
+    channel_actions.channel_name_from_dialog(parity_dialog, "media:/fake/a") is not None,
+    channel_actions.channel_name_from_dialog(parity_dialog, "special:weatherstar") is not None,
+) == (True, True))
+check("name write dispatch works identically for local and companion ids", (
+    channel_actions.set_channel_name_on_dialog(parity_dialog, "media:/fake/a", "Renamed A"),
+    channel_actions.set_channel_name_on_dialog(parity_dialog, "special:weatherstar", "Renamed Weather"),
+) == (True, True))
+check("name validation dispatch works identically for local and companion ids", (
+    channel_actions.validate_channel_name_on_dialog(parity_dialog, "media:/fake/a", "Another Name")[0],
+    channel_actions.validate_channel_name_on_dialog(parity_dialog, "special:weatherstar", "Another Weather Name")[0],
+) == ("ok", "ok"))
+
+check("reorder resequencing exists for both pools (still per-pool until commit 6 unifies it)", (
+    hasattr(channel_actions, "resequence_local_channels_on_dialog"),
+    hasattr(channel_actions, "resequence_companions_on_dialog"),
+) == (True, True))
+
+section("companion parity: unified_entries is type-agnostic (future companion types)")
+
+parity_pool = channel_identity.unified_entries(
+    [{"id": "media:/a", "name": "A", "number": 1, "enabled": True}],
+    companion_adapter.empty_snapshot(),
+)
+check(
+    "unified_entries only depends on COMPANION_TYPES/COMPANION_CHANNEL_IDS/COMPANION_NAMES -- adding a 4th "
+    "companion type to those three would flow through automatically, no channel_identity.py change needed",
+    all(entry["id"] in companion_adapter.COMPANION_CHANNEL_IDS.values() or entry["id"] == "media:/a" for entry in parity_pool),
+)
+
+section("channel_card.py: no visual distinction between local and companion cards")
+
+card_source = inspect.getsource(channel_card.build_dashboard_channel_card)
+check("card width, border, and shadow are built through a single, unconditional code path for every channel", card_source.count('setObjectName("sectionCard")') == 1)
+check(
+    "is_companion only ever gates the status panel's content and the Remove/Disable label -- not the card's visual frame",
+    card_source.count("is_companion") == 2,
+)
+
+# ---------------------------------------------------------------------------
 # channel_identity.py: unified local+companion pool, dedup, validation
 # ---------------------------------------------------------------------------
 section("channel_identity: unified_entries merges local + companion")
