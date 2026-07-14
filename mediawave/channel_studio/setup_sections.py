@@ -16,6 +16,7 @@ from PySide6.QtGui import QDesktopServices, QPixmap
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
+    QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
@@ -83,6 +84,13 @@ def _companion_type(channel_info, summary):
 
 
 def build_overview_section(dialog, channel_info, summary, on_navigate_commercials):
+    """The Overview body's single identity presentation: one card holding
+    the editable name, editable number, the real Enabled toggle, and a
+    little Type/Source/content metadata underneath -- see this dialog's
+    docstring header for why this replaced the old three-times-repeated
+    name/number layout (window header, a duplicate summary card, and the
+    editable row each showed it separately).
+    """
     page = QWidget()
     layout = QVBoxLayout(page)
     layout.setContentsMargins(2, 4, 2, 4)
@@ -95,14 +103,12 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
 
     channel_name = channel_actions.channel_name_from_dialog(dialog, channel_id) or channel_info.get("name", "Channel")
 
-    meta_lines = [
-        f"Type: {channel_type_label}",
-        f"Source: {source_label}",
-    ]
-    if summary is not None and not companion_type:
-        meta_lines.append(f"Playback: {summary.playback_order_label} order")
-
-    layout.addWidget(build_info_card(channel_name, None, meta_lines=meta_lines))
+    identity_card = QFrame()
+    identity_card.setObjectName("sectionCard")
+    identity_card.setFrameShape(QFrame.NoFrame)
+    identity_layout = QVBoxLayout(identity_card)
+    identity_layout.setContentsMargins(16, 14, 16, 16)
+    identity_layout.setSpacing(8)
 
     name_row = QHBoxLayout()
     name_row.setSpacing(10)
@@ -120,7 +126,7 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
     name_editor, _name_api = build_inline_value_editor(channel_name, _validate_name, _apply_name)
     name_row.addWidget(name_editor)
     name_row.addStretch(1)
-    layout.addLayout(name_row)
+    identity_layout.addLayout(name_row)
 
     number_row = QHBoxLayout()
     number_row.setSpacing(10)
@@ -150,11 +156,8 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
     )
     number_row.addWidget(number_editor)
     number_row.addStretch(1)
-    layout.addLayout(number_row)
+    identity_layout.addLayout(number_row)
 
-    enabled_card = QWidget()
-    enabled_layout = QVBoxLayout(enabled_card)
-    enabled_layout.setContentsMargins(0, 0, 0, 0)
     box = QCheckBox("Enabled")
     if companion_type:
         box.setChecked(True)
@@ -165,8 +168,27 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
         box.setChecked(bool(live) if live is not None else True)
         box.toggled.connect(lambda checked, cid=channel_id: channel_actions.set_local_channel_enabled(dialog, cid, checked))
         box.setToolTip("Updates your real settings immediately. Click Save in Advanced Configuration to make it stick.")
-    enabled_layout.addWidget(box)
-    layout.addWidget(enabled_card)
+    identity_layout.addWidget(box)
+
+    meta_lines = [
+        f"Type: {channel_type_label}",
+        f"Source: {source_label}",
+    ]
+    if summary is not None and not companion_type:
+        meta_lines.append(f"Playback: {summary.playback_order_label} order")
+        counts = []
+        if summary.show_count:
+            counts.append(f"{summary.show_count} show" + ("s" if summary.show_count != 1 else ""))
+        if summary.movie_count:
+            counts.append(f"{summary.movie_count} movie" + ("s" if summary.movie_count != 1 else ""))
+        meta_lines.append(" · ".join(counts) if counts else "No content detected yet")
+
+    for line in meta_lines:
+        meta_lbl = QLabel(line)
+        meta_lbl.setObjectName("fieldHelp")
+        identity_layout.addWidget(meta_lbl)
+
+    layout.addWidget(identity_card)
 
     # NetTV shares the real commercial-override mechanism with local
     # channels (see build_commercials_section's docstring for why) --
