@@ -485,63 +485,6 @@ check(
 )
 
 # ---------------------------------------------------------------------------
-# companion_adapter: resequencing real channel numbers among companions
-# ---------------------------------------------------------------------------
-section("companion_adapter.resequence_companion_numbers")
-
-three_enabled = companion_adapter.read_companion_snapshot(
-    {
-        "weatherstar_enabled": True,
-        "weatherstar_channel_number": 1,
-        "radiowave_enabled": True,
-        "radiowave_channel_number": 2,
-        "youtube_enabled": True,
-        "youtube_channel_number": 3,
-    }
-)
-moved = companion_adapter.resequence_companion_numbers(three_enabled, ["radiowave", "youtube", "weatherstar"])
-check(
-    "moving radiowave first gives it the smallest pooled number",
-    moved["radiowave"]["number"] == 1,
-    moved["radiowave"]["number"],
-)
-check("youtube takes the middle pooled number", moved["youtube"]["number"] == 2, moved["youtube"]["number"])
-check("weatherstar takes the last pooled number", moved["weatherstar"]["number"] == 3, moved["weatherstar"]["number"])
-check(
-    "the example from the spec: radiowave 1 -> 4 when reordered past two channels 2 and 3",
-    companion_adapter.resequence_companion_numbers(
-        companion_adapter.read_companion_snapshot(
-            {
-                "radiowave_enabled": True,
-                "radiowave_channel_number": 1,
-                "weatherstar_enabled": True,
-                "weatherstar_channel_number": 2,
-                "youtube_enabled": True,
-                "youtube_channel_number": 4,
-            }
-        ),
-        ["weatherstar", "youtube", "radiowave"],
-    )["radiowave"]["number"]
-    == 4,
-)
-
-only_one_enabled = companion_adapter.set_companion_enabled(companion_adapter.empty_snapshot(), "radiowave", True)
-check(
-    "a single enabled companion is a safe no-op (nothing to redistribute)",
-    companion_adapter.resequence_companion_numbers(only_one_enabled, ["radiowave"]) == only_one_enabled,
-)
-check(
-    "disabled companions are never touched by resequencing",
-    companion_adapter.resequence_companion_numbers(three_enabled, ["radiowave"])["weatherstar"]["number"] == 1,
-)
-local_untouched_snapshot = dict(three_enabled)
-resequenced = companion_adapter.resequence_companion_numbers(local_untouched_snapshot, ["youtube", "weatherstar", "radiowave"])
-check(
-    "resequencing never adds keys beyond the three known companion types",
-    set(resequenced.keys()) == set(companion_adapter.COMPANION_TYPES),
-)
-
-# ---------------------------------------------------------------------------
 # channel_actions: a lightweight fake dialog, no QApplication required.
 # Only duck-types the handful of attributes channel_actions.py touches
 # (isChecked/setChecked, value/setValue, text) -- not a real widget.
@@ -619,9 +562,11 @@ check("the widget itself is now checked", fake_dialog.youtube_enabled.isChecked(
 check("disabling a companion flips it back off", channel_actions.set_companion_enabled_on_dialog(fake_dialog, "youtube", False) is True)
 check("unknown companion type on set_companion_enabled_on_dialog is a safe no-op", channel_actions.set_companion_enabled_on_dialog(fake_dialog, "bogus", True) is False)
 
-resequenced = channel_actions.resequence_companions_on_dialog(fake_dialog, ["radiowave", "weatherstar"])
-check("resequencing writes radiowave's new number onto the real spinbox", fake_dialog.radiowave_channel_input.value() == 1, fake_dialog.radiowave_channel_input.value())
-check("resequencing writes weatherstar's new number onto the real spinbox", fake_dialog.weatherstar_channel_input.value() == 2, fake_dialog.weatherstar_channel_input.value())
+unified_companion_entries = channel_actions.unified_entries_from_dialog(fake_dialog)
+unified_companion_numbers = channel_identity.renumber_from_order(unified_companion_entries, ["special:radiowave", "special:weatherstar"])
+channel_actions.apply_unified_numbers_to_dialog(fake_dialog, unified_companion_numbers)
+check("unified renumbering writes radiowave's new number onto the real spinbox", fake_dialog.radiowave_channel_input.value() == 1, fake_dialog.radiowave_channel_input.value())
+check("unified renumbering writes weatherstar's new number onto the real spinbox", fake_dialog.weatherstar_channel_input.value() == 2, fake_dialog.weatherstar_channel_input.value())
 
 # ---------------------------------------------------------------------------
 # channel_actions: local folder channel enable via the My Catalog rows
@@ -1145,17 +1090,22 @@ number_dialog = _FakeDialog()
 before = {row["id"]: row["number"].value() for row in number_dialog.catalog_rows}
 check("starting numbers are sequential", before == {"media:/fake/a": 1, "media:/fake/b": 2}, before)
 
-updated_ids = channel_actions.resequence_local_channels_on_dialog(number_dialog, ["media:/fake/b", "media:/fake/a"])
+number_entries = channel_actions.unified_entries_from_dialog(number_dialog)
+number_new_numbers = channel_identity.renumber_from_order(number_entries, ["media:/fake/b", "media:/fake/a"])
+updated_ids = channel_actions.apply_unified_numbers_to_dialog(number_dialog, number_new_numbers)
 after = {row["id"]: row["number"].value() for row in number_dialog.catalog_rows}
-check("resequencing updates both rows", updated_ids == ["media:/fake/b", "media:/fake/a"], updated_ids)
+check("unified renumbering updates both rows", set(updated_ids) == {"media:/fake/b", "media:/fake/a"}, updated_ids)
 check("the channel dragged first now holds the smaller number from the SAME pool", after["media:/fake/b"] == 1, after)
 check("the channel dragged second now holds the larger number from the SAME pool", after["media:/fake/a"] == 2, after)
 check("numbers are still sequential after commit", sorted(after.values()) == [1, 2], after)
 check("no duplicate numbers after commit", len(set(after.values())) == len(after), after)
 
-check("a stale/missing channel id in the reorder list is safely skipped, not an error", channel_actions.resequence_local_channels_on_dialog(number_dialog, ["media:/fake/a", "media:/nonexistent"]) == ["media:/fake/a"])
-check("fewer than 2 real rows is a safe no-op (nothing to redistribute)", channel_actions.resequence_local_channels_on_dialog(number_dialog, ["media:/fake/a"]) == ["media:/fake/a"])
-check("an entirely empty/unknown reorder list is a safe no-op", channel_actions.resequence_local_channels_on_dialog(number_dialog, ["media:/nonexistent"]) == [])
+check(
+    "a stale/missing channel id in the reorder list is safely skipped, not an error",
+    "media:/nonexistent" not in channel_identity.renumber_from_order(number_entries, ["media:/fake/a", "media:/nonexistent"]),
+)
+check("fewer than 2 matched entries is a safe no-op (nothing to redistribute)", channel_identity.renumber_from_order(number_entries, ["media:/fake/a"]) == {})
+check("an entirely empty/unknown reorder list is a safe no-op", channel_identity.renumber_from_order(number_entries, ["media:/nonexistent"]) == {})
 
 display_dialog = _FakeDialog()
 local_summary = ChannelStudioSummary(channel_id="media:/fake/a", name="Movies", number=99, channel_type="media")
@@ -1169,14 +1119,47 @@ check("card_display_number falls back to the summary's own number when no live r
 companion_summary = ChannelStudioSummary(channel_id="special:radiowave", name="RadioWaveTV", number=99, channel_type="radiowave")
 check("card_display_number reads the live companion spinbox, same as a local channel's row", channel_actions.card_display_number(display_dialog, companion_summary) == 2)
 
+section("channel_actions: mixed local+companion reorder actually interleaves (requirement 6+8)")
+
+mixed_dialog = _FakeDialog()
+# Starting lineup: media/fake/a=1, media/fake/b=2, weatherstar=1(!), radiowave=2(!) --
+# collides with the locals on paper, but only ENABLED entries matter and
+# fake/b starts disabled, so the real starting pool this reorder touches
+# is {1, 2, 2} across 3 enabled entries; repair isn't run here (that's
+# apply_catalog_channel_customizations' job) -- this test is specifically
+# about renumber_from_order handling a real interleaved drag, so give it
+# a clean, non-colliding starting pool first.
+channel_actions.set_local_channel_number(mixed_dialog, "media:/fake/a", 1)
+channel_actions.set_local_channel_enabled(mixed_dialog, "media:/fake/b", True)
+channel_actions.set_local_channel_number(mixed_dialog, "media:/fake/b", 3)
+channel_actions.set_channel_number_on_dialog(mixed_dialog, "special:weatherstar", 2)
+
+mixed_entries = channel_actions.unified_entries_from_dialog(mixed_dialog)
+# Drag weatherstar to sit BETWEEN the two local channels: a-weatherstar-b.
+mixed_new_numbers = channel_identity.renumber_from_order(mixed_entries, ["media:/fake/a", "special:weatherstar", "media:/fake/b"])
+channel_actions.apply_unified_numbers_to_dialog(mixed_dialog, mixed_new_numbers)
+check(
+    "a companion dragged between two local channels gets a real number reflecting that position, not just its own type's pool",
+    (
+        channel_actions.channel_number_from_dialog(mixed_dialog, "media:/fake/a"),
+        channel_actions.channel_number_from_dialog(mixed_dialog, "special:weatherstar"),
+        channel_actions.channel_number_from_dialog(mixed_dialog, "media:/fake/b"),
+    )
+    == (1, 2, 3),
+)
+
 reorder_pages_source = inspect.getsource(channel_studio_pages)
 check(
-    "Done Reordering commits local channel numbers through the safe catalog settings helper",
-    "resequence_local_channels_on_dialog" in reorder_pages_source,
+    "Done Reordering commits real numbers through the unified, gap-preserving renumber algorithm",
+    "channel_identity.renumber_from_order" in reorder_pages_source,
 )
 check(
-    "Done Reordering still keeps resequencing companion numbers too",
-    "resequence_companions_on_dialog" in reorder_pages_source,
+    "Done Reordering applies the unified result through the unified dispatch, not two separate per-pool resequences",
+    "apply_unified_numbers_to_dialog" in reorder_pages_source,
+)
+check(
+    "Done Reordering refreshes the live lineup immediately -- Guide/My Catalog/playback update with no restart",
+    "refresh_live_lineup" in reorder_pages_source,
 )
 check(
     "cards are built with a live display_number, not just the static summary snapshot",
@@ -1405,10 +1388,12 @@ check("name validation dispatch works identically for local and companion ids", 
     channel_actions.validate_channel_name_on_dialog(parity_dialog, "special:weatherstar", "Another Weather Name")[0],
 ) == ("ok", "ok"))
 
-check("reorder resequencing exists for both pools (still per-pool until commit 6 unifies it)", (
-    hasattr(channel_actions, "resequence_local_channels_on_dialog"),
-    hasattr(channel_actions, "resequence_companions_on_dialog"),
-) == (True, True))
+check("reorder renumbering is unified across both pools -- one algorithm, not two per-pool ones", (
+    hasattr(channel_identity, "renumber_from_order"),
+    hasattr(channel_actions, "apply_unified_numbers_to_dialog"),
+    not hasattr(channel_actions, "resequence_local_channels_on_dialog"),
+    not hasattr(channel_actions, "resequence_companions_on_dialog"),
+) == (True, True, True, True))
 
 section("companion parity: unified_entries is type-agnostic (future companion types)")
 

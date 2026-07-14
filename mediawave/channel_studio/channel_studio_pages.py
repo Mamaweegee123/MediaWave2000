@@ -16,6 +16,7 @@ build, but nothing here calls them anymore.
 from PySide6.QtWidgets import QLabel, QVBoxLayout, QWidget
 
 from . import channel_actions
+from . import channel_identity
 from . import companion_adapter
 from .channel_setup import ChannelSetupDialog
 from .channel_studio_adapter import build_channel_studio_summaries, build_tonight_schedules
@@ -340,24 +341,24 @@ def build_channel_studio_content(dialog):
     def _toggle_reorder(checked=False):
         if reorder_state["active"]:
             # Exiting reorder mode: persist wherever the grid ended up,
-            # and finalize real channel numbers to match -- both pools
-            # redistribute only the numbers they already occupy (see
-            # channel_actions.resequence_local_channels_on_dialog /
-            # companion_adapter.resequence_companion_numbers), so a
-            # local channel can never collide with or renumber a
-            # companion, or vice versa. While dragging, numbers are left
+            # and finalize real channel numbers to match -- ONE unified
+            # renumber across local AND companion channels together (see
+            # channel_identity.renumber_from_order), so a companion
+            # dragged between two local channels gets a real number
+            # reflecting its new position instead of only ever
+            # redistributing within its own type's pool. The number SET
+            # in play never changes -- gaps a user set manually (e.g.
+            # 2/5/8) survive, just reassigned to whichever channels are
+            # now in those positions. While dragging, numbers are left
             # alone -- only Done Reordering commits them.
             if grid_ref["widget"] is not None:
                 final_order = grid_ref["widget"].current_order()
                 save_channel_order(state_path, final_order)
-                companion_order = [
-                    _COMPANION_TYPE_BY_ID[cid] for cid in final_order if cid in _COMPANION_TYPE_BY_ID
-                ]
-                if len(companion_order) >= 2:
-                    channel_actions.resequence_companions_on_dialog(dialog, companion_order)
-                local_order = [cid for cid in final_order if cid in summaries_by_id]
-                if len(local_order) >= 2:
-                    channel_actions.resequence_local_channels_on_dialog(dialog, local_order)
+                entries = channel_actions.unified_entries_from_dialog(dialog)
+                new_numbers = channel_identity.renumber_from_order(entries, final_order)
+                if new_numbers:
+                    channel_actions.apply_unified_numbers_to_dialog(dialog, new_numbers)
+                    channel_actions.refresh_live_lineup(dialog)
             reorder_state["active"] = False
         else:
             reorder_state["active"] = True

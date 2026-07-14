@@ -44,7 +44,6 @@ from .companion_adapter import (
     COMPANION_NAMES,
     COMPANION_TYPES,
     read_companion_snapshot,
-    resequence_companion_numbers,
 )
 
 _LOGO_MODE_LABELS = {"global": "Default", "custom": "Custom", "off": "Off"}
@@ -124,20 +123,6 @@ def set_companion_enabled_on_dialog(dialog, companion_type, enabled):
     Returns True if a matching widget was found and updated.
     """
     return apply_companion_entry_to_dialog(dialog, companion_type, {"enabled": enabled})
-
-
-def resequence_companions_on_dialog(dialog, ordered_types):
-    """After a Channel Studio drag-drop reorder among companion cards,
-    recompute and write back each affected companion's real channel
-    number. Local folder channel numbering is never touched by this --
-    see companion_adapter.resequence_companion_numbers.
-    """
-    snapshot = companion_snapshot_from_dialog(dialog)
-    resequenced = resequence_companion_numbers(snapshot, ordered_types)
-    for companion_type in ordered_types or []:
-        if companion_type in COMPANION_TYPES:
-            apply_companion_entry_to_dialog(dialog, companion_type, resequenced.get(companion_type, {}))
-    return resequenced
 
 
 def companion_status_from_dialog(dialog):
@@ -288,33 +273,6 @@ def _set_companion_name_on_dialog(dialog, companion_type, name):
         return False
     main_app.app_settings[_COMPANION_NAME_SETTING_KEY[companion_type]] = str(name or "").strip()
     return True
-
-
-def resequence_local_channels_on_dialog(dialog, ordered_channel_ids):
-    """Reassign real channel numbers among the local folder channels
-    named in `ordered_channel_ids` (desired left-to-right order) by
-    redistributing the SAME pool of numbers they already occupy --
-    mirrors companion_adapter.resequence_companion_numbers exactly, so
-    this can never collide with a companion channel's number or invent
-    a new one; a local channel's number always stays within the set of
-    numbers local channels already held. Channel ids with no matching
-    My Catalog row are safely skipped. Returns the list of channel ids
-    actually updated, in order. A single (or empty) channel is a safe
-    no-op -- there's nothing to redistribute.
-    """
-    rows = []
-    for channel_id in ordered_channel_ids or []:
-        row = local_channel_row(dialog, channel_id)
-        if row is not None:
-            rows.append((channel_id, row))
-    if len(rows) < 2:
-        return [channel_id for channel_id, _ in rows]
-    pool = sorted(int(row["number"].value()) for _, row in rows)
-    updated = []
-    for (channel_id, row), number in zip(rows, pool):
-        row["number"].setValue(number)
-        updated.append(channel_id)
-    return updated
 
 
 def card_display_number(dialog, summary):
@@ -505,6 +463,27 @@ def validate_channel_number_on_dialog(dialog, channel_id, candidate_number):
     if outcome == "duplicate":
         return ("duplicate", "Channel number already exists.")
     return ("invalid", detail or "Enter a valid channel number.")
+
+
+def apply_unified_numbers_to_dialog(dialog, new_numbers):
+    """Write every `{channel_id: number}` pair from
+    channel_identity.renumber_from_order() through the unified dispatch
+    (set_channel_number_on_dialog) -- local or companion, whichever
+    `channel_id` resolves to. This is what lets a Channel Studio drag
+    reorder renumber BOTH pools together in one pass, replacing the old
+    two-separate-resequences approach (each pool could only ever
+    redistribute its own numbers, so a companion dragged between two
+    local channels never got a number reflecting its new position).
+
+    Returns the list of channel ids actually written, in the order
+    `new_numbers` was given (dict insertion order) -- an id that fails to
+    write (no matching row/widget) is silently skipped, never raises.
+    """
+    updated = []
+    for channel_id, number in (new_numbers or {}).items():
+        if set_channel_number_on_dialog(dialog, channel_id, number):
+            updated.append(channel_id)
+    return updated
 
 
 def refresh_live_lineup(dialog):

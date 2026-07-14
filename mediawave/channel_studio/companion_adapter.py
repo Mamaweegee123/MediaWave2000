@@ -144,35 +144,3 @@ def set_companion_enabled(snapshot, companion_type, enabled):
     entry["enabled"] = bool(enabled)
     snapshot[companion_type] = entry
     return snapshot
-
-
-def resequence_companion_numbers(snapshot, ordered_types):
-    """Reassign real channel numbers among the enabled companions named
-    in `ordered_types` (left-to-right desired order) by redistributing
-    the SAME pool of numbers they already occupy -- e.g. if radiowave=1
-    and weatherstar=2 and `ordered_types` is
-    ["weatherstar", "radiowave"], the result is weatherstar=1,
-    radiowave=2.
-
-    Companions not named in `ordered_types` (including anything
-    disabled) and every local folder channel's own numbering are left
-    completely untouched -- this only ever redistributes numbers within
-    the companion set itself, so it can never collide with or renumber
-    a local channel. A single (or empty) companion set is a safe
-    no-op -- there's nothing to redistribute.
-    """
-    snapshot = snapshot if isinstance(snapshot, dict) else {}
-    known_types = [
-        companion_type
-        for companion_type in ordered_types or []
-        if companion_type in COMPANION_TYPES and (snapshot.get(companion_type) or {}).get("enabled")
-    ]
-    new_snapshot = dict(snapshot)
-    if len(known_types) < 2:
-        return new_snapshot
-    pool = sorted(int((snapshot.get(t) or {}).get("number", 1) or 1) for t in known_types)
-    for companion_type, number in zip(known_types, pool):
-        entry = dict(new_snapshot.get(companion_type) or {})
-        entry["number"] = number
-        new_snapshot[companion_type] = entry
-    return new_snapshot
