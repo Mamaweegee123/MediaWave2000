@@ -97,6 +97,42 @@ class FlowLayout(QLayout):
         return y + line_height - rect.y() + bottom
 
 
+def build_page_header(icon, title, subtitle=None):
+    """A large page-level heading (Phase 2 of the Channel Studio UI
+    framework) -- goes above a page's StudioSection card(s) so the page's
+    identity/one-line description isn't shown twice (once big, once
+    repeated as that page's own card title). Reuses the app's existing
+    "dialogTitle" object name (already a themed 20px/700-weight style, used
+    today by the Choose-Channel dashboard header) for the big title, and
+    "sectionNote" for the subtitle -- no new QSS.
+    """
+    header = QWidget()
+    layout = QVBoxLayout(header)
+    layout.setContentsMargins(0, 0, 0, 12)
+    layout.setSpacing(4)
+
+    title_row = QHBoxLayout()
+    title_row.setSpacing(10)
+    if icon:
+        icon_lbl = QLabel(icon)
+        icon_font = icon_lbl.font()
+        icon_font.setPointSize(icon_font.pointSize() + 8)
+        icon_lbl.setFont(icon_font)
+        title_row.addWidget(icon_lbl)
+    title_lbl = QLabel(title)
+    title_lbl.setObjectName("dialogTitle")
+    title_row.addWidget(title_lbl, 1)
+    layout.addLayout(title_row)
+
+    if subtitle:
+        subtitle_lbl = QLabel(subtitle)
+        subtitle_lbl.setObjectName("sectionNote")
+        subtitle_lbl.setWordWrap(True)
+        layout.addWidget(subtitle_lbl)
+
+    return header
+
+
 def build_placeholder_note(text="This section is under construction."):
     label = QLabel(text)
     label.setObjectName("fieldHelp")
@@ -121,15 +157,22 @@ def build_empty_state(text):
     return box
 
 
-def build_info_card(title_text, subtitle_text=None, meta_lines=None, buttons=None, badge_text=None):
+def build_info_card(title_text, subtitle_text=None, meta_lines=None, buttons=None, badge_text=None, flat=False):
     """A friendly card: title (+ optional badge), subtitle, meta lines, action buttons.
 
     `buttons` is a list of (label, callback) tuples. Every card built
     this way is display/mock only unless the caller's callback does
     something real.
+
+    `flat`, when True, skips the card's own border/background (still a
+    QFrame, just without "sectionCard" chrome) -- for callers that already
+    place this as the sole/primary content of an outer card (e.g. a
+    StudioSection), where a second nested border would just be a redundant
+    rectangle-inside-a-rectangle rather than a meaningful visual grouping.
     """
     card = QFrame()
-    card.setObjectName("sectionCard")
+    if not flat:
+        card.setObjectName("sectionCard")
     card.setFrameShape(QFrame.NoFrame)
     layout = QVBoxLayout(card)
     layout.setContentsMargins(16, 14, 16, 16)
@@ -157,6 +200,13 @@ def build_info_card(title_text, subtitle_text=None, meta_lines=None, buttons=Non
         for line in meta_lines:
             meta_lbl = QLabel(line)
             meta_lbl.setObjectName("fieldHelp")
+            # Without this, a meta line longer than the card's own width
+            # (e.g. Logo Studio's single-line "mode · opacity · size ·
+            # timing" status) doesn't wrap -- it just visually clips at
+            # the card's edge instead of forcing the layout wider, since a
+            # QScrollArea-wrapped parent resizes its content to the
+            # viewport width rather than the label's natural sizeHint.
+            meta_lbl.setWordWrap(True)
             layout.addWidget(meta_lbl)
 
     if buttons:

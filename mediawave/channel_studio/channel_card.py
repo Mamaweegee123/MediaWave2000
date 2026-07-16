@@ -35,6 +35,7 @@ from PySide6.QtWidgets import (
 from ..channel_logos import find_channel_bug_logo
 from .channel_studio_widgets import FlowLayout
 from .studio_styles import (
+    apply_card_shadow,
     channel_number_font_family,
     confirm_disable_companion_channel,
     confirm_remove_channel,
@@ -91,17 +92,6 @@ def _elide(label, text, max_width):
     label.setText(metrics.elidedText(text, Qt.ElideRight, max_width))
     label.setToolTip(text)
     label.setFixedWidth(max_width)
-
-
-def _apply_card_shadow(widget):
-    """A soft drop shadow so cards read as raised, tactile tiles instead
-    of flat text blocks.
-    """
-    effect = QGraphicsDropShadowEffect(widget)
-    effect.setBlurRadius(20)
-    effect.setOffset(0, 3)
-    effect.setColor(QColor(0, 0, 0, 150))
-    widget.setGraphicsEffect(effect)
 
 
 def _build_logo_widget(summary, on_set_logo, size=88, shared_logos_dir=""):
@@ -344,7 +334,7 @@ def build_dashboard_channel_card(
         " border-radius: 10px;"
         "}"
     )
-    _apply_card_shadow(card)
+    apply_card_shadow(card)
     outer = QVBoxLayout(card)
     outer.setContentsMargins(18, 16, 18, 16)
     outer.setSpacing(10)

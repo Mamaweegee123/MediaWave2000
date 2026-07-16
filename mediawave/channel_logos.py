@@ -359,6 +359,24 @@ def compute_active_screen_rect(width, height, aspect_w, aspect_h):
     return (0, y, width, max(1, round(target_h)))
 
 
+def resolve_channel_bug_canvas_rect(canvas_width, canvas_height, screen_aspect):
+    """(x, y, w, h) of the centered, screen_aspect-shaped placement canvas
+    inside a canvas_width x canvas_height box -- the ONE shared resolver for
+    "what rectangle should a channel's logo be positioned within", used by
+    both the Logo Studio editor preview and real playback
+    (ChannelBugOverlay.paintEvent in channelsurfer2000.py), so a channel's
+    4:3/16:9 choice means the same physical placement canvas in both places
+    instead of only ever affecting the editor's own preview widget.
+
+    Just screen_aspect_dimensions(screen_aspect) fed into
+    compute_active_screen_rect -- a thin, named combination of two already-
+    existing pure functions so callers don't each have to remember to chain
+    them themselves.
+    """
+    aspect_w, aspect_h = screen_aspect_dimensions(screen_aspect)
+    return compute_active_screen_rect(canvas_width, canvas_height, aspect_w, aspect_h)
+
+
 def normalize_timing(t):
     if not isinstance(t, dict):
         t = {}

@@ -18,7 +18,8 @@ channel number IS the lineup order, and manual renumbering (Overview's
 inline number editor) is the only way to move a channel's position.
 """
 
-from PySide6.QtWidgets import QVBoxLayout, QWidget
+from PySide6.QtCore import Qt
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
 
 from . import channel_actions
 from . import companion_adapter
@@ -30,14 +31,10 @@ from .channel_studio_model import ChannelStudioSummary
 from .channel_studio_widgets import build_channel_studio_footer, build_empty_state
 from .channel_card import build_dashboard_channel_card
 from .channel_grid import build_channel_grid
+from ..schedule_editor.dialog import ScheduleEditorDialog
+from ..studio.cards import build_action_card
 
 _COMPANION_TYPE_BY_ID = {cid: ctype for ctype, cid in companion_adapter.COMPANION_CHANNEL_IDS.items()}
-
-# Matches channel_setup.ChannelSetupDialog's own section order
-# (Overview, Logo, Commercials, Programming, Advanced) -- "Add Channel
-# Logo" should land on Logo, not wherever the *old* five-tab mock
-# dialog's Identity tab used to be.
-_LOGO_TAB_INDEX = 1
 
 
 def _preview(dialog, title, description):
@@ -46,6 +43,33 @@ def _preview(dialog, title, description):
 
 def _drafts_path(dialog):
     return getattr(dialog, "_channel_studio_drafts_file", None)
+
+
+def _build_schedule_editor_card(dialog):
+    """The Schedule Editor's entry point -- docs/STUDIO_DESIGN_SYSTEM.md's
+    own worked example for `build_action_card` already names this exact
+    card ("Edit Logo, Open Schedule Editor"). Opens a read-only preview
+    (mediawave/schedule_editor/dialog.py's ScheduleEditorDialog) built from
+    this same AdvancedConfigDialog instance -- no new data threading into
+    channelsurfer2000.py needed.
+    """
+    button = QPushButton("Open Schedule Editor  →")
+    button.setObjectName("saveButton")
+    button.setCursor(Qt.PointingHandCursor)
+    button.clicked.connect(lambda: ScheduleEditorDialog(dialog, parent=dialog).exec())
+
+    row = QWidget()
+    row_layout = QHBoxLayout(row)
+    row_layout.setContentsMargins(0, 0, 0, 0)
+    row_layout.addWidget(button)
+    row_layout.addStretch(1)
+
+    return build_action_card(
+        "Open Schedule Editor",
+        row,
+        subtitle="Preview tonight's full programming board across every channel.",
+        icon="📅",
+    )
 
 
 def _channel_enabled(channel_id, catalog_channel_settings):
@@ -202,7 +226,7 @@ def build_channel_studio_content(dialog):
                     return summary
         return None
 
-    def _open_channel(channel_info, initial_tab=0):
+    def _open_channel(channel_info, initial_page=None, open_logo_studio=False):
         channel_id = channel_info.get("id", "")
         summary = _summary_for(channel_id)
         schedule = schedules_by_id.get(channel_id)
@@ -213,11 +237,16 @@ def build_channel_studio_content(dialog):
             parent=dialog,
             studio_dialog=dialog,
             drafts_path=_drafts_path(dialog),
-            initial_tab=initial_tab,
+            initial_page=initial_page,
+            open_logo_studio_on_show=open_logo_studio,
         ).exec()
 
     def _open_logo(channel_info):
-        _open_channel(channel_info, initial_tab=_LOGO_TAB_INDEX)
+        # Logo Studio isn't a Setup page anymore (see logo_studio_dialog.py)
+        # -- opens Setup and immediately opens Logo Studio on top of it, so
+        # this still lands the user straight in logo editing, same intent
+        # as the old Logo-tab shortcut.
+        _open_channel(channel_info, open_logo_studio=True)
 
     def _open_from_setup(channel_info):
         """The Setup button's handler: opens the channel's detail
@@ -225,7 +254,7 @@ def build_channel_studio_content(dialog):
         can change what a card shows -- logo, commercial status,
         enabled state, ...).
         """
-        _open_channel(channel_info, initial_tab=0)
+        _open_channel(channel_info)
         _rebuild_grid(current_filter["text"])
 
     def _sorted_summaries():
@@ -298,6 +327,7 @@ def build_channel_studio_content(dialog):
         on_search_changed=_rebuild_grid,
     )
     layout.addWidget(header)
+    layout.addWidget(_build_schedule_editor_card(dialog))
     layout.addWidget(grid_container)
 
     _rebuild_grid()

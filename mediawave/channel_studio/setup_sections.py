@@ -52,7 +52,8 @@ from .channel_studio_widgets import (
     build_schedule_timeline,
 )
 from .logo_studio import LogoPreviewScreen, LogoTimingDialog, ShowExclusionsDialog
-from .studio_styles import style_choice_button, style_slider
+from ..studio.cards import build_property_card
+from .studio_styles import build_scroll_area, style_choice_button, style_slider
 
 _LOGO_PREVIEW_REFERENCE_WIDTH = 1280.0
 _LOGO_MODE_DESCRIPTIONS = {
@@ -104,9 +105,11 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
 
     channel_name = channel_actions.channel_name_from_dialog(dialog, channel_id) or channel_info.get("name", "Channel")
 
+    # Borderless (Phase 3): this whole page is already the sole content of
+    # an outer StudioSection card in channel_setup.py -- giving this its
+    # own "sectionCard" chrome too would just be a card nested inside a
+    # card, one redundant rectangle for no extra meaning.
     identity_card = QFrame()
-    identity_card.setObjectName("sectionCard")
-    identity_card.setFrameShape(QFrame.NoFrame)
     identity_layout = QVBoxLayout(identity_card)
     identity_layout.setContentsMargins(16, 14, 16, 16)
     identity_layout.setSpacing(8)
@@ -208,29 +211,178 @@ def build_overview_section(dialog, channel_info, summary, on_navigate_commercial
     return page
 
 
+def resolve_channel_logo_path(dialog, channel_info, summary):
+    """Live lookup of this channel's current logo file path, or "" if it
+    has none. Factored out of resolve_channel_logo_pixmap so a caller that
+    needs the filename itself (e.g. the Logo Studio source card's "Click
+    to replace" subtitle) uses the exact same lookup instead of a second,
+    possibly-drifting one.
+    """
+    companion_type = _companion_type(channel_info, summary)
+    channel_name = channel_info.get("name", "Channel")
+    channel_id = channel_info.get("id", "")
+    root_path = getattr(summary, "root_path", "") if summary is not None else ""
+    shared_logos_dir = getattr(dialog, "_shared_logos_dir", "")
+    return find_channel_bug_logo(
+        root_path,
+        channel_name,
+        shared_logos_dir=shared_logos_dir,
+        channel_id=channel_id,
+        channel_type=getattr(summary, "channel_type", companion_type or ""),
+        display_name=channel_name,
+    ) or (
+        getattr(summary, "logo_path", "") if summary is not None else ""
+    )
+
+
+def resolve_channel_logo_pixmap(dialog, channel_info, summary):
+    """Live lookup of this channel's current logo file as a QPixmap, or
+    None if it has none / the file fails to load. The same lookup
+    build_logo_section's preview uses -- factored out so the Channel
+    Header's clickable thumbnail (channel_setup_header.py) uses the exact
+    same source of truth instead of a second, possibly-drifting lookup.
+    """
+    logo_path = resolve_channel_logo_path(dialog, channel_info, summary)
+    if not logo_path:
+        return None
+    candidate = QPixmap(logo_path)
+    return candidate if not candidate.isNull() else None
+
+
+_LOGO_SOURCE_CARD_STYLE = (
+    "QFrame#logoSourceCard {{"
+    " background: {bg};"
+    " border: 1px solid rgba(140, 175, 255, 120);"
+    " border-radius: 10px;"
+    "}}"
+)
+
+
+class _LogoSourceCard(QFrame):
+    """The one clickable place to add or change a channel's source logo --
+    replaces what used to be a small "Open Logos Folder" button buried
+    inside a "No logo image found" status card, which duplicated the
+    same message the preview canvas already showed. The whole card is the
+    click target (not just a button), with a hover tint + pointer cursor
+    so it reads as interactive, and Enter/Space activation since it's a
+    QFrame rather than a QPushButton (needed for the thumbnail + two-line
+    text layout, same reasoning as channel_setup_header._LogoControl).
+    """
+
+    def __init__(self, on_activated, parent=None):
+        super().__init__(parent)
+        self.setObjectName("logoSourceCard")
+        self.setFrameShape(QFrame.NoFrame)
+        self.setCursor(Qt.PointingHandCursor)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setAttribute(Qt.WA_Hover, True)
+        self._on_activated = on_activated
+        self._apply_style(hover=False)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(12)
+
+        self._thumb_lbl = QLabel()
+        self._thumb_lbl.setFixedSize(44, 44)
+        self._thumb_lbl.setAlignment(Qt.AlignCenter)
+        self._thumb_lbl.setStyleSheet("background: transparent;")
+        layout.addWidget(self._thumb_lbl)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        self._title_lbl = QLabel()
+        self._title_lbl.setObjectName("sectionHeader")
+        text_col.addWidget(self._title_lbl)
+        self._subtitle_lbl = QLabel()
+        self._subtitle_lbl.setObjectName("sectionNote")
+        self._subtitle_lbl.setWordWrap(True)
+        text_col.addWidget(self._subtitle_lbl)
+        layout.addLayout(text_col, 1)
+
+    def set_state(self, pixmap, logo_path):
+        if pixmap is not None:
+            self._thumb_lbl.setPixmap(
+                pixmap.scaled(40, 40, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            )
+            self._title_lbl.setText("Channel Logo")
+            filename = os.path.basename(logo_path) if logo_path else "logo"
+            self._subtitle_lbl.setText(f"{filename}\nClick to replace or change this logo.")
+        else:
+            self._thumb_lbl.clear()
+            self._thumb_lbl.setText("+")
+            self._title_lbl.setText("No channel logo yet")
+            self._subtitle_lbl.setText(
+                "Click here to add a logo for this channel.\nPNG, JPG, and WEBP supported."
+            )
+
+    def _apply_style(self, hover):
+        bg = "rgba(96, 144, 255, 26)" if hover else "rgba(255, 255, 255, 10)"
+        self.setStyleSheet(_LOGO_SOURCE_CARD_STYLE.format(bg=bg))
+
+    def enterEvent(self, event):
+        self._apply_style(hover=True)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        self._apply_style(hover=False)
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.LeftButton and self._on_activated is not None:
+            self._on_activated()
+        super().mousePressEvent(event)
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter, Qt.Key_Space):
+            if self._on_activated is not None:
+                self._on_activated()
+            return
+        super().keyPressEvent(event)
+
+
+def _group_heading(text):
+    """A small caption above a cluster of related controls in the Logo
+    Studio control panel (Logo Mode / Appearance / On-Air Behavior /
+    More) -- a plain label, not another nested card border, per "avoid
+    excessive nested borders" in the workspace layout pass.
+    """
+    label = QLabel(text.upper())
+    label.setStyleSheet(
+        "color: rgba(148, 196, 255, 220); background: transparent;"
+        " font-size: 11px; font-weight: 700; letter-spacing: 1px;"
+    )
+    return label
+
+
 def build_logo_section(dialog, channel_info, summary):
-    """Logo Studio -- a compact interactive visual editor: drag the real
-    logo (aspect-preserved, never stretched) freely around a simulated
-    screen, resize/opacity via live sliders, pick the screen's own 4:3/
-    16:9 shape, and pick a timing mode from a dropdown. Every real change
-    funnels through channel_actions.py's channel_logo_* helpers into the
-    exact same channel_bug_settings["channel_overrides"] dict the old
-    Channel Logos (Advanced Configuration) tab's "Customize Individual
-    Channels" dialog already reads and writes -- that dialog is kept
-    intact and reachable here as "Advanced Logo Settings" for anything
-    this panel doesn't expose directly (placement area, per-field manual
-    entry).
+    """Logo Studio -- a workspace-scale visual editor: drag the real logo
+    (aspect-preserved, never stretched) freely around a simulated screen,
+    resize/opacity via live sliders, pick the screen's own 4:3/16:9 shape,
+    and pick a timing mode from a dropdown. Every real change funnels
+    through channel_actions.py's channel_logo_* helpers into the exact
+    same channel_bug_settings["channel_overrides"] dict the old Channel
+    Logos (Advanced Configuration) tab's "Customize Individual Channels"
+    dialog already reads and writes -- that dialog is kept intact and
+    reachable here as "Advanced Logo Settings" for anything this panel
+    doesn't expose directly (placement area, per-field manual entry).
 
     The preview is a static snapshot of position/size/opacity, not a
     timing simulation -- it never tries to act out when the logo would
     appear on air; the timing controls (dropdown + Advanced Timing) are
     still real settings, just not played back visually here.
 
-    Deliberately a single compact screen, not a long scroll: the 9
-    timing modes live in one dropdown (LogoTimingDialog handles anything
-    finer-grained than a preset), and "Color effects" is a one-line note
-    rather than a card -- grayscale_on_video is the one real tint the
-    overlay supports, nothing else is offered as if it were real.
+    Layout is a left "preview workspace" column (source card, the TV
+    preview itself as the hero element, then the 16:9/4:3 shape selector
+    directly beneath it, ~60% of the width) next to a right control panel
+    (~40%), matching the ratio logo_studio_dialog.py's window size assumes.
+    There is exactly one place each concern lives: one clickable card to
+    add/change the source logo (not also a button buried in a status card,
+    not also a duplicate message painted on the preview), one compact
+    mode/status line, and one grouped column of Logo Mode / Appearance /
+    On-Air Behavior / More controls -- previously the same "no logo yet"
+    message and a clipped multi-line status card both fought for space
+    with each other and with the preview.
     """
     page = QWidget()
     layout = QVBoxLayout(page)
@@ -241,32 +393,14 @@ def build_logo_section(dialog, channel_info, summary):
     channel_name = channel_info.get("name", "Channel")
     channel_id = channel_info.get("id", "")
     root_path = getattr(summary, "root_path", "") if summary is not None else ""
-    # A live lookup, not the summary's own logo_path snapshot -- that
-    # snapshot is taken once when Advanced Configuration is opened, so
-    # it can go stale (or miss a logo dropped in after the fact) while
-    # real playback (which calls this same function fresh every tune)
-    # keeps finding it. Falls back to the snapshot only if the live
-    # lookup comes up empty (e.g. root_path unavailable this session).
-    # Companions have no root_path at all -- find_channel_bug_logo's
-    # shared_logos_dir path checks the stable companion folder first
-    # (e.g. User Content/Logos/WeatherStar/logo.png), then legacy
-    # shared-root aliases for backward compatibility.
     shared_logos_dir = getattr(dialog, "_shared_logos_dir", "")
-    logo_path = find_channel_bug_logo(
-        root_path,
-        channel_name,
-        shared_logos_dir=shared_logos_dir,
-        channel_id=channel_id,
-        channel_type=getattr(summary, "channel_type", companion_type or ""),
-        display_name=channel_name,
-    ) or (
-        getattr(summary, "logo_path", "") if summary is not None else ""
-    )
-    pixmap = None
-    if logo_path:
-        candidate = QPixmap(logo_path)
-        if not candidate.isNull():
-            pixmap = candidate
+    # A live lookup (see resolve_channel_logo_pixmap), not the summary's
+    # own logo_path snapshot -- that snapshot is taken once when Advanced
+    # Configuration is opened, so it can go stale (or miss a logo dropped
+    # in after the fact) while real playback (which calls this same
+    # lookup fresh every tune) keeps finding it.
+    pixmap = resolve_channel_logo_pixmap(dialog, channel_info, summary)
+    logo_path = resolve_channel_logo_path(dialog, channel_info, summary)
 
     note_text = "Place an image named logo.png in this folder." if companion_type else "Drag the logo on the preview, or fine-tune it here."
     note = QLabel(note_text)
@@ -280,16 +414,81 @@ def build_logo_section(dialog, channel_info, summary):
     body_wrap.setLayout(body)
     layout.addWidget(body_wrap, 1)
 
+    def _open_logos_folder():
+        if companion_type:
+            target = companion_logo_folder(
+                shared_logos_dir,
+                channel_name,
+                channel_id=channel_id,
+                channel_type=companion_type,
+                display_name=channel_name,
+            )
+            if target:
+                os.makedirs(target, exist_ok=True)
+        else:
+            target = os.path.join(root_path, "Logos") if root_path else ""
+            if target:
+                os.makedirs(target, exist_ok=True)
+        if target and os.path.isdir(target):
+            QDesktopServices.openUrl(QUrl.fromLocalFile(target))
+
+    # ── Left column: the preview workspace ──────────────────────────────
+    preview_col_wrap = QWidget()
+    preview_col = QVBoxLayout(preview_col_wrap)
+    preview_col.setContentsMargins(0, 0, 0, 0)
+    preview_col.setSpacing(10)
+    body.addWidget(preview_col_wrap, 3)
+
+    source_card = _LogoSourceCard(on_activated=_open_logos_folder)
+    source_card.set_state(pixmap, logo_path)
+    preview_col.addWidget(source_card)
+
     preview = LogoPreviewScreen()
     preview.set_logo(pixmap)
     preview.set_aspect(*screen_aspect_dimensions(channel_actions.channel_logo_screen_aspect(dialog, channel_name)))
-    body.addWidget(preview, 3)
+    preview_col.addWidget(preview, 1)
 
+    # "Preview Shape" (16:9/4:3) lives directly beneath the preview it
+    # controls, not buried in the right-side settings column -- centered
+    # under the preview so the relationship ("these buttons change the TV
+    # canvas above them") is visually obvious.
+    shape_col = QVBoxLayout()
+    shape_col.setSpacing(4)
+    shape_label = QLabel("Preview Shape")
+    shape_label.setAlignment(Qt.AlignHCenter)
+    shape_label.setObjectName("fieldHelp")
+    shape_col.addWidget(shape_label)
+    shape_row_wrap = QWidget()
+    shape_row_layout = QHBoxLayout(shape_row_wrap)
+    shape_row_layout.setContentsMargins(0, 0, 0, 0)
+    shape_row_layout.setSpacing(8)
+    shape_row_layout.addStretch(1)
+    shape_buttons = {}
+    for label in CHANNEL_BUG_SCREEN_ASPECT_OPTIONS:
+        btn = QPushButton(label)
+        btn.setCursor(Qt.PointingHandCursor)
+        shape_row_layout.addWidget(btn)
+        shape_buttons[label] = btn
+    shape_row_layout.addStretch(1)
+    shape_col.addWidget(shape_row_wrap)
+    preview_col.addLayout(shape_col)
+
+    # ── Right column: grouped controls ──────────────────────────────────
     controls = QWidget()
     controls_layout = QVBoxLayout(controls)
     controls_layout.setContentsMargins(0, 0, 0, 0)
-    controls_layout.setSpacing(6)
-    body.addWidget(controls, 2)
+    controls_layout.setSpacing(10)
+    # A PropertyCard (Logo Mode/Appearance/Timing are editable settings) --
+    # controls_layout itself is still rebuilt in place by _full_render below
+    # exactly as before; only the chrome around it comes from the shared
+    # Studio card taxonomy now instead of a bare StudioSection call.
+    controls_section = build_property_card("Logo", controls, icon="📡")
+    # A scroll-area fallback, not a default behavior: at this dialog's
+    # normal (widened) size everything fits and no scrollbar appears --
+    # this only kicks in if the user shrinks the window below the point
+    # where the grouped controls' natural height still fits, so shrinking
+    # degrades to scrolling instead of clipping or overlapping controls.
+    body.addWidget(build_scroll_area(controls_section), 2)
 
     # `state` holds the opacity/size the preview is currently showing --
     # kept separate from the committed override so a slider drag can
@@ -326,24 +525,6 @@ def build_logo_section(dialog, channel_info, summary):
         )
         preview.set_geometry_state(x, y, logo_w, logo_h, state["opacity"])
 
-    def _open_logos_folder():
-        if companion_type:
-            target = companion_logo_folder(
-                shared_logos_dir,
-                channel_name,
-                channel_id=channel_id,
-                channel_type=companion_type,
-                display_name=channel_name,
-            )
-            if target:
-                os.makedirs(target, exist_ok=True)
-        else:
-            target = os.path.join(root_path, "Logos") if root_path else ""
-            if target:
-                os.makedirs(target, exist_ok=True)
-        if target and os.path.isdir(target):
-            QDesktopServices.openUrl(QUrl.fromLocalFile(target))
-
     def _on_drop(x, y, active_w, active_h, logo_w, logo_h):
         # LogoPreviewScreen reports everything in active-area-relative
         # preview-canvas pixels (see LogoPreviewScreen.active_rect);
@@ -361,14 +542,34 @@ def build_logo_section(dialog, channel_info, summary):
         preview.set_aspect(*screen_aspect_dimensions(aspect))
         _full_render()
 
+    def _sync_shape_buttons():
+        current_aspect = channel_actions.channel_logo_screen_aspect(dialog, channel_name)
+        for label, btn in shape_buttons.items():
+            style_choice_button(btn, active=(label == current_aspect))
+
+    for label, btn in shape_buttons.items():
+        btn.clicked.connect(lambda checked=False, a=label: _set_aspect(a))
+    _sync_shape_buttons()
+
     preview.resized.connect(_repaint_preview)
     preview.logoDropped.connect(_on_drop)
 
     def _clear_controls():
+        # hide() before deleteLater(): QLayout.takeAt() only detaches the
+        # item from layout management, it doesn't hide the widget, and
+        # deleteLater()'s actual deletion is deferred to the next
+        # event-loop pass. _full_render() (below) can run more than once
+        # before the dialog's first paint (e.g. a slider/preview signal
+        # firing during initial layout), so without this the outgoing
+        # "Logo: <mode>" status card stays a fully visible, unmanaged
+        # sibling of the freshly rebuilt one -- the same overlapping-text
+        # bug this call is meant to prevent (see StudioSection.set_content's
+        # own docstring in studio_section.py for the identical root cause).
         while controls_layout.count():
             item = controls_layout.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.hide()
                 widget.deleteLater()
 
     def _set_mode(mode):
@@ -409,29 +610,23 @@ def build_logo_section(dialog, channel_info, summary):
         mode = channel_actions.channel_logo_mode_label(dialog, channel_name)
         preset_id = channel_actions.channel_logo_current_preset_id(dialog, channel_name)
         preset_label = next((p["label"] for p in LOGO_TIMING_PRESETS if p["id"] == preset_id), "Custom")
-        status_lines = [
-            f"Opacity: {logo_opacity_to_percent(state['opacity'])}%",
-            f"Size: {logo_size_to_percent(state['size'])}%",
-            f"Timing: {preset_label}",
-        ]
-        controls_layout.addWidget(
-            build_info_card(f"Logo: {mode}", _LOGO_MODE_DESCRIPTIONS.get(mode, ""), meta_lines=status_lines)
+        # A single compact status line, not the old multi-line card that
+        # clipped against the dialog's previous narrow width -- mode,
+        # opacity, size, and timing all at a glance, one place, no
+        # separate "no logo" message duplicating the source card above the
+        # preview or the preview's own empty state.
+        status_line = (
+            f"{_LOGO_MODE_DESCRIPTIONS.get(mode, mode)}  ·  "
+            f"Opacity {logo_opacity_to_percent(state['opacity'])}%  ·  "
+            f"Size {logo_size_to_percent(state['size'])}%  ·  "
+            f"Timing: {preset_label}"
         )
+        controls_layout.addWidget(
+            build_info_card(f"Logo: {mode}", None, meta_lines=[status_line], flat=True)
+        )
+        _sync_shape_buttons()
 
-        if pixmap is None:
-            no_logo_hint = (
-                "Place an image named logo.png in this companion's logo folder."
-                if companion_type
-                else "Add a PNG to this channel's Logos folder and it'll show up automatically."
-            )
-            controls_layout.addWidget(
-                build_info_card(
-                    "No logo image found",
-                    no_logo_hint,
-                    buttons=[("Open Logos Folder", lambda checked=False: _open_logos_folder())],
-                )
-            )
-
+        controls_layout.addWidget(_group_heading("Logo Mode"))
         # A wrapping FlowLayout row (not a QHBoxLayout) so this row's own
         # minimum width is just its widest single button, not the sum of
         # both -- keeps the panel from forcing extra width under a
@@ -447,25 +642,7 @@ def build_logo_section(dialog, channel_info, summary):
             style_choice_button(btn, active=(mode == choice_mode))
         controls_layout.addWidget(mode_row)
 
-        # Screen shape -- a real per-channel setting (see
-        # channel_actions.set_channel_logo_screen_aspect), independent of
-        # Default/Custom/Off. Changes the simulated screen's shape
-        # immediately, not just a label.
-        current_aspect = channel_actions.channel_logo_screen_aspect(dialog, channel_name)
-        aspect_row_wrap = QWidget()
-        aspect_row_layout = QHBoxLayout(aspect_row_wrap)
-        aspect_row_layout.setContentsMargins(0, 0, 0, 0)
-        aspect_row_layout.setSpacing(6)
-        aspect_row_layout.addWidget(QLabel("Screen shape:"))
-        aspect_row, aspect_buttons = build_action_button_row(
-            [(label, lambda checked=False, a=label: _set_aspect(a)) for label in CHANNEL_BUG_SCREEN_ASPECT_OPTIONS]
-        )
-        for label, btn in zip(CHANNEL_BUG_SCREEN_ASPECT_OPTIONS, aspect_buttons):
-            btn.setCursor(Qt.PointingHandCursor)
-            style_choice_button(btn, active=(label == current_aspect))
-        aspect_row_layout.addWidget(aspect_row, 1)
-        controls_layout.addWidget(aspect_row_wrap)
-
+        controls_layout.addWidget(_group_heading("Appearance"))
         opacity_label = QLabel(f"Opacity: {logo_opacity_to_percent(state['opacity'])}%")
         opacity_label.setObjectName("fieldHelp")
         opacity_slider = QSlider(Qt.Horizontal)
@@ -534,6 +711,7 @@ def build_logo_section(dialog, channel_info, summary):
         color_note.setObjectName("fieldHelp")
         controls_layout.addWidget(color_note)
 
+        controls_layout.addWidget(_group_heading("On-Air Behavior"))
         timing_row = QWidget()
         timing_row_layout = QHBoxLayout(timing_row)
         timing_row_layout.setContentsMargins(0, 0, 0, 0)
@@ -560,15 +738,22 @@ def build_logo_section(dialog, channel_info, summary):
         timing_row_layout.addWidget(timing_combo, 1)
         controls_layout.addWidget(timing_row)
 
-        actions_row, _ = build_action_button_row(
+        onair_actions_row, _ = build_action_button_row(
             [
                 ("Advanced Timing…", lambda checked=False: _open_advanced_timing()),
                 ("Show Exclusions…", lambda checked=False: _open_show_exclusions()),
+            ]
+        )
+        controls_layout.addWidget(onair_actions_row)
+
+        controls_layout.addWidget(_group_heading("More"))
+        more_actions_row, _ = build_action_button_row(
+            [
                 ("Advanced Logo Settings", lambda checked=False: _open_advanced()),
                 ("Reset to Default", lambda checked=False: _reset()),
             ]
         )
-        controls_layout.addWidget(actions_row)
+        controls_layout.addWidget(more_actions_row)
 
         controls_layout.addStretch(1)
         _repaint_preview()
@@ -607,6 +792,7 @@ def build_commercials_section(dialog, channel_info, summary):
                 "Commercials don't apply here",
                 "Commercials for this companion channel are managed by its own playback "
                 "mode there's no per-channel commercial setting to control.",
+                flat=True,
             )
         )
         layout.addStretch(1)
@@ -646,8 +832,12 @@ def build_commercials_section(dialog, channel_info, summary):
         if is_nettv:
             status_lines.insert(0, "Applies to: short breaks between videos, not a full schedule")
 
+        # flat=True: status card + the choice row below it are this page's
+        # entire content, already the sole content of an outer StudioSection
+        # card -- a second bordered card here would just nest one rectangle
+        # inside another.
         body_layout.addWidget(
-            build_info_card(f"Commercials: {mode}", description, meta_lines=status_lines)
+            build_info_card(f"Commercials: {mode}", description, meta_lines=status_lines, flat=True)
         )
 
         choice_row = QWidget()
@@ -691,6 +881,7 @@ def build_programming_section(setup_dialog, dialog, channel_info, summary, sched
                 "Automatic programming",
                 "This channel's lineup is generated automatically there's no manual "
                 "programming to manage here.",
+                flat=True,
             )
         )
         layout.addStretch(1)
@@ -743,6 +934,9 @@ def build_advanced_section(channel_info, summary):
             hint_bits.append(f"{summary.seasonal_rule_count} seasonal rule" + ("s" if summary.seasonal_rule_count != 1 else ""))
         meta_lines.append("Channel Hints: " + " · ".join(hint_bits))
 
-    layout.addWidget(build_info_card("Advanced details", None, meta_lines=meta_lines))
+    # flat=True: this is the page's entire content, already the sole
+    # content of an outer StudioSection card -- a second bordered card
+    # around it would just be a redundant nested rectangle.
+    layout.addWidget(build_info_card("Advanced details", None, meta_lines=meta_lines, flat=True))
     layout.addStretch(1)
     return page

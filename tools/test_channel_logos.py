@@ -231,6 +231,39 @@ check(
 check("a zero/invalid size fails safe, never crashes", logo_mod.compute_active_screen_rect(0, 0, 16, 9) == (0, 0, 1, 1))
 
 
+section("resolve_channel_bug_canvas_rect: the ONE shared canvas resolver for editor + live playback")
+check(
+    "16:9 canvas matches compute_active_screen_rect(..., 16, 9) directly",
+    logo_mod.resolve_channel_bug_canvas_rect(1280, 720, "16:9") == logo_mod.compute_active_screen_rect(1280, 720, 16, 9),
+)
+check(
+    "4:3 canvas matches compute_active_screen_rect(..., 4, 3) directly",
+    logo_mod.resolve_channel_bug_canvas_rect(1280, 720, "4:3") == logo_mod.compute_active_screen_rect(1280, 720, 4, 3),
+)
+check(
+    "an unset/None screen_aspect defaults to 16:9, same as normalize_screen_aspect",
+    logo_mod.resolve_channel_bug_canvas_rect(1280, 720, None) == logo_mod.compute_active_screen_rect(1280, 720, 16, 9),
+)
+_bug_canvas_4x3 = logo_mod.resolve_channel_bug_canvas_rect(1920, 1080, "4:3")
+check("a 4:3 canvas inside a wider real-world 1920x1080 target is still centered and pillarboxed", _bug_canvas_4x3 == logo_mod.compute_active_screen_rect(1920, 1080, 4, 3))
+check("that 4:3 canvas is narrower than the full 1920 width (genuinely constrained, not the whole widget)", _bug_canvas_4x3[2] < 1920)
+
+
+section("ChannelBugOverlay: screen_aspect actually constrains live playback (source-level -- no QApplication needed)")
+overlay_paint_source = inspect.getsource(app.ChannelBugOverlay.paintEvent)
+check(
+    "paintEvent narrows the target rect using the channel's own screen_aspect before positioning the logo -- "
+    "this is the actual fix: previously screen_aspect was read only by the Logo Studio editor, never live playback",
+    "channel_logo_screen_aspect(" in overlay_paint_source and "resolve_channel_bug_canvas_rect(" in overlay_paint_source,
+    overlay_paint_source,
+)
+check(
+    "the narrowed canvas rect (not the raw video/display rect) is what gets handed to resolve_effective_logo_position",
+    "resolve_effective_logo_position(self._eff, target.width(), target.height()" in overlay_paint_source,
+    overlay_paint_source,
+)
+
+
 section("Logo Studio v2: freeform clamping + normalization respect the ACTIVE rect, not the full widget")
 _ax, _ay, _aw, _ah = logo_mod.compute_active_screen_rect(1280, 720, 4, 3)  # (160, 0, 960, 720)
 check(

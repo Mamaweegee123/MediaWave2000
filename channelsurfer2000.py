@@ -118,12 +118,14 @@ from mediawave.channel_logos import (
     CHANNEL_BUG_SUPPORTED_EXTS,
     channel_bug_settings_defaults,
     channel_logo_excluded_shows,
+    channel_logo_screen_aspect,
     find_channel_bug_logo,
     get_effective_channel_logo_settings,
     is_show_excluded,
     migrate_old_timing_fields as _migrate_old_timing_fields,
     normalize_channel_bug_settings,
     pick_periodic_interval_minutes,
+    resolve_channel_bug_canvas_rect,
     resolve_effective_logo_position,
 )
 from mediawave.airing_rules import (
@@ -262,28 +264,34 @@ VIDEO_EXTS = (".mp4", ".mkv", ".avi", ".mov")
 
 # ── Startup screen fixed palette ──────────────────────────────────────────────
 # Completely independent of the active guide theme. One consistent look.
-_SW_BG           = QColor(13,  16,  38)   # Deep space background
-_SW_HERO_TOP     = QColor( 9,  11,  27)   # Hero gradient top
-_SW_HERO_BOT     = QColor(15,  18,  44)   # Hero gradient bottom
-_SW_CARD_BG      = QColor(22,  26,  58)   # Card background
-_SW_CARD_BORDER  = QColor(68, 108, 235)   # Electric-blue card border
-_SW_ACCENT       = QColor(96, 144, 255)   # Blue accent
-_SW_CTA_BG       = QColor(255, 188,  10)  # Amber "Watch TV" button
-_SW_CTA_TEXT     = QColor( 13,  16,  38)  # Dark text on CTA
-_SW_TEXT         = QColor(210, 222, 252)  # Primary text
-_SW_TEXT_DIM     = QColor(138, 158, 212)  # Muted / secondary
-_SW_HEADER       = QColor(118, 162, 255)  # Section header label
-_SW_INPUT_BG     = QColor( 16,  20,  50)  # Input / path field bg
-_SW_INPUT_TEXT   = QColor(188, 205, 248)  # Input text
-_SW_FOOTER_BG    = QColor( 9,  11,  27)   # Footer bar bg
-_SW_FOOTER_BORD  = QColor(42,  54, 128)   # Footer top-border
-_SW_STAR_WARM    = QColor(255, 218,  96)  # Warm pixel star
-_SW_STAR_COOL    = QColor(148, 196, 255)  # Cool pixel star
-_SW_COAXIE_BODY  = QColor( 50,  68, 162)  # Coaxie TV body
-_SW_COAXIE_SCR   = QColor(  7,  10,  32)  # Screen dark
-_SW_COAXIE_GLOW  = QColor( 55,  96, 228)  # Screen glow edge
-_SW_COAXIE_EYE   = QColor( 96, 200, 255)  # Eye highlight
-_SW_COAXIE_KNOB  = QColor(192, 150,  48)  # Dial/knob color
+# Values live in mediawave/theme_tokens.py (a general, app-wide token module --
+# also reused by mediawave/studio, which can't import this module -- see that
+# file's own docstring) -- aliased to the original private names here so
+# nothing else in this file needs to change.
+from mediawave.theme_tokens import (
+    SW_BG as _SW_BG,
+    SW_HERO_TOP as _SW_HERO_TOP,
+    SW_HERO_BOT as _SW_HERO_BOT,
+    SW_CARD_BG as _SW_CARD_BG,
+    SW_CARD_BORDER as _SW_CARD_BORDER,
+    SW_ACCENT as _SW_ACCENT,
+    SW_CTA_BG as _SW_CTA_BG,
+    SW_CTA_TEXT as _SW_CTA_TEXT,
+    SW_TEXT as _SW_TEXT,
+    SW_TEXT_DIM as _SW_TEXT_DIM,
+    SW_HEADER as _SW_HEADER,
+    SW_INPUT_BG as _SW_INPUT_BG,
+    SW_INPUT_TEXT as _SW_INPUT_TEXT,
+    SW_FOOTER_BG as _SW_FOOTER_BG,
+    SW_FOOTER_BORD as _SW_FOOTER_BORD,
+    SW_STAR_WARM as _SW_STAR_WARM,
+    SW_STAR_COOL as _SW_STAR_COOL,
+    SW_COAXIE_BODY as _SW_COAXIE_BODY,
+    SW_COAXIE_SCR as _SW_COAXIE_SCR,
+    SW_COAXIE_GLOW as _SW_COAXIE_GLOW,
+    SW_COAXIE_EYE as _SW_COAXIE_EYE,
+    SW_COAXIE_KNOB as _SW_COAXIE_KNOB,
+)
 AUDIO_EXTS = (".mp3", ".m4a", ".aac", ".flac", ".wav", ".ogg", ".opus", ".wma")
 METADATA_SCHEMA_VERSION = 2
 VAULT_DEBUG_LOGGING = os.environ.get("MEDIAWAVE_VAULT_DEBUG", "").strip().lower() in {"1", "true", "yes", "on"}
@@ -6745,6 +6753,20 @@ class ChannelBugOverlay(QWidget):
         target = channel_bug_target_rect(self, self._eff.get("placement_area", "overlay"))
         if target.isEmpty():
             target = self.rect()
+
+        # Narrow `target` to this channel's own 4:3/16:9 screen_aspect
+        # choice (a centered sub-rect, same math the Logo Studio editor
+        # preview already uses) -- without this, a channel set to "4:3"
+        # would position its logo across the entire (possibly 16:9)
+        # video/display rect, ignoring its own screen_aspect entirely.
+        # screen_aspect isn't folded into self._eff (see
+        # channel_logo_screen_aspect's own callers in
+        # mediawave/channel_studio/channel_actions.py for why -- it's
+        # mode-independent, so it's always looked up separately), hence the
+        # separate self._settings/self._channel_name lookup here.
+        aspect = channel_logo_screen_aspect(self._settings, self._channel_name)
+        ax, ay, aw, ah = resolve_channel_bug_canvas_rect(target.width(), target.height(), aspect)
+        target = QRect(target.left() + ax, target.top() + ay, aw, ah)
 
         bug_opacity = float(self._eff.get("opacity", 0.75) or 0.75)
         effective_opacity = bug_opacity * self._opacity_anim

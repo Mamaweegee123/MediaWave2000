@@ -649,19 +649,30 @@ check(
 )
 
 # ---------------------------------------------------------------------------
-# "Add Channel Logo" routing -- regression caught manually: it used to
-# reuse the OLD five-tab mock dialog's Identity-tab index (3), which in
-# the new ChannelSetupDialog's section order (Overview, Logo,
-# Commercials, Programming, Advanced) lands on Programming instead of Logo.
+# "Add Channel Logo" routing -- Phase 1.5 moved Logo Studio off the Setup
+# page entirely (see logo_studio_dialog.py), opened from the Channel
+# Header's clickable logo instead of a tab/page index. "Add Channel Logo"
+# on a dashboard card should still land the user straight in logo editing
+# by opening Setup and immediately opening Logo Studio on top of it,
+# rather than reusing any numeric tab/page index (which no longer exists).
 # ---------------------------------------------------------------------------
-section("channel_studio_pages.py: Add Channel Logo opens the Logo section")
+section("channel_studio_pages.py: Add Channel Logo opens Logo Studio directly")
 
 from mediawave.channel_studio import channel_setup
 
+build_content_source_v2 = inspect.getsource(channel_studio_pages.build_channel_studio_content)
 check(
-    "_LOGO_TAB_INDEX matches ChannelSetupDialog's own Logo section position",
-    channel_studio_pages._LOGO_TAB_INDEX == channel_setup._SECTION_TITLES.index("Logo"),
-    (channel_studio_pages._LOGO_TAB_INDEX, channel_setup._SECTION_TITLES),
+    "_open_logo routes through open_logo_studio=True, not a tab/page index",
+    "def _open_logo(channel_info):" in build_content_source_v2 and "open_logo_studio=True" in build_content_source_v2,
+    build_content_source_v2,
+)
+check(
+    "no leftover numeric Logo tab/page index anywhere in channel_studio_pages.py",
+    "_LOGO_TAB_INDEX" not in inspect.getsource(channel_studio_pages),
+)
+check(
+    "ChannelSetupDialog accepts open_logo_studio_on_show, matching what _open_logo passes",
+    "open_logo_studio_on_show" in inspect.getsource(channel_setup.ChannelSetupDialog),
 )
 
 # ---------------------------------------------------------------------------
@@ -902,8 +913,22 @@ logo_studio_source = inspect.getsource(logo_studio)
 check("LogoPreviewScreen no longer simulates timing playback", "start_timing_preview" not in logo_studio_source and "stop_timing_preview" not in logo_studio_source and "_sim_timer" not in logo_studio_source)
 check("LogoPreviewScreen exposes a real set_aspect for the 4:3/16:9 toggle", "def set_aspect(self, aspect_w, aspect_h):" in logo_studio_source)
 check(
-    "the outer widget's own height-for-width stays fixed at the widget's natural 16:9 shape -- only the active area inside it changes",
+    # A later fix (this one) found that pinning heightForWidth to the
+    # CURRENTLY SELECTED aspect (the prior fix here) had traded the old
+    # letterbox bug for a new one: since the widget's real height still
+    # has to be force-enforced from its width in this HBoxLayout (see
+    # _enforce_aspect_height's own docstring), switching to 4:3 made the
+    # whole widget taller instead of just pillarboxing narrower inside a
+    # constant-height host. heightForWidth (and sizeHint) now reflect the
+    # fixed PREVIEW_ASPECT_W:PREVIEW_ASPECT_H host shape (always 16:9) --
+    # active_rect()'s existing pillarbox/letterbox math is what changes
+    # for the currently selected screen aspect, not the widget's own box.
+    "heightForWidth reflects the constant 16:9 host shape, not the currently selected aspect",
     "return max(1, int(width * PREVIEW_ASPECT_H / PREVIEW_ASPECT_W))" in logo_studio_source,
+)
+check(
+    "the widget's real box is explicitly forced to the constant 16:9 host shape (the actual letterbox fix)",
+    "_enforce_aspect_height" in logo_studio_source and "setFixedHeight(target_h)" in logo_studio_source,
 )
 check(
     "the active placement rectangle is computed by the shared pure geometry helper, not duplicated ad hoc",
@@ -924,7 +949,12 @@ check("Reset to Default is wired to the real reset helper", "reset_channel_logo_
 check("timing is a single dropdown built from the real preset table, not a stack of buttons", "QComboBox" in logo_section_source and "LOGO_TIMING_PRESETS" in logo_section_source)
 check("advanced timing detail lives in its own dialog, not the main panel", "LogoTimingDialog(" in logo_section_source)
 check("show exclusions live in their own dialog, not the main panel", "ShowExclusionsDialog(" in logo_section_source)
-check("a missing logo offers to open the Logos folder instead of crashing", "_open_logos_folder" in logo_section_source and "Open Logos Folder" in logo_section_source)
+check(
+    "a missing logo offers to open the Logos folder instead of crashing -- via the clickable "
+    "logo source card (Phase 4 workspace pass), not a separate 'Open Logos Folder' button "
+    "buried in a duplicate 'no logo' status card",
+    "_open_logos_folder" in logo_section_source and "_LogoSourceCard(on_activated=_open_logos_folder)" in logo_section_source,
+)
 check("companion logo helper text points users to logo.png, not channel-name filenames", "Place an image named logo.png" in logo_section_source)
 
 # ---------------------------------------------------------------------------
@@ -976,12 +1006,37 @@ check(
 
 logo_section_source_v2 = inspect.getsource(setup_sections.build_logo_section)
 check(
-    "Logo Studio's preview uses the same shared discovery function and companion identity, not just the stale summary snapshot",
-    "find_channel_bug_logo(" in logo_section_source_v2 and "channel_id=channel_id" in logo_section_source_v2 and "channel_type=getattr(summary" in logo_section_source_v2,
+    "Logo Studio's preview gets its pixmap from the shared resolve_channel_logo_pixmap helper",
+    "resolve_channel_logo_pixmap(" in logo_section_source_v2,
 )
 
-setup_dialog_source = inspect.getsource(channel_setup.ChannelSetupDialog)
-check("switching to the Logo tab refreshes it (picks up a logo added mid-session)", "_refresh_logo" in setup_dialog_source)
+resolve_logo_pixmap_source = inspect.getsource(setup_sections.resolve_channel_logo_pixmap)
+resolve_logo_path_source = inspect.getsource(setup_sections.resolve_channel_logo_path)
+check(
+    "resolve_channel_logo_pixmap delegates to resolve_channel_logo_path (one shared lookup, not "
+    "a duplicated one) which uses the real, shared discovery function with companion identity, "
+    "not just the stale summary snapshot",
+    "resolve_channel_logo_path(" in resolve_logo_pixmap_source
+    and "find_channel_bug_logo(" in resolve_logo_path_source
+    and "channel_id=channel_id" in resolve_logo_path_source
+    and "channel_type=getattr(summary" in resolve_logo_path_source,
+)
+
+# Phase 1.5: Logo Studio is its own dialog (logo_studio_dialog.py), not a
+# Setup tab/page anymore -- "switching to it refreshes it" is now just
+# "opening it always builds build_logo_section fresh", which is what
+# actually guarantees a logo dropped in after Setup opened shows up.
+from mediawave.channel_studio import logo_studio_dialog
+
+logo_studio_dialog_source = inspect.getsource(logo_studio_dialog.LogoStudioDialog)
+check(
+    "LogoStudioDialog builds Logo Studio fresh every time it's opened (picks up a logo added mid-session)",
+    "build_logo_section(" in logo_studio_dialog_source,
+)
+check(
+    "ChannelSetupDialog no longer has Logo-tab-specific refresh plumbing",
+    "_refresh_logo" not in inspect.getsource(channel_setup.ChannelSetupDialog),
+)
 
 with tempfile.TemporaryDirectory() as tmpdir:
     channel_dir = os.path.join(tmpdir, "MTV")
@@ -1182,9 +1237,15 @@ check(
     overview_identity_source,
 )
 check(
-    "there is exactly one top-level sectionCard frame built directly in Overview (the identity card) -- "
-    "the old duplicate name/type/source summary card is gone",
-    overview_identity_source.count('setObjectName("sectionCard")') == 1,
+    # Phase 3: the identity card is now deliberately borderless (flat) --
+    # it's already the sole/primary content of an outer StudioSection card
+    # (channel_setup.py), so its own separate "sectionCard" chrome would
+    # just be a redundant nested rectangle. It's still the same QFrame with
+    # the same identity_layout/children, just without card styling.
+    "the identity card is deliberately borderless now (Phase 3: reduce "
+    "nested rectangles) -- no top-level sectionCard frame built directly "
+    "in Overview anymore",
+    overview_identity_source.count('setObjectName("sectionCard")') == 0,
     overview_identity_source,
 )
 check(
@@ -1682,6 +1743,82 @@ channel_actions.refresh_live_lineup(guide_hidden_dialog)
 check(
     "refresh_live_lineup doesn't force-refresh a Guide the user isn't currently looking at",
     guide_hidden_app.guide_refreshed is False,
+)
+
+# ---------------------------------------------------------------------------
+# channel_setup_header.py: _LogoControl's stacked labels must not swallow
+# clicks meant for the frame underneath them -- caught by hand during Phase
+# 3 manual testing (offscreen construction + calling _on_activated directly
+# never exercises real Qt event delivery, so this slipped past every
+# automated check until a real click in the running app failed silently).
+# Regression-tested here at the source level, consistent with this file's
+# "no QApplication" convention elsewhere.
+# ---------------------------------------------------------------------------
+section("channel_setup_header.py: _LogoControl's overlay labels don't block clicks")
+
+from mediawave.channel_studio import channel_setup_header
+
+logo_control_source = inspect.getsource(channel_setup_header._LogoControl)
+check(
+    "both stacked labels (image + hover overlay) are mouse-transparent, so a "
+    "click always reaches this QFrame's own mousePressEvent instead of being "
+    "silently swallowed by whichever label is on top in the StackAll layout",
+    logo_control_source.count("setAttribute(Qt.WA_TransparentForMouseEvents, True)") == 2,
+    logo_control_source,
+)
+
+# ---------------------------------------------------------------------------
+# StudioSection/ChannelIdentityApi: outgoing widgets are hidden before
+# removeWidget()/takeAt()+deleteLater() -- see
+# tools/test_channel_setup_dialog_widgets.py for the full offscreen-Qt proof
+# this actually stops visible overlap; these are the matching source-level
+# checks, consistent with this file's own no-QApplication convention.
+# ---------------------------------------------------------------------------
+section("studio_section.py / channel_setup_header.py: outgoing content is hidden before deleteLater")
+
+from mediawave.studio.section import StudioSection
+from mediawave.channel_studio.channel_setup_header import ChannelIdentityApi
+
+studio_section_set_content_source = inspect.getsource(StudioSection.set_content)
+check(
+    "StudioSection.set_content() hides the outgoing content widget before handing it to "
+    "removeWidget()/deleteLater() -- otherwise it stays a fully visible, unmanaged sibling "
+    "of the new content until the deferred delete actually runs",
+    "self._content.hide()" in studio_section_set_content_source,
+    studio_section_set_content_source,
+)
+
+identity_api_set_status_lines_source = inspect.getsource(ChannelIdentityApi.set_status_lines)
+check(
+    "ChannelIdentityApi.set_status_lines() hides each outgoing status label before "
+    "deleteLater() -- the same pattern that let a stale label balloon to the dialog's "
+    "default size and swallow every click, since QLayout.takeAt() doesn't hide a widget",
+    "widget.hide()" in identity_api_set_status_lines_source,
+    identity_api_set_status_lines_source,
+)
+
+# ---------------------------------------------------------------------------
+# StudioSection: collapsible=False creates no toggle button at all -- the
+# main Channel Studio workspace pages use this mode since the left nav rail
+# already owns which page is visible, so a per-page collapse arrow was
+# redundant, unused chrome.
+# ---------------------------------------------------------------------------
+section("studio_section.py: collapsible=False creates no toggle button")
+
+studio_section_init_source = inspect.getsource(StudioSection.__init__)
+check(
+    "the toggle button is only constructed when collapsible is True",
+    "if collapsible:" in studio_section_init_source and "self._toggle_btn = None" in studio_section_init_source,
+    studio_section_init_source,
+)
+
+from mediawave.channel_studio import channel_setup as _channel_setup_module
+
+channel_setup_source = inspect.getsource(_channel_setup_module.ChannelSetupDialog._build_section)
+check(
+    "channel_setup.py's _build_section builds the four main workspace pages with collapsible=False",
+    "collapsible=False" in channel_setup_source,
+    channel_setup_source,
 )
 
 # ---------------------------------------------------------------------------

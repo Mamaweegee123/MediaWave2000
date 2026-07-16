@@ -26,7 +26,7 @@ concern edited elsewhere in the Logo tab, not acted out here.
 """
 
 from PySide6.QtCore import QRect, QSize, Qt, Signal
-from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPen
+from PySide6.QtGui import QColor, QLinearGradient, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (
     QCheckBox,
     QDialog,
@@ -44,8 +44,14 @@ from ..channel_logos import channel_bug_settings_defaults, compute_active_screen
 PREVIEW_ASPECT_W = 16
 PREVIEW_ASPECT_H = 9
 _MIN_LOGO_PREVIEW_PX = 24
-_NO_LOGO_TITLE = "No channel logo found"
-_NO_LOGO_HINT = "Place a PNG in your Logos folder or use the existing logo settings."
+# Restrained on purpose -- the logo source card above this preview
+# (setup_sections.build_logo_section) is the one place that explains how
+# to add/replace a logo; repeating that instruction here as well was the
+# exact "same message in three places" duplication the workspace layout
+# pass was asked to remove. This preview only ever needs to say there's
+# nothing to show yet.
+_NO_LOGO_TITLE = "No logo selected"
+_NO_LOGO_HINT = "Use the card above to add one."
 
 
 class LogoPreviewScreen(QWidget):
@@ -81,9 +87,13 @@ class LogoPreviewScreen(QWidget):
         self.update()
 
     def set_aspect(self, aspect_w, aspect_h):
-        """Change the active placement area's shape (4:3 vs 16:9). The
-        outer widget's own size/shape never changes -- only active_rect()
-        does, so a repaint is all that's needed here.
+        """Change the *active* placement area's shape (the simulated TV
+        screen the logo sits on) to aspect_w:aspect_h. This widget's own
+        outer box is untouched by this -- it always stays
+        PREVIEW_ASPECT_W:PREVIEW_ASPECT_H (16:9), enforced by
+        _enforce_aspect_height -- so switching screen shapes never changes
+        this widget's own height. Only active_rect() below (a real
+        pillarbox/letterbox inside that constant-shaped host) changes.
         """
         aspect_w = max(1, int(aspect_w))
         aspect_h = max(1, int(aspect_h))
@@ -93,11 +103,47 @@ class LogoPreviewScreen(QWidget):
         self._active_aspect_h = aspect_h
         self.update()
 
+    def _enforce_aspect_height(self):
+        """Force this widget's actual on-screen box to
+        PREVIEW_ASPECT_W:PREVIEW_ASPECT_H (16:9), computed from its real
+        (reliable) width -- deliberately NOT the currently selected
+        *active* aspect (see set_aspect's docstring): this widget's own
+        box is a constant-shape host, and active_rect() below pillarboxes/
+        letterboxes the selected screen shape inside it, so switching
+        between 16:9 and 4:3 changes only how much of this constant-height
+        host the active area fills, never the host's own height.
+
+        This widget sits in a QHBoxLayout next to Logo Studio's controls
+        column (see setup_sections.build_logo_section's `body`), stretch-
+        allocated 3:2. QHBoxLayout distributes WIDTH via that stretch
+        factor, but it does NOT reliably honor a child's heightForWidth()
+        when a sibling (the taller controls column) drives the row's
+        overall height -- so despite claiming an aspect via
+        heightForWidth()/sizeHint(), this widget's actual rendered box has
+        no real relationship to it without this explicit enforcement.
+
+        Width stays exactly what the layout's stretch factor gives it
+        (untouched here); only height is forced to match, so this can't
+        fight the layout for width and converges in one resize pass.
+        """
+        if self.width() <= 0:
+            return
+        target_h = max(1, round(self.width() * PREVIEW_ASPECT_H / PREVIEW_ASPECT_W))
+        if target_h != self.height():
+            self.setFixedHeight(target_h)
+
     def active_rect(self):
         """The active placement rectangle inside this widget, in widget
         coordinates -- the real boundary the logo can be dragged within.
-        Equals the full widget for 16:9 (this widget's own natural
-        shape); centered and narrower (pillarboxed) for 4:3.
+        This widget's own box is always the constant PREVIEW_ASPECT_W:
+        PREVIEW_ASPECT_H (16:9) host (see _enforce_aspect_height); this
+        pillarboxes (narrower, centered horizontally, same full height) or
+        letterboxes the currently selected screen aspect inside it -- a
+        4:3 channel gets a centered, narrower active area at the exact
+        same height a 16:9 channel's active area has, never a taller or
+        shorter widget. See compute_active_screen_rect's own docstring
+        for the actual math, shared with real playback's own placement
+        canvas.
         """
         x, y, w, h = compute_active_screen_rect(self.width(), self.height(), self._active_aspect_w, self._active_aspect_h)
         return QRect(x, y, w, h)
@@ -140,6 +186,7 @@ class LogoPreviewScreen(QWidget):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self._enforce_aspect_height()
         self.resized.emit()
 
     # ── Paint ────────────────────────────────────────────────────────────
@@ -149,6 +196,12 @@ class LogoPreviewScreen(QWidget):
         painter.setRenderHint(QPainter.Antialiasing, True)
         rect = self.rect()
         active = self.active_rect()
+
+        # Clip everything to a softly rounded rect -- a CRT-bezel touch so
+        # the preview reads as a piece of hardware, not a plain image box.
+        clip_path = QPainterPath()
+        clip_path.addRoundedRect(rect, 6, 6)
+        painter.setClipPath(clip_path)
 
         # Base fill everywhere, then the real "screen" gradient + scanline
         # texture only inside the active area -- anything outside it (the
@@ -197,13 +250,17 @@ class LogoPreviewScreen(QWidget):
             hint_rect = active.adjusted(24, 0, -24, -14)
             painter.drawText(hint_rect, Qt.AlignHCenter | Qt.AlignBottom | Qt.TextWordWrap, _NO_LOGO_HINT)
 
-        painter.setPen(QPen(QColor(255, 255, 255, 30), 1))
-        painter.drawRect(rect.adjusted(0, 0, -1, -1))
+        # Accent-blue bezel (same electric-blue family as the rest of the
+        # app's card borders, e.g. channel_card.py's dashboard tile) rather
+        # than a plain white-ish outline -- reads more like a piece of
+        # MediaWave hardware than a generic preview box.
+        painter.setPen(QPen(QColor(96, 144, 255, 90), 1))
+        painter.drawRoundedRect(rect.adjusted(0, 0, -1, -1), 6, 6)
         if active != rect:
             # A brighter border around the active area itself so a
             # pillarboxed 4:3 shape reads clearly as "this is the real
             # screen", not just a decorative inset.
-            painter.setPen(QPen(QColor(255, 255, 255, 70), 1))
+            painter.setPen(QPen(QColor(140, 175, 255, 150), 1))
             painter.drawRect(active.adjusted(0, 0, -1, -1))
         painter.end()
 
