@@ -6,17 +6,29 @@ math in board.py always agrees with what channel_row.py/program_block.py
 actually draw.
 """
 
-# One channel row's height, including its vertical margin.
-ROW_HEIGHT = 68
-ROW_VERTICAL_MARGIN = 6
+# One channel row's height, including its vertical margin. Taller than
+# Phase 1's 68px -- chunkier rows read as a curated lineup board rather
+# than a dense spreadsheet grid.
+ROW_HEIGHT = 80
+ROW_VERTICAL_MARGIN = 8
 
 # The fixed identity column's width -- wide enough for a two/three-digit
 # phosphor channel number, a logo, and a short name without truncating a
 # typical channel name.
 IDENTITY_COLUMN_WIDTH = 200
 
-# The time-ruler header's height.
-TIME_HEADER_HEIGHT = 32
+# The time-ruler header's height. Tall enough for the 12px, vertically
+# centered time labels to breathe -- the header should read as a proper
+# guide ruler, not a thin strip of small text.
+TIME_HEADER_HEIGHT = 42
+
+# The category-legend strip's height (between the top bar and the board).
+LEGEND_HEIGHT = 34
+
+# How often the time ruler places a tick/label, and (matching) how often
+# the grid body draws a faint vertical gridline -- kept as one shared
+# constant so the two can never drift out of alignment with each other.
+TICK_INTERVAL_SECONDS = 30 * 60
 
 # A program block never renders narrower than this, regardless of how short
 # its real duration is (a 15-second commercial stays clickable/legible

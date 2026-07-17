@@ -17,12 +17,19 @@ entries carrying a `parent_path` back to that same path
 Grouping consecutive window entries by that shared path turns them back into
 one logical program block for the board -- a presentation regrouping, not a
 second scheduler.
+
+A second, later pass (`companion_display.group_for_display`) further merges
+those already-real blocks for companion channels (WeatherStar/RadioWaveTV/
+NetTV), which otherwise report many small real segments -- see that
+module's docstring for why.
 """
 
 from dataclasses import dataclass, field
 
 from mediawave.commercials import commercial_parent_path, is_commercial_entry
 from mediawave.local_media import parse_local_media
+
+from .companion_display import group_for_display
 
 # How many raw schedule entries to request per window-fetch attempt, and the
 # hard cap on how far we'll double that request trying to reach window_end.
@@ -39,7 +46,13 @@ _MAX_FETCH_COUNT = 600
 # wide as a 30-minute one. Kept here (Qt-free) so geometry ratios are
 # testable without a QApplication; program_block.py applies its own
 # minimum-legible-width floor on top of this for rendering.
-PX_PER_MINUTE = 4.0
+#
+# 7.0 puts an ordinary 30-minute show at 210px -- comfortably inside the
+# "wide" content tier (program_block.py's WIDE_CONTENT_MIN_PX=170), so a
+# regular half-hour block reads its full title, time, and type without
+# guide scrolling. The board scrolls horizontally (see board.py) rather
+# than shrinking this to fit any particular viewport width.
+PX_PER_MINUTE = 7.0
 
 
 def block_width_px(duration_seconds, px_per_minute=PX_PER_MINUTE):
@@ -68,6 +81,15 @@ class ProgramBlock:
     true_start: float = 0.0  # unclipped, for the details strip
     true_end: float = 0.0
     raw_entries: list = field(default_factory=list)
+    # Real titles of whatever this block absorbed, in order -- only
+    # populated by companion_display.group_for_display(). Distinct from
+    # raw_entries because some channel types (WeatherChannel) don't attach
+    # an "entry" sub-dict to their window items at all, so raw_entries alone
+    # can't recover the real per-segment names a merged block stands in
+    # for; this field exists specifically so the details strip can stay
+    # honest about what a generic label like "WeatherStar Forecast" is
+    # actually made of.
+    source_titles: list = field(default_factory=list)
 
 
 @dataclass
@@ -199,7 +221,7 @@ def build_channel_lane(channel_id, name, number, channel_type, logo_path, channe
 
     `channel` may be None (e.g. a companion the user just enabled this same
     settings session, before the app has built a live object for it -- see
-    ScheduleEditorDialog's docstring) or, defensively, a live object that
+    ScheduleEditorWorkspace's docstring) or, defensively, a live object that
     doesn't implement `get_programs_for_window` at all. Mirrors the exact
     `hasattr` guard `build_tonight_schedule` already uses in
     channel_studio_adapter.py, rather than inventing per-segment data for a
@@ -230,6 +252,7 @@ def build_channel_lane(channel_id, name, number, channel_type, logo_path, channe
 
     blocks = _group_into_blocks(channel_id, items)
     blocks = _clip_to_window(blocks, window_start, window_end)
+    blocks = group_for_display(channel_type, blocks)
 
     return ChannelLane(
         channel_id=channel_id,

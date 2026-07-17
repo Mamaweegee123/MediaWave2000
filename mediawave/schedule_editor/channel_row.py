@@ -6,19 +6,17 @@ scrolling, so they can never end up laid out inside the same scroll area.
 """
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QPixmap
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtWidgets import QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
+from mediawave.channel_studio.studio_styles import CHANNEL_NUMBER_COLOR, channel_number_font_family
+
+from .board_ticks import tick_times
 from .layout_constants import IDENTITY_COLUMN_WIDTH, ROW_HEIGHT
 from .program_block import ProgramBlockWidget
 from .schedule_model import PX_PER_MINUTE
 
-# A digital-cable-box channel number gets its own restrained accent, scoped
-# to this one label -- no existing SW_* token covers it (mediawave/
-# theme_tokens.py's palette is all blue/amber/violet "deep space" tones),
-# and it's deliberately not promoted to a shared token since nothing else in
-# the app wants a phosphor-green readout.
-_CHANNEL_NUMBER_GREEN = "rgba(120, 255, 168, 235)"
+_GRIDLINE_COLOR = "rgba(255, 255, 255, 12)"
 
 _ROW_BG = "rgba(16, 19, 44, 235)"
 _ROW_BORDER = "rgba(255, 255, 255, 18)"
@@ -58,34 +56,53 @@ class ChannelIdentityCell(QFrame):
         )
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(10, 6, 10, 6)
-        row.setSpacing(8)
+        row.setContentsMargins(12, 8, 10, 8)
+        row.setSpacing(10)
 
         number_lbl = QLabel(str(lane.number or ""))
-        number_lbl.setFixedWidth(30)
+        number_lbl.setFixedWidth(34)
         number_lbl.setAlignment(Qt.AlignCenter)
-        number_font = number_lbl.font()
-        number_font.setFamily("Courier New")
-        number_font.setBold(True)
-        number_font.setPointSize(number_font.pointSize() + 3)
-        number_lbl.setFont(number_font)
-        number_lbl.setStyleSheet(f"color: {_CHANNEL_NUMBER_GREEN}; background: transparent;")
+        # Same VHS/VCR OSD font-loading path and phosphor-green treatment
+        # Channel Studio's own channel numbers use (channel_card.py's
+        # _build_channel_number_label) -- reused via the two public
+        # ingredients (channel_number_font_family, CHANNEL_NUMBER_COLOR)
+        # rather than re-approximated, so both tools read as the same
+        # product and share the same safe font-missing fallback.
+        base_size = number_lbl.font().pointSize()
+        number_lbl.setFont(QFont(channel_number_font_family(), base_size + 5, QFont.Bold))
+        # AlignVCenter centers the font's full line box, but digits only
+        # occupy [baseline - capHeight, baseline] of it -- with this OSD
+        # font's tall ascent, that leaves the visible glyphs floating above
+        # the row's true center. The glyph block sits (ascent - descent -
+        # capHeight)/2 above center, so padding the top by twice that
+        # re-centers what's actually drawn.
+        fm = number_lbl.fontMetrics()
+        drop = max(0, fm.ascent() - fm.descent() - fm.capHeight())
+        number_lbl.setStyleSheet(
+            f"color: {CHANNEL_NUMBER_COLOR}; background: transparent; padding-top: {drop}px;"
+        )
+        glow = QGraphicsDropShadowEffect(number_lbl)
+        glow.setColor(QColor(CHANNEL_NUMBER_COLOR))
+        glow.setBlurRadius(16)
+        glow.setOffset(0, 0)
+        number_lbl.setGraphicsEffect(glow)
         row.addWidget(number_lbl)
 
         text_col = QVBoxLayout()
-        text_col.setSpacing(1)
+        text_col.setSpacing(3)
+        text_col.addStretch(1)
 
         if lane.logo_path:
             pixmap = QPixmap(lane.logo_path)
             if not pixmap.isNull():
                 logo_lbl = QLabel()
-                logo_lbl.setPixmap(pixmap.scaledToHeight(18, Qt.SmoothTransformation))
+                logo_lbl.setPixmap(pixmap.scaledToHeight(22, Qt.SmoothTransformation))
                 text_col.addWidget(logo_lbl)
 
         name_lbl = QLabel(lane.name)
-        name_lbl.setStyleSheet(f"color: {_NAME_COLOR}; font-weight: 600; font-size: 12px; background: transparent;")
+        name_lbl.setStyleSheet(f"color: {_NAME_COLOR}; font-weight: 600; font-size: 13px; background: transparent;")
         fm = name_lbl.fontMetrics()
-        name_lbl.setText(fm.elidedText(lane.name, Qt.ElideRight, IDENTITY_COLUMN_WIDTH - 60))
+        name_lbl.setText(fm.elidedText(lane.name, Qt.ElideRight, IDENTITY_COLUMN_WIDTH - 64))
         name_lbl.setToolTip(lane.name)
         text_col.addWidget(name_lbl)
 
@@ -94,6 +111,7 @@ class ChannelIdentityCell(QFrame):
             status_lbl.setStyleSheet(f"color: {_SUBTITLE_COLOR}; font-size: 9px; background: transparent;")
             text_col.addWidget(status_lbl)
 
+        text_col.addStretch(1)
         row.addLayout(text_col, 1)
 
     def mousePressEvent(self, event):
@@ -118,6 +136,19 @@ class ChannelRowStrip(QWidget):
         self.setStyleSheet(
             f"QWidget#scheduleRowStrip {{ background: {_ROW_BG}; border-bottom: 1px solid {_ROW_BORDER}; }}"
         )
+
+        # Faint vertical gridlines at each time tick, added before the
+        # program blocks so they only show through in the gaps between
+        # cards (each ProgramBlockWidget's outer slot is transparent
+        # outside its inset card -- see program_block.py) rather than
+        # cutting across card faces.
+        for tick in tick_times(window_start, window_end):
+            x = round((tick - window_start) / 60.0 * px_per_minute)
+            gridline = QFrame(self)
+            gridline.setGeometry(x, 0, 1, ROW_HEIGHT)
+            gridline.setStyleSheet(f"background: {_GRIDLINE_COLOR};")
+            gridline.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+            gridline.show()
 
         self.block_widgets = []
         for block in lane.blocks:

@@ -1,20 +1,29 @@
-"""ScheduleEditorDialog: Phase 1's read-only programming board.
+"""ScheduleEditorWorkspace: the read-only programming board.
 
-Opened from Channel Studio's "Open Schedule Editor" action card
-(mediawave/channel_studio/channel_studio_pages.py), constructed from the
-same `AdvancedConfigDialog` instance (`studio_dialog`) Channel Studio itself
-already holds a reference to -- exactly like `ChannelSetupDialog` already
-is. Reads `studio_dialog._studio_channels_by_id`, `.catalog_channel_infos`,
-`.catalog_channel_settings`, `._channel_logo_lookup`, `.commercials_settings`
-the same way `_open_channel` in channel_studio_pages.py does. Never writes
-to any of them, `schedule_state.json`, or `app_settings` -- there is no
-mutation path anywhere in this dialog this phase.
+A first-class Advanced Configuration workspace (its own left-sidebar nav
+item, `AdvancedConfigDialog`'s `_enter_schedule_editor_mode` /
+`build_schedule_editor_tab`, channelsurfer2000.py) rather than something
+buried inside Channel Studio -- `build_schedule_editor_tab(studio_dialog,
+on_back=...)` returns `(workspace, footer)` the exact same shape
+`channel_studio.build_channel_studio_tab` does, so `AdvancedConfigDialog`
+can add it to its mode/footer stacks identically. Channel Studio's own
+"Open Schedule Editor" action card still exists as a contextual shortcut
+into this same workspace (`dialog._enter_schedule_editor_mode()`), not a
+separate implementation.
+
+Constructed from the same `AdvancedConfigDialog` instance (`studio_dialog`)
+Channel Studio itself already holds a reference to -- exactly like
+`ChannelSetupDialog` already is. Reads `studio_dialog._studio_channels_by_id`,
+`.catalog_channel_infos`, `.catalog_channel_settings`, `._channel_logo_lookup`,
+`.commercials_settings` the same way `_open_channel` in
+channel_studio_pages.py does. Never writes to any of them,
+`schedule_state.json`, or `app_settings` -- there is no mutation path
+anywhere in this workspace this phase.
 """
 
 import time
 
 from PySide6.QtWidgets import (
-    QDialog,
     QHBoxLayout,
     QLabel,
     QPushButton,
@@ -26,25 +35,31 @@ from mediawave.channel_studio import channel_actions
 from mediawave.channel_studio import companion_adapter
 from mediawave.channel_studio.channel_studio_adapter import build_channel_studio_summaries
 from mediawave.channel_studio.channel_studio_model import ChannelStudioSummary
-from mediawave.studio.action_bar import build_action_bar
 from mediawave.studio.cards import build_empty_state_card
 from mediawave.studio.spacing import OUTER_MARGIN
 from mediawave.studio.styles import build_scroll_area
-from mediawave.studio.workspace import build_workspace
 
 from .board import ProgrammingBoard
+from .program_block import build_category_legend
 from .schedule_model import build_board_model, sort_channel_rows
-from .utility_panels import build_channel_defaults_card, build_details_strip, build_next_up_card, build_quick_actions_card
+from .utility_panels import (
+    build_channel_defaults_card,
+    build_editing_tools_card,
+    build_next_up_card,
+    build_selected_program_footer,
+)
 
-_WINDOW_HOURS = 4
-_RIGHT_COLUMN_WIDTH = 300
+_WINDOW_HOURS = 4.5
+# ~26% of the ~1400px default Schedule Editor width (_enter_schedule_editor_mode,
+# channelsurfer2000.py) -- inside the target 24-28% band at the default
+# window size. Fixed, not resize-responsive: the guide column already
+# takes all the *remaining* width and scrolls horizontally on its own (see
+# board.py), so this panel never needs to shrink to make room for it.
+_RIGHT_COLUMN_WIDTH = 360
 
 _TOP_BAR_BG = "rgba(9, 11, 27, 255)"
 _TOP_BAR_BORDER = "rgba(42, 54, 128, 255)"
-_TITLE_COLOR = "rgba(210, 222, 252, 255)"
 _SUBTITLE_COLOR = "rgba(138, 158, 212, 220)"
-
-_DISABLED_TOOLTIP = "Editing arrives in the next phase."
 
 
 def _channel_enabled(channel_id, catalog_channel_settings):
@@ -108,13 +123,19 @@ def _floor_to_half_hour(epoch_seconds):
     return epoch_seconds - (epoch_seconds % (30 * 60))
 
 
-class ScheduleEditorDialog(QDialog):
-    def __init__(self, studio_dialog, parent=None):
+def _compact_date(epoch_seconds):
+    """The guide-corner date label: "Thu 7-16-26" -- a compact guide
+    label beside the time ruler, not a page heading (the board itself is
+    what says which day you're looking at).
+    """
+    return time.strftime("%a %-m-%-d-%y", time.localtime(epoch_seconds))
+
+
+class ScheduleEditorWorkspace(QWidget):
+    def __init__(self, studio_dialog, on_back=None, parent=None):
         super().__init__(parent)
         self._studio_dialog = studio_dialog
-        self.setWindowTitle("Schedule Editor")
-        self.resize(1440, 780)
-        self.setMinimumSize(1080, 620)
+        self._on_back = on_back
 
         self._channel_rows, self._summaries_by_id = _build_channel_rows(studio_dialog)
         self._studio_channels_by_id = getattr(studio_dialog, "_studio_channels_by_id", None) or {}
@@ -128,6 +149,12 @@ class ScheduleEditorDialog(QDialog):
         self._top_bar = self._build_top_bar()
         outer.addWidget(self._top_bar)
 
+        # The Selected Program inspector is this workspace's footer page
+        # (see build_schedule_editor_tab) -- built unconditionally, before
+        # the empty-channels early return, so the footer contract holds
+        # even when there's no board to select anything on.
+        self._details_footer, self._update_details = build_selected_program_footer()
+
         if not self._channel_rows:
             empty = build_empty_state_card(
                 "No channels are ready yet",
@@ -138,27 +165,23 @@ class ScheduleEditorDialog(QDialog):
             wrap_layout.setContentsMargins(*OUTER_MARGIN)
             wrap_layout.addWidget(empty)
             wrap_layout.addStretch(1)
-            action_bar, action_buttons = build_action_bar(["back"])
-            action_buttons["back"].clicked.connect(self.accept)
-            workspace = build_workspace(wrap, action_bar, sidebar=None)
-            outer.addWidget(workspace, 1)
+            outer.addWidget(wrap, 1)
             return
 
         self.board = ProgrammingBoard()
         self.board.program_selected.connect(self._on_program_selected)
         self.board.channel_selected.connect(self._on_channel_selected)
 
-        self._quick_actions_card = build_quick_actions_card()
+        self._editing_tools_card = build_editing_tools_card()
         self._next_up_card, self._update_next_up = build_next_up_card()
         self._channel_defaults_card, self._update_channel_defaults = build_channel_defaults_card()
-        self._details_strip, self._update_details = build_details_strip()
 
         right_column = QWidget()
         right_column.setFixedWidth(_RIGHT_COLUMN_WIDTH)
         right_layout = QVBoxLayout(right_column)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(12)
-        right_layout.addWidget(self._quick_actions_card)
+        right_layout.setContentsMargins(0, 4, 0, 4)
+        right_layout.setSpacing(18)
+        right_layout.addWidget(self._editing_tools_card)
         right_layout.addWidget(self._next_up_card, 1)
         right_layout.addWidget(self._channel_defaults_card, 1)
         right_scroll = build_scroll_area(right_column)
@@ -166,95 +189,96 @@ class ScheduleEditorDialog(QDialog):
 
         content_row = QHBoxLayout()
         content_row.setContentsMargins(0, 0, 0, 0)
-        content_row.setSpacing(12)
+        content_row.setSpacing(16)
         content_row.addWidget(self.board, 1)
         content_row.addWidget(right_scroll)
 
         content = QWidget()
         content_layout = QVBoxLayout(content)
         content_layout.setContentsMargins(*OUTER_MARGIN)
-        content_layout.setSpacing(12)
+        content_layout.setSpacing(16)
         content_layout.addLayout(content_row, 1)
-        content_layout.addWidget(self._details_strip)
 
-        action_bar, action_buttons = build_action_bar(["back"])
-        action_buttons["back"].clicked.connect(self.accept)
-        workspace = build_workspace(content, action_bar, sidebar=None)
-        outer.addWidget(workspace, 1)
+        outer.addWidget(content, 1)
 
         self._refresh_board()
 
+    def _back(self):
+        if self._on_back is not None:
+            self._on_back()
+
     def _build_top_bar(self):
+        """Row 1: Back on the far left, day navigation next to it,
+        Undo/Redo/Save right-aligned -- no page title, the guide itself
+        (and the window title, one level up) already say what this is.
+        Row 2: a slim band carrying the category legend, right-aligned --
+        riding the toolbar's own dark chrome (co-located with
+        program_block.build_category_legend so it can never drift out of
+        sync with what the board actually renders).
+        """
         bar = QWidget()
         bar.setObjectName("scheduleTopBar")
         bar.setStyleSheet(
             f"QWidget#scheduleTopBar {{ background: {_TOP_BAR_BG}; border-bottom: 1px solid {_TOP_BAR_BORDER}; }}"
         )
-        layout = QHBoxLayout(bar)
-        layout.setContentsMargins(20, 12, 20, 12)
-        layout.setSpacing(10)
+        outer = QVBoxLayout(bar)
+        outer.setContentsMargins(20, 10, 20, 8)
+        outer.setSpacing(6)
 
-        title_col = QVBoxLayout()
-        title_col.setSpacing(2)
-        title_lbl = QLabel("📅  Schedule Editor")
-        title_lbl.setStyleSheet(f"color: {_TITLE_COLOR}; font-size: 18px; font-weight: 700; background: transparent;")
-        title_col.addWidget(title_lbl)
-        self._date_lbl = QLabel()
-        self._date_lbl.setStyleSheet(f"color: {_SUBTITLE_COLOR}; font-size: 11px; background: transparent;")
-        title_col.addWidget(self._date_lbl)
-        layout.addLayout(title_col)
+        row = QHBoxLayout()
+        row.setSpacing(10)
 
-        layout.addStretch(1)
+        back_btn = QPushButton("←  Back")
+        back_btn.clicked.connect(self._back)
+        row.addWidget(back_btn)
+
+        row.addSpacing(10)
 
         prev_btn = QPushButton("‹")
         prev_btn.setFixedWidth(32)
         prev_btn.clicked.connect(lambda: self._shift_day(-1))
-        layout.addWidget(prev_btn)
+        row.addWidget(prev_btn)
 
         today_btn = QPushButton("Today")
         today_btn.clicked.connect(self._go_to_today)
-        layout.addWidget(today_btn)
+        row.addWidget(today_btn)
 
         next_btn = QPushButton("›")
         next_btn.setFixedWidth(32)
         next_btn.clicked.connect(lambda: self._shift_day(1))
-        layout.addWidget(next_btn)
+        row.addWidget(next_btn)
 
-        layout.addSpacing(20)
+        row.addStretch(1)
 
         for label in ("Undo", "Redo", "Save Schedule"):
             btn = QPushButton(label)
             btn.setEnabled(False)
-            btn.setToolTip(_DISABLED_TOOLTIP)
-            layout.addWidget(btn)
+            row.addWidget(btn)
 
-        self._update_date_label()
+        outer.addLayout(row)
+
+        legend_row = QHBoxLayout()
+        legend_row.setSpacing(10)
+        legend_row.addStretch(1)
+        legend_row.addWidget(build_category_legend())
+        outer.addLayout(legend_row)
+
         return bar
-
-    def _update_date_label(self):
-        window_end = self._window_start + _WINDOW_HOURS * 3600
-        day_label = time.strftime("%A, %B %-d", time.localtime(self._window_start))
-        start_label = time.strftime("%-I:%M %p", time.localtime(self._window_start))
-        end_label = time.strftime("%-I:%M %p", time.localtime(window_end))
-        self._date_lbl.setText(f"{day_label}  ·  {start_label} – {end_label}")
 
     def _shift_day(self, delta_days):
         self._window_start += delta_days * 24 * 3600
-        self._update_date_label()
         self._refresh_board()
 
     def _go_to_today(self):
         self._window_start = _floor_to_half_hour(time.time())
-        self._update_date_label()
         self._refresh_board()
-        if hasattr(self, "board"):
-            self.board.scroll_to_now()
 
     def _refresh_board(self):
         window_end = self._window_start + _WINDOW_HOURS * 3600
         lanes = build_board_model(self._channel_rows, self._studio_channels_by_id, self._window_start, window_end)
         self._lanes_by_channel_id = {lane.channel_id: lane for lane in lanes}
         self.board.set_lanes(lanes, self._window_start, window_end)
+        self.board.set_corner_text(_compact_date(self._window_start))
         self._update_next_up(None)
         self._update_channel_defaults(None)
         self._update_details(None, None)
@@ -278,3 +302,23 @@ def _empty_state_label(text):
     label.setWordWrap(True)
     label.setStyleSheet(f"color: {_SUBTITLE_COLOR}; font-size: 12px; background: transparent;")
     return label
+
+
+def build_schedule_editor_tab(studio_dialog, on_back=None):
+    """Builds the Schedule Editor as an embeddable Advanced Configuration
+    workspace. Returns `(workspace, footer)` -- the same shape
+    `channel_studio.build_channel_studio_tab` returns, so
+    `AdvancedConfigDialog` can add both to its mode/footer stacks the
+    identical way it already does for Channel Studio. `on_back`, if given,
+    is called when the workspace's own top-toolbar "Back" button is
+    clicked.
+
+    The footer is the workspace's own Selected Program inspector
+    (utility_panels.build_selected_program_footer): the footer stack
+    reserves a constant-height band at the bottom of the dialog either way
+    (see the plain-QStackedWidget comment where `_footer_stack` is built in
+    channelsurfer2000.py), so this mode fills that band with the selection
+    details instead of leaving it dead.
+    """
+    workspace = ScheduleEditorWorkspace(studio_dialog, on_back=on_back)
+    return workspace, workspace._details_footer

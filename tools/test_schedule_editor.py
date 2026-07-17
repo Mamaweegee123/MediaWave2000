@@ -16,6 +16,7 @@ REPO_ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 if REPO_ROOT not in sys.path:
     sys.path.insert(0, REPO_ROOT)
 
+from mediawave.schedule_editor.companion_display import group_for_display
 from mediawave.schedule_editor.schedule_model import (
     PX_PER_MINUTE,
     block_width_px,
@@ -73,6 +74,15 @@ check("width scales linearly with PX_PER_MINUTE", block_width_px(60 * 60, px_per
 
 check("zero duration yields zero width, not negative", block_width_px(0) == 0.0, block_width_px(0))
 check("negative/garbage duration never yields negative width", block_width_px(-50) == 0.0, block_width_px(-50))
+
+from mediawave.schedule_editor.layout_constants import WIDE_CONTENT_MIN_PX
+
+check(
+    "an ordinary 30-minute show meets the 'wide' readability floor at the default scale "
+    "(full title + time + type visible, not squeezed to fit any particular viewport)",
+    block_width_px(30 * 60) >= WIDE_CONTENT_MIN_PX,
+    (block_width_px(30 * 60), WIDE_CONTENT_MIN_PX),
+)
 
 
 # ---------------------------------------------------------------------------
@@ -285,6 +295,496 @@ check("the current-time line appears when the window actually contains now", gri
 
 grid_without_now = _GridContent([lane_a], T0, T0 + 3600, PX_PER_MINUTE)
 check("the current-time line is absent for a window that doesn't contain now (e.g. a past/future day)", grid_without_now.now_line is None, grid_without_now.now_line)
+
+
+# ---------------------------------------------------------------------------
+section("companion_display.group_for_display: broad blocks, real timing preserved")
+# ---------------------------------------------------------------------------
+
+from mediawave.schedule_editor.schedule_model import ProgramBlock as _PB
+
+
+def _synthetic_segments(count, seg_seconds, channel_id="weatherstar-1", title_prefix="Segment"):
+    segments = []
+    t = T0
+    for i in range(count):
+        end = t + seg_seconds
+        segments.append(
+            _PB(
+                channel_id=channel_id,
+                title=f"{title_prefix} {i}",
+                media_type="tv",
+                start=t,
+                end=end,
+                duration=seg_seconds,
+                true_start=t,
+                true_end=end,
+                raw_entries=[{"kind": "content", "title": f"{title_prefix} {i}"}],
+            )
+        )
+        t = end
+    return segments
+
+
+weatherstar_segments = _synthetic_segments(40, 300)  # 40 x 5 min = ~3.3 hours of real segments
+weatherstar_grouped = group_for_display("weatherstar", weatherstar_segments)
+check(
+    "WeatherStar's many 5-minute segments collapse into materially fewer display blocks",
+    0 < len(weatherstar_grouped) < len(weatherstar_segments) / 4,
+    (len(weatherstar_segments), len(weatherstar_grouped)),
+)
+check(
+    "the grouped WeatherStar span starts at the first real segment's start",
+    weatherstar_grouped[0].start == weatherstar_segments[0].start,
+    weatherstar_grouped[0] if weatherstar_grouped else None,
+)
+check(
+    "the grouped WeatherStar span ends at the last real segment's end",
+    weatherstar_grouped[-1].end == weatherstar_segments[-1].end,
+    weatherstar_grouped[-1] if weatherstar_grouped else None,
+)
+check(
+    "WeatherStar display blocks use the real-channel_type-backed 'weather' category",
+    all(b.media_type == "weather" for b in weatherstar_grouped),
+    [b.media_type for b in weatherstar_grouped],
+)
+check(
+    "WeatherStar's merged title is one honest, stable label -- not a rotating list implying "
+    "editorial variety (Local/Regional/National) the real segment data doesn't support",
+    all(b.title == "WeatherStar Forecast" for b in weatherstar_grouped),
+    [b.title for b in weatherstar_grouped],
+)
+check(
+    "WeatherStar's real distinct segment titles survive in source_titles, even though the "
+    "display title is generic -- honesty is one click away, not lost",
+    all(len(set(b.source_titles)) > 1 for b in weatherstar_grouped),
+    [b.source_titles for b in weatherstar_grouped],
+)
+
+radiowave_segments = _synthetic_segments(50, 210, channel_id="radiowave-1", title_prefix="Track")  # 50 tracks, ~3.5 min each
+radiowave_grouped = group_for_display("radiowave", radiowave_segments)
+check(
+    "RadioWaveTV's many small track blocks collapse into materially fewer display blocks",
+    0 < len(radiowave_grouped) < len(radiowave_segments) / 4,
+    (len(radiowave_segments), len(radiowave_grouped)),
+)
+check(
+    "RadioWaveTV display blocks use the 'music' category",
+    all(b.media_type == "music" for b in radiowave_grouped),
+    [b.media_type for b in radiowave_grouped],
+)
+
+youtube_segments = _synthetic_segments(12, 600, channel_id="youtube-1", title_prefix="Cool Real Video")  # 12 x 10-minute real videos
+youtube_grouped = group_for_display("youtube", youtube_segments)
+check(
+    "NetTV still gets grouped when there are genuinely many entries",
+    0 < len(youtube_grouped) < len(youtube_segments),
+    (len(youtube_segments), len(youtube_grouped)),
+)
+check(
+    "NetTV's merged title is built from a real absorbed video's title, not a fabricated "
+    "curated-sounding name (no 'Late Night Laughs'/'Chill Streams'/'Classic Clips'/'YouTube Mix')",
+    all(b.title.startswith("Cool Real Video") for b in youtube_grouped),
+    [b.title for b in youtube_grouped],
+)
+check(
+    "NetTV renders as the same real 'Show' category regular content uses, not a fabricated Companion bucket",
+    all(b.media_type == "tv" for b in youtube_grouped),
+    [b.media_type for b in youtube_grouped],
+)
+check(
+    "NetTV should feel more literal than RadioWaveTV -- fewer entries get absorbed into each "
+    "merged block on average",
+    (len(youtube_segments) / max(1, len(youtube_grouped))) < (len(radiowave_segments) / max(1, len(radiowave_grouped))),
+    (len(youtube_segments) / len(youtube_grouped), len(radiowave_segments) / len(radiowave_grouped)),
+)
+
+local_media_segments = _synthetic_segments(10, 1800, channel_id="movies-1")  # 10 x 30-minute shows
+local_media_grouped = group_for_display("media", local_media_segments)
+check(
+    "a local 'media' channel_type is returned completely unchanged by group_for_display",
+    local_media_grouped == local_media_segments,
+    (len(local_media_grouped), len(local_media_segments)),
+)
+
+total_raw_entries = sum(len(b.raw_entries) for b in weatherstar_segments)
+grouped_raw_entries = sum(len(b.raw_entries) for b in weatherstar_grouped)
+check(
+    "a grouped block's raw_entries is the concatenation of every absorbed block's raw_entries (real data survives)",
+    grouped_raw_entries == total_raw_entries,
+    (grouped_raw_entries, total_raw_entries),
+)
+
+repeat_grouped = group_for_display("weatherstar", weatherstar_segments)
+check(
+    "calling group_for_display twice on the same input produces the same result (no duplication/drift)",
+    [b.title for b in repeat_grouped] == [b.title for b in weatherstar_grouped]
+    and [(b.start, b.end) for b in repeat_grouped] == [(b.start, b.end) for b in weatherstar_grouped],
+    None,
+)
+
+check(
+    "an empty block list passes through as an empty list",
+    group_for_display("weatherstar", []) == [],
+    None,
+)
+
+
+# ---------------------------------------------------------------------------
+section("build_channel_lane: companion grouping runs end-to-end through the real pipeline")
+# ---------------------------------------------------------------------------
+
+
+class FakeCompanionChannel:
+    """Mimics WeatherChannel.get_programs_for_window's shape (no "entry"
+    key on each item -- see program_block._resolve_media_type's docstring
+    on synthetic weatherstar:// paths) to prove the full build_channel_lane
+    pipeline (not just group_for_display in isolation) groups companion
+    output correctly.
+    """
+
+    def get_programs_for_window(self, window_start, count=8):
+        items = []
+        t = window_start
+        for i in range(count):
+            end = t + 300
+            items.append({"path": f"weatherstar://segment-{i}", "title": f"Forecast Segment {i}", "start": t, "end": end})
+            t = end
+        return items
+
+
+companion_lane = build_channel_lane(
+    "special:weatherstar", "WeatherStar 4000+", 4, "weatherstar", "", FakeCompanionChannel(), T0, T0 + 3 * 3600
+)
+check(
+    "a real companion lane (via build_channel_lane, not just group_for_display) renders far fewer blocks than raw segments",
+    companion_lane.has_data and 0 < len(companion_lane.blocks) < 10,
+    companion_lane.blocks,
+)
+
+local_lane_for_grouping_check = build_channel_lane(
+    "ch-local", "Movies", 1, "media", "", FakeChannel(two_show_items), T0, T0 + 5400
+)
+check(
+    "a regular local channel's real blocks are untouched by the companion grouping pass",
+    len(local_lane_for_grouping_check.blocks) == 2,
+    local_lane_for_grouping_check.blocks,
+)
+
+
+# ---------------------------------------------------------------------------
+section("widget geometry: new companion media-type accents render without error")
+# ---------------------------------------------------------------------------
+
+from mediawave.schedule_editor.program_block import MEDIA_TYPE_ACCENTS, MEDIA_TYPE_LABELS, ProgramBlockWidget, build_category_legend
+
+check(
+    "'companion' is not a category -- nothing produces it anymore (NetTV renders as real 'tv'/Show content)",
+    "companion" not in MEDIA_TYPE_ACCENTS and "companion" not in MEDIA_TYPE_LABELS,
+    (list(MEDIA_TYPE_ACCENTS.keys()), list(MEDIA_TYPE_LABELS.keys())),
+)
+
+for companion_media_type in ("weather", "music"):
+    check(f"'{companion_media_type}' has a real accent entry", companion_media_type in MEDIA_TYPE_ACCENTS, MEDIA_TYPE_ACCENTS.keys())
+    check(f"'{companion_media_type}' has a real label entry", companion_media_type in MEDIA_TYPE_LABELS, MEDIA_TYPE_LABELS.keys())
+    block = _PB(
+        channel_id="x",
+        title="Local Forecast",
+        media_type=companion_media_type,
+        start=T0,
+        end=T0 + 7200,
+        duration=7200,
+        true_start=T0,
+        true_end=T0 + 7200,
+    )
+    widget = ProgramBlockWidget(block)
+    check(f"a '{companion_media_type}' ProgramBlockWidget builds without error", widget.width() > 0, widget.width())
+
+legend = build_category_legend()
+check("build_category_legend() builds without error", legend is not None, legend)
+
+
+# ---------------------------------------------------------------------------
+section("ProgrammingBoard: horizontal scrolling restored, app shell stays fixed")
+# ---------------------------------------------------------------------------
+
+from PySide6.QtCore import Qt
+
+scroll_board = ProgrammingBoard()
+scroll_board.resize(400, 500)  # deliberately narrower than a 90-minute window at the new scale
+scroll_board.show()
+scroll_lanes = [lane_a, lane_b]
+scroll_board.set_lanes(scroll_lanes, T0, T0 + 5400)
+
+check(
+    "the grid's horizontal scrollbar is available again (not permanently off)",
+    scroll_board._grid_scroll.horizontalScrollBarPolicy() == Qt.ScrollBarAsNeeded,
+    scroll_board._grid_scroll.horizontalScrollBarPolicy(),
+)
+check(
+    "guide content is allowed to be wider than the viewport -- that's what makes it scrollable "
+    "instead of being squeezed to fit",
+    scroll_board._grid_content.width() > scroll_board._grid_scroll.viewport().width(),
+    (scroll_board._grid_content.width(), scroll_board._grid_scroll.viewport().width()),
+)
+check(
+    "the ruler's width still matches the grid content's total width (tracks real content, not the viewport)",
+    abs(scroll_board._ruler_content.width() - scroll_board._grid_content.width()) <= 1,
+    (scroll_board._ruler_content.width(), scroll_board._grid_content.width()),
+)
+check(
+    "the board's own footprint never grows to fit its wider-than-viewport content -- the "
+    "surrounding application shell never needs to scroll horizontally",
+    scroll_board.width() <= 401,
+    scroll_board.width(),
+)
+
+scroll_board._grid_scroll.horizontalScrollBar().setValue(37)
+check(
+    "scrolling the grid horizontally keeps the ruler in sync, mirroring the existing vertical sync",
+    scroll_board._ruler_content.x() == -37,
+    scroll_board._ruler_content.x(),
+)
+
+
+# ---------------------------------------------------------------------------
+section("Editing Tools: compact preview, no disabled-button wall")
+# ---------------------------------------------------------------------------
+
+from PySide6.QtWidgets import QLabel, QPushButton
+from mediawave.schedule_editor.utility_panels import _EDITING_TOOL_NAMES, _READ_ONLY_NOTE, build_editing_tools_card
+
+editing_tools_card = build_editing_tools_card()
+check(
+    "the Editing Tools card has no disabled buttons -- a compact note, not a button wall",
+    len(editing_tools_card.findChildren(QPushButton)) == 0,
+    len(editing_tools_card.findChildren(QPushButton)),
+)
+
+editing_tools_text = " ".join(label.text() for label in editing_tools_card.findChildren(QLabel))
+check(
+    "every real future editing action name is still preserved, just as plain text",
+    all(name in editing_tools_text for name in _EDITING_TOOL_NAMES),
+    editing_tools_text,
+)
+check(
+    "the read-only status message appears exactly once across the card (not duplicated)",
+    editing_tools_text.count(_READ_ONLY_NOTE) == 1,
+    editing_tools_text,
+)
+
+
+# ---------------------------------------------------------------------------
+section("ScheduleEditorWorkspace: top toolbar (no title, legend band, Back relocated)")
+# ---------------------------------------------------------------------------
+
+from mediawave.schedule_editor.dialog import ScheduleEditorWorkspace, _compact_date, build_schedule_editor_tab
+
+
+class _FakeStudioDialog:
+    """Deliberately bare -- every attribute `_build_channel_rows` and
+    `channel_actions.companion_snapshot_from_dialog`/`companion_status_from_dialog`
+    read off a studio_dialog is `getattr(..., default)`-guarded (confirmed
+    in dialog.py and channel_actions.py), so this resolves to zero
+    channels and hits ScheduleEditorWorkspace's cheap empty-state path --
+    which still builds the top bar and footer inspector first, before
+    returning, so both are testable without a real Channel Studio dialog.
+    """
+
+
+back_calls = []
+workspace = ScheduleEditorWorkspace(_FakeStudioDialog(), on_back=lambda: back_calls.append(1))
+
+top_bar_texts = [lbl.text() for lbl in workspace._top_bar.findChildren(QLabel)]
+check(
+    "no 'Tonight's Lineup' (or any) page title remains in the top toolbar",
+    all("Tonight" not in text for text in top_bar_texts),
+    top_bar_texts,
+)
+check(
+    "the category legend rides the top toolbar band (not dropped lower into the content area)",
+    all(name in top_bar_texts for name in ("Show", "Movie", "Commercial", "Weather", "Music")),
+    top_bar_texts,
+)
+
+back_buttons = [b for b in workspace._top_bar.findChildren(QPushButton) if b.text() == "←  Back"]
+check("a Back button lives in the top toolbar", len(back_buttons) == 1, len(back_buttons))
+if back_buttons:
+    back_buttons[0].click()
+    check("clicking the top-toolbar Back button invokes the on_back callback", back_calls == [1], back_calls)
+
+
+# ---------------------------------------------------------------------------
+section("compact corner date: format, board placement, day navigation")
+# ---------------------------------------------------------------------------
+
+import re as _re
+
+compact = _compact_date(T0)
+check(
+    "the compact date matches the 'Thu 7-16-26' shape (no big page-heading date, no time range)",
+    bool(_re.match(r"^[A-Z][a-z]{2} \d{1,2}-\d{1,2}-\d{2}$", compact)),
+    compact,
+)
+check(
+    "the compact date changes when the viewed day changes",
+    _compact_date(T0 + 24 * 3600) != compact,
+    (_compact_date(T0 + 24 * 3600), compact),
+)
+
+corner_board = ProgrammingBoard()
+corner_board.set_corner_text("Thu 7-16-26")
+check(
+    "the board's frozen corner cell (beside the time row) carries the compact date",
+    corner_board._corner_label.text() == "Thu 7-16-26",
+    corner_board._corner_label.text(),
+)
+
+from mediawave.schedule_editor.layout_constants import TIME_HEADER_HEIGHT
+
+check("the time header is tall enough to read as a proper guide ruler", TIME_HEADER_HEIGHT >= 40, TIME_HEADER_HEIGHT)
+
+from mediawave.schedule_editor.board import _TimeRulerContent
+
+ruler = _TimeRulerContent(T0, T0 + 5400, PX_PER_MINUTE)
+ruler_labels = [lbl for lbl in ruler.findChildren(QLabel) if ":" in lbl.text()]
+check("the ruler renders time labels", len(ruler_labels) >= 2, len(ruler_labels))
+check(
+    "ruler time labels span the full header height, vertically centered (not small top-anchored text)",
+    all(lbl.height() == TIME_HEADER_HEIGHT and (lbl.alignment() & Qt.AlignVCenter) for lbl in ruler_labels),
+    [(lbl.height(), int(lbl.alignment())) for lbl in ruler_labels],
+)
+check(
+    "ruler time labels use the larger 12px font",
+    all(lbl.font().pixelSize() == 12 for lbl in ruler_labels),
+    [lbl.font().pixelSize() for lbl in ruler_labels],
+)
+
+
+# ---------------------------------------------------------------------------
+section("channel identity: shared digital font, metric-compensated centering")
+# ---------------------------------------------------------------------------
+
+from mediawave.channel_studio.studio_styles import channel_number_font_family
+from mediawave.schedule_editor.channel_row import ChannelIdentityCell
+
+identity_lane = ChannelLane(channel_id="ch1", name="Movies", number=4, channel_type="media", logo_path="", blocks=[], has_data=True)
+identity_cell = ChannelIdentityCell(identity_lane)
+number_labels = [lbl for lbl in identity_cell.findChildren(QLabel) if lbl.text() == "4"]
+check("the identity cell renders the channel number", len(number_labels) == 1, [lbl.text() for lbl in identity_cell.findChildren(QLabel)])
+if number_labels:
+    number_lbl = number_labels[0]
+    check(
+        "the channel number uses the shared Channel Studio digital-font path",
+        number_lbl.font().family() == channel_number_font_family(),
+        (number_lbl.font().family(), channel_number_font_family()),
+    )
+    fm = number_lbl.fontMetrics()
+    expected_drop = max(0, fm.ascent() - fm.descent() - fm.capHeight())
+    check(
+        "the number label carries the metric-computed centering compensation for its real font",
+        f"padding-top: {expected_drop}px" in number_lbl.styleSheet(),
+        (expected_drop, number_lbl.styleSheet()),
+    )
+    check(
+        "the number label stays vertically centered within the row",
+        bool(number_lbl.alignment() & Qt.AlignVCenter),
+        int(number_lbl.alignment()),
+    )
+
+
+# ---------------------------------------------------------------------------
+section("Selected Program footer inspector: occupies the footer band, updates on selection")
+# ---------------------------------------------------------------------------
+
+_, footer = build_schedule_editor_tab(_FakeStudioDialog())
+check("the footer page is the inspector, styled with the shared advFooter chrome", footer.objectName() == "advFooter", footer.objectName())
+check("the inspector has real presence (fixed footer-band height, not a zero/skinny strip)", footer.height() >= 80, footer.height())
+
+footer_texts = [lbl.text() for lbl in footer.findChildren(QLabel)]
+check(
+    "with nothing selected, the inspector shows the calm full-details prompt",
+    any("Select a program to see its full details." in text for text in footer_texts),
+    footer_texts,
+)
+
+from mediawave.schedule_editor.utility_panels import build_selected_program_footer
+
+inspector, update_inspector = build_selected_program_footer()
+inspected_block = ProgramBlock(
+    channel_id="ch1", title="Most Extreme Elimination Challenge", media_type="tv",
+    start=T0, end=T0 + 480, duration=480, true_start=T0, true_end=T0 + 480,
+)
+inspected_lane = ChannelLane(channel_id="ch1", name="SpikeTV", number=14, channel_type="media", logo_path="", blocks=[inspected_block], has_data=True)
+update_inspector(inspected_block, inspected_lane)
+populated_texts = " | ".join(lbl.text() for lbl in inspector.findChildren(QLabel))
+check(
+    "selecting a program populates title, channel, time/duration/type, and origin",
+    all(part in populated_texts for part in ("Most Extreme Elimination Challenge", "Ch 14 · SpikeTV", "8 min", "Show", "Auto-generated schedule")),
+    populated_texts,
+)
+
+update_inspector(None, None)
+update_inspector(None, None)
+prompt_labels = [lbl for lbl in inspector.findChildren(QLabel) if "Select a program" in lbl.text() and lbl.isVisibleTo(inspector)]
+check(
+    "clearing the selection restores exactly one prompt (no duplicated widgets after repeated updates)",
+    len(prompt_labels) == 1,
+    [lbl.text() for lbl in inspector.findChildren(QLabel)],
+)
+
+
+# ---------------------------------------------------------------------------
+section("workspace integration: corner date wired to day navigation")
+# ---------------------------------------------------------------------------
+
+
+class _FakeStudioDialogWithChannel:
+    def __init__(self):
+        self.catalog_channel_infos = [
+            {"id": "ch1", "name": "Channel One", "channel_type": "media", "default_number": 4}
+        ]
+        self.catalog_channel_settings = {}
+        self._studio_channels_by_id = {"ch1": FakeChannel(two_show_items)}
+
+
+live_workspace = ScheduleEditorWorkspace(_FakeStudioDialogWithChannel())
+if hasattr(live_workspace, "board"):
+    check(
+        "the workspace's board corner shows the compact date for the viewed day",
+        live_workspace.board._corner_label.text() == _compact_date(live_workspace._window_start),
+        (live_workspace.board._corner_label.text(), _compact_date(live_workspace._window_start)),
+    )
+    before_shift = live_workspace.board._corner_label.text()
+    live_workspace._shift_day(1)
+    check(
+        "navigating to the next day updates the corner date immediately",
+        live_workspace.board._corner_label.text() == _compact_date(live_workspace._window_start)
+        and live_workspace.board._corner_label.text() != before_shift,
+        (before_shift, live_workspace.board._corner_label.text()),
+    )
+else:
+    check("workspace with one real channel builds a board", False, "empty-state path hit unexpectedly")
+
+
+# ---------------------------------------------------------------------------
+section("Channel Studio: Schedule Editor entry removed")
+# ---------------------------------------------------------------------------
+
+import mediawave.channel_studio.channel_studio_pages as _cs_pages
+
+check(
+    "channel_studio_pages no longer defines the Schedule Editor launch card",
+    not hasattr(_cs_pages, "_build_schedule_editor_card"),
+    dir(_cs_pages),
+)
+with open(_cs_pages.__file__, "r") as _f:
+    _cs_source = _f.read()
+check(
+    "the Channel Studio page source contains no 'Open Schedule Editor' entry",
+    "Open Schedule Editor" not in _cs_source and "schedule_editor" not in _cs_source,
+    None,
+)
 
 
 # ---------------------------------------------------------------------------

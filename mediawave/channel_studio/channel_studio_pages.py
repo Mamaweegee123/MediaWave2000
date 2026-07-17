@@ -18,8 +18,7 @@ channel number IS the lineup order, and manual renumbering (Overview's
 inline number editor) is the only way to move a channel's position.
 """
 
-from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QHBoxLayout, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QVBoxLayout, QWidget
 
 from . import channel_actions
 from . import companion_adapter
@@ -31,8 +30,6 @@ from .channel_studio_model import ChannelStudioSummary
 from .channel_studio_widgets import build_channel_studio_footer, build_empty_state
 from .channel_card import build_dashboard_channel_card
 from .channel_grid import build_channel_grid
-from ..schedule_editor.dialog import ScheduleEditorDialog
-from ..studio.cards import build_action_card
 
 _COMPANION_TYPE_BY_ID = {cid: ctype for ctype, cid in companion_adapter.COMPANION_CHANNEL_IDS.items()}
 
@@ -43,33 +40,6 @@ def _preview(dialog, title, description):
 
 def _drafts_path(dialog):
     return getattr(dialog, "_channel_studio_drafts_file", None)
-
-
-def _build_schedule_editor_card(dialog):
-    """The Schedule Editor's entry point -- docs/STUDIO_DESIGN_SYSTEM.md's
-    own worked example for `build_action_card` already names this exact
-    card ("Edit Logo, Open Schedule Editor"). Opens a read-only preview
-    (mediawave/schedule_editor/dialog.py's ScheduleEditorDialog) built from
-    this same AdvancedConfigDialog instance -- no new data threading into
-    channelsurfer2000.py needed.
-    """
-    button = QPushButton("Open Schedule Editor  →")
-    button.setObjectName("saveButton")
-    button.setCursor(Qt.PointingHandCursor)
-    button.clicked.connect(lambda: ScheduleEditorDialog(dialog, parent=dialog).exec())
-
-    row = QWidget()
-    row_layout = QHBoxLayout(row)
-    row_layout.setContentsMargins(0, 0, 0, 0)
-    row_layout.addWidget(button)
-    row_layout.addStretch(1)
-
-    return build_action_card(
-        "Open Schedule Editor",
-        row,
-        subtitle="Preview tonight's full programming board across every channel.",
-        icon="📅",
-    )
 
 
 def _channel_enabled(channel_id, catalog_channel_settings):
@@ -327,7 +297,6 @@ def build_channel_studio_content(dialog):
         on_search_changed=_rebuild_grid,
     )
     layout.addWidget(header)
-    layout.addWidget(_build_schedule_editor_card(dialog))
     layout.addWidget(grid_container)
 
     _rebuild_grid()

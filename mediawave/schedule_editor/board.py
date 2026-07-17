@@ -1,18 +1,23 @@
 """ProgrammingBoard: the hero widget of the Schedule Editor -- a time-ruler
-header (frozen vertically, scrolls horizontally with the grid), a channel
-identity column (frozen horizontally, scrolls vertically with the grid), and
-the scrolling grid of channel rows in between.
+header (frozen, spans the board's full width), a channel identity column
+(frozen horizontally, scrolls vertically with the grid), and the grid of
+channel rows in between.
 
-Built from one real QScrollArea (the grid) plus two "frozen" sibling
-widgets whose inner content is manually offset to match the grid's
-scrollbars -- the standard Qt frozen-row/frozen-column technique, chosen
-over nested QScrollAreas specifically because nested scroll areas fight each
-other for wheel/trackpad events (the spec's own explicit requirement).
+The guide scrolls both ways: real QScrollArea, real scrollbars, native
+trackpad gestures. `px_per_minute` (schedule_model.PX_PER_MINUTE) is a
+fixed scale, not fit to the viewport -- a 30-minute block stays a
+comfortably readable size regardless of how much of the visible window
+happens to fit on screen at once; the surrounding application shell never
+needs to grow to accommodate it; the guide's own QScrollArea clips and
+scrolls the excess instead. The ruler and the identity column are each
+kept in sync with the grid's scroll position via `_on_h_scroll`/
+`_on_v_scroll`, the same "frozen sibling" pattern on both axes.
 """
 
 import time
 
-from PySide6.QtCore import Signal
+from PySide6.QtCore import Qt, Signal
+from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
@@ -21,6 +26,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from .board_ticks import tick_times
 from .channel_row import ChannelIdentityCell, ChannelRowStrip
 from .layout_constants import IDENTITY_COLUMN_WIDTH, ROW_HEIGHT, TIME_HEADER_HEIGHT
 from .schedule_model import PX_PER_MINUTE
@@ -31,8 +37,8 @@ _RULER_BORDER = "rgba(255, 255, 255, 24)"
 _RULER_TEXT = "rgba(158, 172, 210, 230)"
 _CORNER_BG = "rgba(13, 16, 38, 255)"
 _NOW_LINE_COLOR = "rgba(255, 218, 96, 210)"
-
-_TICK_INTERVAL_SECONDS = 30 * 60
+_NOW_BADGE_BG = "rgba(255, 218, 96, 235)"
+_NOW_BADGE_TEXT = "rgba(20, 16, 4, 255)"
 
 
 class _TimeRulerContent(QWidget):
@@ -42,21 +48,38 @@ class _TimeRulerContent(QWidget):
         self.setFixedSize(round(total_minutes * px_per_minute), TIME_HEADER_HEIGHT)
         self.setStyleSheet(f"background: {_RULER_BG};")
 
-        tick = window_start - (window_start % _TICK_INTERVAL_SECONDS)
-        if tick < window_start:
-            tick += _TICK_INTERVAL_SECONDS
-        while tick < window_end:
+        for tick in tick_times(window_start, window_end):
             x = round((tick - window_start) / 60.0 * px_per_minute)
             mark = QFrame(self)
-            mark.setGeometry(x, TIME_HEADER_HEIGHT - 8, 1, 8)
+            mark.setGeometry(x, TIME_HEADER_HEIGHT - 10, 1, 10)
             mark.setStyleSheet(f"background: {_RULER_BORDER};")
             mark.show()
 
             label = QLabel(time.strftime("%-I:%M %p", time.localtime(tick)), self)
-            label.setStyleSheet(f"color: {_RULER_TEXT}; font-size: 10px; background: transparent;")
-            label.move(x + 4, 4)
+            # Font set via QFont (not stylesheet font-size) so sizeHint's
+            # width is measured with the real rendering font.
+            label_font = label.font()
+            label_font.setPixelSize(12)
+            label_font.setWeight(QFont.DemiBold)
+            label.setFont(label_font)
+            label.setStyleSheet(f"color: {_RULER_TEXT}; background: transparent;")
+            label.setAlignment(Qt.AlignVCenter | Qt.AlignLeft)
+            label.setFixedSize(label.sizeHint().width() + 2, TIME_HEADER_HEIGHT)
+            label.move(x + 6, 0)
             label.show()
-            tick += _TICK_INTERVAL_SECONDS
+
+        now = time.time()
+        if window_start <= now < window_end:
+            now_x = round((now - window_start) / 60.0 * px_per_minute)
+            badge = QLabel(time.strftime("%-I:%M %p", time.localtime(now)), self)
+            badge.setStyleSheet(
+                f"background: {_NOW_BADGE_BG}; color: {_NOW_BADGE_TEXT};"
+                " font-size: 10px; font-weight: 700; border-radius: 8px; padding: 2px 8px;"
+            )
+            badge.adjustSize()
+            badge.move(max(0, now_x - badge.width() // 2), (TIME_HEADER_HEIGHT - badge.height()) // 2)
+            badge.show()
+            badge.raise_()
 
 
 class _GridContent(QWidget):
@@ -77,8 +100,8 @@ class _GridContent(QWidget):
 
         now = time.time()
         if window_start <= now < window_end:
-            line = QFrame(self)
             x = round((now - window_start) / 60.0 * px_per_minute)
+            line = QFrame(self)
             line.setGeometry(x, 0, 2, max(height, 1))
             line.setStyleSheet(f"background: {_NOW_LINE_COLOR};")
             line.show()
@@ -99,15 +122,32 @@ class ProgrammingBoard(QWidget):
         super().__init__(parent)
         self._selected_widget = None
         self._px_per_minute = PX_PER_MINUTE
+        self._lanes = None
+        self._window_start = 0
+        self._window_end = 0
 
         outer = QGridLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         outer.setSpacing(0)
 
-        corner = QFrame()
-        corner.setFixedSize(IDENTITY_COLUMN_WIDTH, TIME_HEADER_HEIGHT)
-        corner.setStyleSheet(f"background: {_CORNER_BG}; border-bottom: 1px solid {_RULER_BORDER};")
-        outer.addWidget(corner, 0, 0)
+        # The corner cell (above the identity column, beside the ruler)
+        # carries the compact viewed-day label -- "Thu 7-16-26" -- so the
+        # date reads as part of the guide's frozen header, not a page
+        # heading. Text set via set_corner_text (the workspace's
+        # _refresh_board keeps it in sync with day navigation).
+        self._corner_label = QLabel()
+        self._corner_label.setObjectName("scheduleCornerDate")
+        self._corner_label.setFixedSize(IDENTITY_COLUMN_WIDTH, TIME_HEADER_HEIGHT)
+        self._corner_label.setAlignment(Qt.AlignCenter)
+        corner_font = self._corner_label.font()
+        corner_font.setPixelSize(12)
+        corner_font.setWeight(QFont.DemiBold)
+        self._corner_label.setFont(corner_font)
+        self._corner_label.setStyleSheet(
+            f"QLabel#scheduleCornerDate {{ background: {_CORNER_BG};"
+            f" border-bottom: 1px solid {_RULER_BORDER}; color: {_RULER_TEXT}; }}"
+        )
+        outer.addWidget(self._corner_label, 0, 0)
 
         self._ruler_viewport = QWidget()
         self._ruler_viewport.setFixedHeight(TIME_HEADER_HEIGHT)
@@ -120,12 +160,18 @@ class ProgrammingBoard(QWidget):
         self._identity_content = None
         outer.addWidget(self._identity_viewport, 1, 0)
 
+        # A real QScrollArea on both axes -- its own footprint is governed
+        # by the surrounding layout (outer's column/row stretch below), not
+        # by its content, so wider-than-viewport guide content never grows
+        # the dialog itself; it just becomes scrollable, same as the
+        # vertical axis always has been.
         self._grid_scroll = QScrollArea()
         self._grid_scroll.setWidgetResizable(False)
         self._grid_scroll.setFrameShape(QFrame.NoFrame)
+        self._grid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self._grid_scroll.viewport().setAutoFillBackground(False)
-        self._grid_scroll.horizontalScrollBar().valueChanged.connect(self._on_h_scroll)
         self._grid_scroll.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
+        self._grid_scroll.horizontalScrollBar().valueChanged.connect(self._on_h_scroll)
         outer.addWidget(self._grid_scroll, 1, 1)
 
         outer.setColumnStretch(1, 1)
@@ -134,22 +180,37 @@ class ProgrammingBoard(QWidget):
         self._grid_content = None
         self.identity_cells = []
 
-    def _on_h_scroll(self, value):
-        if self._ruler_content is not None:
-            self._ruler_content.move(-value, 0)
-
     def _on_v_scroll(self, value):
         if self._identity_content is not None:
             self._identity_content.move(0, -value)
 
+    def _on_h_scroll(self, value):
+        if self._ruler_content is not None:
+            self._ruler_content.move(-value, 0)
+
+    def set_corner_text(self, text):
+        """The compact date label in the frozen corner cell."""
+        self._corner_label.setText(text)
+
     def set_lanes(self, lanes, window_start, window_end):
-        """Rebuilds the whole board for a new set of channel lanes/window.
-        Hides and schedules deletion of every previous row/identity widget
-        first (Qt's removeWidget-doesn't-hide gotcha -- see
-        StudioSection.set_content's docstring for why the explicit hide()
-        matters) so repeated refreshes never leave stale, overlapping
-        widgets behind.
+        """Records the lanes/window to render and (re)builds the board."""
+        self._lanes = lanes
+        self._window_start = window_start
+        self._window_end = window_end
+        self._rebuild()
+
+    def _rebuild(self):
+        """Tears down and reconstructs every board widget at the fixed
+        `PX_PER_MINUTE` scale. Hides and schedules deletion of every
+        previous row/identity widget first (Qt's removeWidget-doesn't-hide
+        gotcha -- see StudioSection.set_content's docstring for why the
+        explicit hide() matters) so a repeated rebuild (a data refresh)
+        never leaves stale, overlapping widgets behind.
         """
+        if self._lanes is None:
+            return
+        lanes, window_start, window_end = self._lanes, self._window_start, self._window_end
+
         self._selected_widget = None
 
         if self._ruler_content is not None:
@@ -185,24 +246,9 @@ class ProgrammingBoard(QWidget):
         self._identity_content.move(0, 0)
         self._identity_content.show()
 
-        self._window_start = window_start
-        self._window_end = window_end
-
     def _on_block_selected(self, widget):
         if self._selected_widget is not None and self._selected_widget is not widget:
             self._selected_widget.set_selected(False)
         widget.set_selected(True)
         self._selected_widget = widget
         self.program_selected.emit(widget.block)
-
-    def scroll_to_now(self):
-        """Home/Today action: centers the current-time line in the visible
-        viewport when it's within the current window; otherwise scrolls to
-        the window's start.
-        """
-        if self._grid_content is None:
-            return
-        now_line = getattr(self._grid_content, "now_line", None)
-        target_x = self._grid_content.now_line_x if now_line is not None else 0
-        viewport_width = self._grid_scroll.viewport().width()
-        self._grid_scroll.horizontalScrollBar().setValue(max(0, target_x - viewport_width // 2))

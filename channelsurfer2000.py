@@ -20215,6 +20215,7 @@ class AdvancedConfigDialog(QDialog):
             ("📻  Channel Logos",       3),
             ("⚙️  Power User",           4),
             ("🎬  Channel Studio (Preview)", 5),
+            ("📅  Schedule Editor",     6),
         ]
         for label, idx in _nav_items:
             btn = QPushButton(label)
@@ -20392,10 +20393,13 @@ class AdvancedConfigDialog(QDialog):
         self._adv_stack.addWidget(self.build_channel_logos_tab())  # 3
         self._adv_stack.addWidget(self.build_smart_alecs_tab())    # 4
 
-        # Channel Studio (Preview) lives in its own full-width mode, not as
-        # an _adv_stack page, so it doesn't share the main settings sidebar.
+        # Channel Studio (Preview) and Schedule Editor both live in their
+        # own full-width modes, not as _adv_stack pages, so neither shares
+        # the main settings sidebar.
         channel_studio_content, channel_studio_footer = self.build_channel_studio_tab()
         self._mode_stack.addWidget(channel_studio_content)  # mode 1
+        schedule_editor_content, schedule_editor_footer = self.build_schedule_editor_tab()
+        self._mode_stack.addWidget(schedule_editor_content)  # mode 2
         self._adv_nav_group.idClicked.connect(self._on_adv_nav_clicked)
 
         # ── Footer: Save/Close (main settings) or Channel Studio's own
@@ -20422,8 +20426,9 @@ class AdvancedConfigDialog(QDialog):
         footer_row.addWidget(save_btn)
 
         self._footer_stack = QStackedWidget()
-        self._footer_stack.addWidget(self._adv_footer)        # index 0: main settings
-        self._footer_stack.addWidget(channel_studio_footer)   # index 1: Channel Studio
+        self._footer_stack.addWidget(self._adv_footer)          # index 0: main settings
+        self._footer_stack.addWidget(channel_studio_footer)     # index 1: Channel Studio
+        self._footer_stack.addWidget(schedule_editor_footer)    # index 2: Schedule Editor
         outer.addWidget(self._footer_stack)
 
         self.commercials_enabled.toggled.connect(self.sync_commercial_mode_enabled)
@@ -20656,10 +20661,23 @@ class AdvancedConfigDialog(QDialog):
             logo_path=CHANNEL_STUDIO_LOGO_PATH,
         )
 
+    def build_schedule_editor_tab(self):
+        """Read-only programming board — see mediawave/schedule_editor/.
+
+        Same "own full-width mode" shape as Channel Studio above; touches
+        no scheduling or persisted state.
+        """
+        from mediawave.schedule_editor.dialog import build_schedule_editor_tab
+        return build_schedule_editor_tab(self, on_back=self._exit_schedule_editor_mode)
+
     def _on_adv_nav_clicked(self, idx):
-        """Route main-settings nav clicks normally; Channel Studio gets its own mode."""
+        """Route main-settings nav clicks normally; Channel Studio and
+        Schedule Editor each get their own full-width mode."""
         if idx == 5:
             self._enter_channel_studio_mode()
+            return
+        if idx == 6:
+            self._enter_schedule_editor_mode()
             return
         self._last_adv_stack_index = idx
         self._adv_stack.setCurrentIndex(idx)
@@ -20668,6 +20686,37 @@ class AdvancedConfigDialog(QDialog):
         self._animate_mode_switch(1)
 
     def _exit_channel_studio_mode(self):
+        self._exit_to_main_settings()
+
+    def _enter_schedule_editor_mode(self):
+        # A one-time widen, not a hard size change -- the board is a
+        # fit-to-width timeline, so it stays readable at the dialog's
+        # default 920px width, but a roomier width is more comfortable for
+        # a multi-hour board plus its right-side panels. Never shrinks a
+        # window the user already made bigger, and never grows past the
+        # actual screen (a smaller/laptop display shouldn't push the
+        # dialog partly off-screen) -- capped to the available screen
+        # geometry, then re-centered so growing the window can't leave it
+        # partially unreachable.
+        screen = self.screen() or QApplication.primaryScreen()
+        available = screen.availableGeometry() if screen is not None else QRect(0, 0, 1400, 820)
+        target_width = min(max(self.width(), 1400), available.width() - 40)
+        target_height = min(max(self.height(), 820), available.height() - 40)
+        if target_width > self.width() or target_height > self.height():
+            self.resize(max(self.width(), target_width), max(self.height(), target_height))
+            frame = self.frameGeometry()
+            frame.moveCenter(available.center())
+            self.move(frame.topLeft())
+        self._animate_mode_switch(2)
+
+    def _exit_schedule_editor_mode(self):
+        self._exit_to_main_settings()
+
+    def _exit_to_main_settings(self):
+        """Shared by every full-width mode's exit path (Channel Studio,
+        Schedule Editor): fade back to mode 0 and restore whichever main
+        settings nav item was selected before entering the mode.
+        """
         self._animate_mode_switch(0)
         prev_btn = self._adv_nav_group.button(self._last_adv_stack_index)
         if prev_btn is not None:
