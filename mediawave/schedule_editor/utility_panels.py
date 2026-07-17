@@ -11,7 +11,8 @@ import time
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from mediawave.commercials import is_commercial_entry
-from mediawave.studio.cards import build_action_card, build_property_card, build_status_card
+from mediawave.studio.cards import build_status_card
+from mediawave.studio.section import StudioSection
 
 from .program_block import MEDIA_TYPE_LABELS
 
@@ -55,7 +56,12 @@ def build_editing_tools_card():
     names_lbl.setStyleSheet(f"color: {_VALUE_COLOR}; font-size: 12px; background: transparent;")
     layout.addWidget(names_lbl)
 
-    return build_action_card("Editing Tools", content, subtitle=_READ_ONLY_NOTE)
+    # accent=False on purpose: nothing here is actionable this phase, so
+    # the blue accent strip read as a stray line fragment beside the card
+    # rather than meaningful "this does something" structure. Built via
+    # StudioSection directly (cards.py's docstring sanctions this when
+    # the intent-named defaults don't fit).
+    return StudioSection("Editing Tools", subtitle=_READ_ONLY_NOTE, content=content, collapsible=False, accent=False)
 
 
 def build_next_up_card():
@@ -117,7 +123,12 @@ def build_channel_defaults_card():
     layout.setSpacing(8)
     layout.addWidget(_note_label("Select a channel to see its defaults."))
 
-    card = build_property_card("Channel Defaults", content, subtitle="Real configuration for the selected channel.")
+    # accent=False for the same reason as the Editing Tools card: this is
+    # a read-only summary, and its accent strip read as stray clutter
+    # beside the otherwise accent-less right column.
+    card = StudioSection(
+        "Channel Defaults", subtitle="Real configuration for the selected channel.", content=content, collapsible=False, accent=False
+    )
 
     def _row(text):
         label = QLabel(text)

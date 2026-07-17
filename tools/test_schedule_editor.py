@@ -575,7 +575,7 @@ check(
 
 
 # ---------------------------------------------------------------------------
-section("ScheduleEditorWorkspace: top toolbar (no title, legend band, Back relocated)")
+section("ScheduleEditorWorkspace: top toolbar (no title, no legend, Back relocated)")
 # ---------------------------------------------------------------------------
 
 from mediawave.schedule_editor.dialog import ScheduleEditorWorkspace, _compact_date, build_schedule_editor_tab
@@ -602,8 +602,8 @@ check(
     top_bar_texts,
 )
 check(
-    "the category legend rides the top toolbar band (not dropped lower into the content area)",
-    all(name in top_bar_texts for name in ("Show", "Movie", "Commercial", "Weather", "Music")),
+    "the category legend no longer rides the top toolbar (it's a guide key under the board now)",
+    all(name not in top_bar_texts for name in ("Show", "Movie", "Weather")),
     top_bar_texts,
 )
 
@@ -691,6 +691,16 @@ if number_labels:
         bool(number_lbl.alignment() & Qt.AlignVCenter),
         int(number_lbl.alignment()),
     )
+    check(
+        "the number is horizontally centered in its lane",
+        bool(number_lbl.alignment() & Qt.AlignHCenter),
+        int(number_lbl.alignment()),
+    )
+    check(
+        "the number lane is wide enough for centered one- or two-digit numbers",
+        number_lbl.width() >= 44 or number_lbl.maximumWidth() == 44,
+        (number_lbl.width(), number_lbl.maximumWidth()),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -765,6 +775,52 @@ if hasattr(live_workspace, "board"):
     )
 else:
     check("workspace with one real channel builds a board", False, "empty-state path hit unexpectedly")
+
+
+# ---------------------------------------------------------------------------
+section("visual cleanup: legend under the guide, no corner/accent artifacts")
+# ---------------------------------------------------------------------------
+
+from PySide6.QtWidgets import QFrame as _QFrame, QScrollArea as _QScrollArea
+
+if hasattr(live_workspace, "_guide_column"):
+    guide_layout = live_workspace._guide_column.layout()
+    check(
+        "the guide column stacks the board first, then the legend row below it",
+        guide_layout.itemAt(0).widget() is live_workspace.board,
+        guide_layout.itemAt(0).widget(),
+    )
+    legend_item = guide_layout.itemAt(1)
+    legend_widget = legend_item.layout().itemAt(0).widget() if legend_item.layout() is not None else None
+    legend_texts = [lbl.text() for lbl in legend_widget.findChildren(QLabel)] if legend_widget is not None else []
+    check(
+        "the legend sits under the guide, as the first (left-aligned) item of its row",
+        all(name in legend_texts for name in ("Show", "Movie", "Commercial", "Weather", "Music")),
+        legend_texts,
+    )
+else:
+    check("workspace exposes the guide column holding board + legend", False, "no _guide_column")
+
+check(
+    "the board's scroll corner is styled transparent (no white bracket artifact where scrollbars meet)",
+    "::corner" in live_workspace.board._grid_scroll.styleSheet(),
+    live_workspace.board._grid_scroll.styleSheet(),
+)
+
+right_scrolls = [s for s in live_workspace.findChildren(_QScrollArea) if s is not live_workspace.board._grid_scroll]
+check(
+    "the right utility panel can never grow a horizontal scrollbar (the stray blue bar under the cards)",
+    right_scrolls and all(s.horizontalScrollBarPolicy() == Qt.ScrollBarAlwaysOff for s in right_scrolls),
+    [s.horizontalScrollBarPolicy() for s in right_scrolls],
+)
+
+for card_name, card in (("Editing Tools", live_workspace._editing_tools_card), ("Channel Defaults", live_workspace._channel_defaults_card), ("Next Up", live_workspace._next_up_card)):
+    accent_strips = [f for f in card.findChildren(_QFrame) if f.maximumWidth() == 4]
+    check(
+        f"the {card_name} card renders no stray accent-strip fragment",
+        len(accent_strips) == 0,
+        accent_strips,
+    )
 
 
 # ---------------------------------------------------------------------------

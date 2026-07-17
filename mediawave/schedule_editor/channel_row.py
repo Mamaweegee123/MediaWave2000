@@ -56,12 +56,16 @@ class ChannelIdentityCell(QFrame):
         )
 
         row = QHBoxLayout(self)
-        row.setContentsMargins(12, 8, 10, 8)
+        row.setContentsMargins(10, 8, 10, 8)
         row.setSpacing(10)
 
+        # A 44px number lane: wide enough that a centered one- OR
+        # two-digit number gets symmetric breathing room (34px left the
+        # big OSD digits visually crowding the lane's edges instead of
+        # reading as centered against the name/logo block beside them).
         number_lbl = QLabel(str(lane.number or ""))
-        number_lbl.setFixedWidth(34)
-        number_lbl.setAlignment(Qt.AlignCenter)
+        number_lbl.setFixedWidth(44)
+        number_lbl.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
         # Same VHS/VCR OSD font-loading path and phosphor-green treatment
         # Channel Studio's own channel numbers use (channel_card.py's
         # _build_channel_number_label) -- reused via the two public
@@ -102,7 +106,9 @@ class ChannelIdentityCell(QFrame):
         name_lbl = QLabel(lane.name)
         name_lbl.setStyleSheet(f"color: {_NAME_COLOR}; font-weight: 600; font-size: 13px; background: transparent;")
         fm = name_lbl.fontMetrics()
-        name_lbl.setText(fm.elidedText(lane.name, Qt.ElideRight, IDENTITY_COLUMN_WIDTH - 64))
+        # Available name width = column minus margins (10+10), the number
+        # lane (44), and the layout spacing (10).
+        name_lbl.setText(fm.elidedText(lane.name, Qt.ElideRight, IDENTITY_COLUMN_WIDTH - 74))
         name_lbl.setToolTip(lane.name)
         text_col.addWidget(name_lbl)
 

@@ -23,6 +23,7 @@ anywhere in this workspace this phase.
 
 import time
 
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
@@ -176,8 +177,13 @@ class ScheduleEditorWorkspace(QWidget):
         self._next_up_card, self._update_next_up = build_next_up_card()
         self._channel_defaults_card, self._update_channel_defaults = build_channel_defaults_card()
 
+        # The column is NOT fixed-width -- build_scroll_area's
+        # widgetResizable sizes it to the scroll viewport, which shrinks
+        # by the vertical scrollbar's width when one appears. A fixed
+        # 360px column inside that narrower viewport forced a spurious
+        # horizontal scrollbar under the cards (the stray blue bar), plus
+        # a white unstyled scroll-corner artifact where the two bars met.
         right_column = QWidget()
-        right_column.setFixedWidth(_RIGHT_COLUMN_WIDTH)
         right_layout = QVBoxLayout(right_column)
         right_layout.setContentsMargins(0, 4, 0, 4)
         right_layout.setSpacing(18)
@@ -186,11 +192,29 @@ class ScheduleEditorWorkspace(QWidget):
         right_layout.addWidget(self._channel_defaults_card, 1)
         right_scroll = build_scroll_area(right_column)
         right_scroll.setFixedWidth(_RIGHT_COLUMN_WIDTH + 4)
+        right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+
+        # The legend sits directly under the guide board, left-aligned --
+        # a guide key grounded to the board it describes, not a toolbar
+        # element. Scoped to the board column's width, so it never drifts
+        # under the right utility panel.
+        self._guide_column = QWidget()
+        guide_layout = QVBoxLayout(self._guide_column)
+        guide_layout.setContentsMargins(0, 0, 0, 0)
+        guide_layout.setSpacing(8)
+        guide_layout.addWidget(self.board, 1)
+
+        legend_row = QHBoxLayout()
+        legend_row.setContentsMargins(0, 0, 0, 0)
+        legend_row.setSpacing(10)
+        legend_row.addWidget(build_category_legend())
+        legend_row.addStretch(1)
+        guide_layout.addLayout(legend_row)
 
         content_row = QHBoxLayout()
         content_row.setContentsMargins(0, 0, 0, 0)
         content_row.setSpacing(16)
-        content_row.addWidget(self.board, 1)
+        content_row.addWidget(self._guide_column, 1)
         content_row.addWidget(right_scroll)
 
         content = QWidget()
@@ -208,24 +232,19 @@ class ScheduleEditorWorkspace(QWidget):
             self._on_back()
 
     def _build_top_bar(self):
-        """Row 1: Back on the far left, day navigation next to it,
-        Undo/Redo/Save right-aligned -- no page title, the guide itself
-        (and the window title, one level up) already say what this is.
-        Row 2: a slim band carrying the category legend, right-aligned --
-        riding the toolbar's own dark chrome (co-located with
-        program_block.build_category_legend so it can never drift out of
-        sync with what the board actually renders).
+        """One compact row: Back on the far left, day navigation next to
+        it, Undo/Redo/Save right-aligned -- no page title, the guide
+        itself (and the window title, one level up) already say what this
+        is. The category legend lives under the guide board (see
+        __init__'s guide column), not up here.
         """
         bar = QWidget()
         bar.setObjectName("scheduleTopBar")
         bar.setStyleSheet(
             f"QWidget#scheduleTopBar {{ background: {_TOP_BAR_BG}; border-bottom: 1px solid {_TOP_BAR_BORDER}; }}"
         )
-        outer = QVBoxLayout(bar)
-        outer.setContentsMargins(20, 10, 20, 8)
-        outer.setSpacing(6)
-
-        row = QHBoxLayout()
+        row = QHBoxLayout(bar)
+        row.setContentsMargins(20, 10, 20, 10)
         row.setSpacing(10)
 
         back_btn = QPushButton("←  Back")
@@ -254,14 +273,6 @@ class ScheduleEditorWorkspace(QWidget):
             btn = QPushButton(label)
             btn.setEnabled(False)
             row.addWidget(btn)
-
-        outer.addLayout(row)
-
-        legend_row = QHBoxLayout()
-        legend_row.setSpacing(10)
-        legend_row.addStretch(1)
-        legend_row.addWidget(build_category_legend())
-        outer.addLayout(legend_row)
 
         return bar
 

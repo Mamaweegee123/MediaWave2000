@@ -169,6 +169,11 @@ class ProgrammingBoard(QWidget):
         self._grid_scroll.setWidgetResizable(False)
         self._grid_scroll.setFrameShape(QFrame.NoFrame)
         self._grid_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        # The square where the two scrollbars meet is otherwise painted
+        # with the platform default (white) -- against the dark board it
+        # read as a stray bracket-shaped artifact peeking around the
+        # rounded scrollbar ends.
+        self._grid_scroll.setStyleSheet("QScrollArea::corner { background: transparent; }")
         self._grid_scroll.viewport().setAutoFillBackground(False)
         self._grid_scroll.verticalScrollBar().valueChanged.connect(self._on_v_scroll)
         self._grid_scroll.horizontalScrollBar().valueChanged.connect(self._on_h_scroll)
