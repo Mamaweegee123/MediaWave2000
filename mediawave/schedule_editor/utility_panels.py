@@ -8,7 +8,7 @@ page, see build_selected_program_footer). None of this writes settings.
 
 import time
 
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from mediawave.commercials import is_commercial_entry
 from mediawave.studio.cards import build_status_card
@@ -20,16 +20,44 @@ _NOTE_COLOR = "rgba(138, 158, 212, 220)"
 _VALUE_COLOR = "rgba(210, 222, 252, 235)"
 _ACCENT_NEUTRAL = "rgba(255, 255, 255, 24)"
 
-_EDITING_TOOL_NAMES = [
-    "Put On Air",
-    "Pull",
+# Deferred bulk tools -- named so users know they're coming, but never
+# rendered as a wall of equal-weight dead buttons next to the two real
+# actions.
+_COMING_LATER_TOOL_NAMES = [
     "Auto-Fill Block",
     "Build Prime Time",
     "Drop In Commercials",
     "Clone Daypart",
 ]
 
-_READ_ONLY_NOTE = "Schedule editing will be enabled in the next phase."
+# Compact real-action buttons for the Editing Tools card -- the same quiet
+# geometry as the top bar's nav buttons (the app-wide filled-blue
+# QPushButton default is too heavy stacked inside a side card), with a
+# clearly-lower-contrast :disabled state.
+_TOOL_BUTTON_STYLE = """
+    QPushButton {
+        min-width: 0px;
+        min-height: 28px;
+        padding: 5px 12px;
+        border-radius: 6px;
+        border: 1px solid rgba(96, 144, 255, 150);
+        background: rgba(50, 70, 160, 110);
+        color: rgba(222, 232, 255, 240);
+        font-size: 12px;
+        font-weight: 600;
+    }
+    QPushButton:hover:enabled {
+        border: 1px solid rgba(120, 165, 255, 210);
+        background: rgba(60, 84, 190, 150);
+        color: white;
+    }
+    QPushButton:disabled {
+        border: 1px solid rgba(90, 100, 140, 60);
+        background: transparent;
+        color: rgba(120, 132, 168, 150);
+        font-weight: 400;
+    }
+"""
 
 
 def _note_label(text):
@@ -39,30 +67,58 @@ def _note_label(text):
     return label
 
 
-def build_editing_tools_card():
-    """A compact preview of the six future editing actions -- names only,
-    no disabled button wall. A dense grid or list of six inert controls
-    reads as broken; one word-wrapped line naming what's coming
-    communicates the same thing without dominating a read-only screen.
-    The single read-only-status message lives here, in the card's
-    subtitle, and nowhere else in the workspace.
+def build_editing_tools_card(on_put_on_air=None, on_pull=None):
+    """The real Phase 2 editing actions: Put On Air and Pull as live
+    controls, the deferred bulk tools as one dim "Coming later" line
+    (deliberately NOT four more disabled buttons -- two real actions
+    shouldn't share visual weight with four inert ones).
+
+    Returns (card, controls): controls has `put_btn`, `pull_btn`, and
+    `set_hint(text)` -- the hint line under the buttons explains, in plain
+    language, what the current selection allows (or why it doesn't allow
+    something), so a disabled button is never a mystery.
     """
     content = QWidget()
     layout = QVBoxLayout(content)
     layout.setContentsMargins(0, 0, 0, 0)
-    layout.setSpacing(4)
+    layout.setSpacing(8)
 
-    names_lbl = QLabel("  ·  ".join(_EDITING_TOOL_NAMES))
-    names_lbl.setWordWrap(True)
-    names_lbl.setStyleSheet(f"color: {_VALUE_COLOR}; font-size: 12px; background: transparent;")
-    layout.addWidget(names_lbl)
+    button_row = QHBoxLayout()
+    button_row.setSpacing(8)
+    put_btn = QPushButton("Put On Air")
+    put_btn.setStyleSheet(_TOOL_BUTTON_STYLE)
+    put_btn.setEnabled(False)
+    if on_put_on_air is not None:
+        put_btn.clicked.connect(on_put_on_air)
+    button_row.addWidget(put_btn)
 
-    # accent=False on purpose: nothing here is actionable this phase, so
-    # the blue accent strip read as a stray line fragment beside the card
-    # rather than meaningful "this does something" structure. Built via
-    # StudioSection directly (cards.py's docstring sanctions this when
-    # the intent-named defaults don't fit).
-    return StudioSection("Editing Tools", subtitle=_READ_ONLY_NOTE, content=content, collapsible=False, accent=False)
+    pull_btn = QPushButton("Pull")
+    pull_btn.setStyleSheet(_TOOL_BUTTON_STYLE)
+    pull_btn.setEnabled(False)
+    if on_pull is not None:
+        pull_btn.clicked.connect(on_pull)
+    button_row.addWidget(pull_btn)
+    button_row.addStretch(1)
+    layout.addLayout(button_row)
+
+    hint_lbl = _note_label("Select a program to pull it, or select open time to put something on air.")
+    layout.addWidget(hint_lbl)
+
+    coming_lbl = _note_label("Coming later:  " + "  ·  ".join(_COMING_LATER_TOOL_NAMES))
+    layout.addWidget(coming_lbl)
+
+    def set_hint(text):
+        hint_lbl.setText(text or "")
+
+    card = StudioSection(
+        "Editing Tools",
+        subtitle="Edits stay in your draft until you save.",
+        content=content,
+        collapsible=False,
+        accent=False,
+    )
+    controls = {"put_btn": put_btn, "pull_btn": pull_btn, "set_hint": set_hint}
+    return card, controls
 
 
 def build_next_up_card():
@@ -258,7 +314,16 @@ def build_selected_program_footer():
         detail_parts.append(f"{start_label}–{end_label} · {minutes} min · {media_label}")
         layout.addWidget(_dim_line("   ·   ".join(detail_parts)))
 
-        origin_parts = ["Auto-generated schedule"]
+        if block.media_type == "open":
+            layout.addWidget(_dim_line("Nothing is scheduled here — use Put On Air to fill this open time."))
+            return
+
+        if block.source == "draft":
+            origin_parts = ["Your unsaved schedule edit"]
+        elif block.source == "override":
+            origin_parts = ["Scheduled by you"]
+        else:
+            origin_parts = ["Auto-generated schedule"]
         has_internal_break = not block.is_commercial and any(
             is_commercial_entry(entry) for entry in block.raw_entries
         )

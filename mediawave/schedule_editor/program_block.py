@@ -40,6 +40,11 @@ MEDIA_TYPE_LABELS = {
     "commercial": "Commercial",
     "weather": "Weather",
     "music": "Music",
+    # An intentionally empty interval (a pulled program's gap) -- part of
+    # the draft/override presentation, not a fake persisted program. Its
+    # calm dashed treatment (see _apply_style) is deliberate: open time
+    # is an invitation to Put On Air, not an error state.
+    "open": "Open Time",
 }
 
 MEDIA_TYPE_ACCENTS = {
@@ -55,6 +60,9 @@ MEDIA_TYPE_ACCENTS = {
     "commercial": ("rgba(24, 26, 34, 210)", "rgba(120, 130, 160, 90)"),
     "weather": ("rgba(16, 48, 46, 232)", "rgba(90, 200, 170, 150)"),
     "music": ("rgba(42, 24, 58, 232)", "rgba(180, 120, 235, 150)"),
+    # Near-transparent face + soft neutral outline -- quieter than every
+    # real program category on purpose.
+    "open": ("rgba(16, 19, 44, 90)", "rgba(158, 172, 210, 80)"),
 }
 
 _TEXT_COLOR = "rgba(210, 222, 252, 235)"
@@ -139,10 +147,14 @@ class ProgramBlockWidget(QFrame):
             # lives in the tooltip and the details strip on selection.
             return
 
+        is_open = self.block.media_type == "open"
         title_text = self.block.title or "Untitled"
         title_lbl = QLabel(title_text)
         title_lbl.setWordWrap(False)
-        title_lbl.setStyleSheet(f"color: {_TEXT_COLOR}; font-weight: 600; font-size: 12px; background: transparent;")
+        # Open Time reads as quiet availability, not a program: dim title,
+        # same layout.
+        title_color = _TEXT_DIM if is_open else _TEXT_COLOR
+        title_lbl.setStyleSheet(f"color: {title_color}; font-weight: 600; font-size: 12px; background: transparent;")
         fm = title_lbl.fontMetrics()
         available = card_width - 20 if card_width else 400
         title_lbl.setText(fm.elidedText(title_text, Qt.ElideRight, max(20, available)))
@@ -159,7 +171,8 @@ class ProgramBlockWidget(QFrame):
 
         if self._level == "wide" and self.block.media_type != "tv":
             minutes = max(1, round(self.block.duration / 60))
-            type_lbl = QLabel(f"{MEDIA_TYPE_LABELS.get(self.block.media_type, '')} · {minutes} min")
+            detail = f"Available · {minutes} min" if is_open else f"{MEDIA_TYPE_LABELS.get(self.block.media_type, '')} · {minutes} min"
+            type_lbl = QLabel(detail)
             type_lbl.setStyleSheet(f"color: {_TEXT_DIM}; font-size: 10px; background: transparent;")
             layout.addWidget(type_lbl)
 
@@ -169,10 +182,14 @@ class ProgramBlockWidget(QFrame):
         bg, border = MEDIA_TYPE_ACCENTS.get(self.block.media_type, MEDIA_TYPE_ACCENTS["tv"])
         border_color = _SELECTED_BORDER if self._is_selected else border
         border_width = 2 if self._is_selected else 1
+        # Open time gets a dashed outline (unless selected -- the solid
+        # yellow selection border stays the one selection language for
+        # every block type).
+        border_style = "dashed" if self.block.media_type == "open" and not self._is_selected else "solid"
         self._card.setStyleSheet(
             "QFrame#scheduleProgramBlock {"
             f" background: {bg};"
-            f" border: {border_width}px solid {border_color};"
+            f" border: {border_width}px {border_style} {border_color};"
             " border-radius: 11px;"
             "}"
         )

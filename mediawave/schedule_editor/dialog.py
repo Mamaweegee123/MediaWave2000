@@ -1,4 +1,4 @@
-"""ScheduleEditorWorkspace: the read-only programming board.
+"""ScheduleEditorWorkspace: the programming board with draft editing.
 
 A first-class Advanced Configuration workspace (its own left-sidebar nav
 item, `AdvancedConfigDialog`'s `_enter_schedule_editor_mode` /
@@ -6,27 +6,33 @@ item, `AdvancedConfigDialog`'s `_enter_schedule_editor_mode` /
 buried inside Channel Studio -- `build_schedule_editor_tab(studio_dialog,
 on_back=...)` returns `(workspace, footer)` the exact same shape
 `channel_studio.build_channel_studio_tab` does, so `AdvancedConfigDialog`
-can add it to its mode/footer stacks identically. Channel Studio's own
-"Open Schedule Editor" action card still exists as a contextual shortcut
-into this same workspace (`dialog._enter_schedule_editor_mode()`), not a
-separate implementation.
+can add it to its mode/footer stacks identically.
 
-Constructed from the same `AdvancedConfigDialog` instance (`studio_dialog`)
-Channel Studio itself already holds a reference to -- exactly like
-`ChannelSetupDialog` already is. Reads `studio_dialog._studio_channels_by_id`,
-`.catalog_channel_infos`, `.catalog_channel_settings`, `._channel_logo_lookup`,
-`.commercials_settings` the same way `_open_channel` in
-channel_studio_pages.py does. Never writes to any of them,
-`schedule_state.json`, or `app_settings` -- there is no mutation path
-anywhere in this workspace this phase.
+Phase 2 editing model -- every edit is draft-isolated:
+
+  base lanes (schedule_model.build_board_model, read from live channels)
+      -> DraftSchedule (draft_model.py): cloned snapshot + change records
+      -> Pull / Put On Air commands (commands.py) through CommandHistory
+      -> Save Schedule serializes the changes to per-date override records
+         and hands them to the app's save pipeline
+         (`studio_dialog._schedule_overrides_save`, which is
+         save_schedule_overrides_from_editor in channelsurfer2000.py)
+
+Nothing in this workspace mutates live channels, playback, schedule
+caches, or settings; the ONLY write path is that save callback, and it
+runs solely from the explicit Save Schedule flow. Closing or navigating
+away with unsaved changes routes through `confirm_leave()` (Save /
+Discard / Keep Editing) -- also invoked by `AdvancedConfigDialog.reject`
+so closing the whole dialog can't silently drop a dirty draft.
 """
 
 import time
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
+    QMessageBox,
     QPushButton,
     QVBoxLayout,
     QWidget,
@@ -41,7 +47,15 @@ from mediawave.studio.spacing import OUTER_MARGIN
 from mediawave.studio.styles import build_scroll_area
 
 from .board import ProgrammingBoard
+from .commands import (
+    CONFLICT_OVERLAPS_FOLLOWING,
+    CommandHistory,
+    PullProgramCommand,
+    PutOnAirCommand,
+)
+from .draft_model import DraftSchedule
 from .program_block import build_category_legend
+from .put_on_air_picker import PutOnAirPickerDialog, build_picker_catalog
 from .schedule_model import build_board_model, sort_channel_rows
 from .utility_panels import (
     build_channel_defaults_card,
@@ -62,8 +76,6 @@ _TOP_BAR_BG = "rgba(9, 11, 27, 255)"
 _TOP_BAR_BORDER = "rgba(42, 54, 128, 255)"
 _SUBTITLE_COLOR = "rgba(138, 158, 212, 220)"
 
-_READ_ONLY_TOOLTIP = "Schedule editing will be enabled in the next phase."
-
 # A quiet, flat look for Back/prev/Today/next -- the app-wide QPushButton
 # rule (channelsurfer2000.py) gives every plain button a filled-blue
 # ~110x32px box, which made the whole toolbar read as a row of
@@ -81,29 +93,55 @@ _NAV_BUTTON_STYLE = """
         color: rgba(210, 222, 252, 230);
         font-size: 12px;
     }
-    QPushButton:hover, QPushButton:focus {
+    QPushButton:hover:enabled, QPushButton:focus {
         border: 1px solid rgba(96, 144, 255, 170);
         background: rgba(50, 70, 160, 90);
         color: white;
     }
-"""
-
-# Undo/Redo/Save: visibly present, unmistakably inactive -- lower
-# contrast and no hover response at all (a hovering cursor over a
-# disabled control shouldn't invite a click), on top of a tooltip
-# explaining why.
-_READONLY_BUTTON_STYLE = """
-    QPushButton {
-        min-width: 0px;
-        min-height: 26px;
-        padding: 4px 10px;
-        border-radius: 5px;
+    QPushButton:disabled {
         border: 1px solid rgba(90, 100, 140, 60);
         background: transparent;
         color: rgba(120, 132, 168, 150);
-        font-size: 12px;
     }
 """
+
+# Save Schedule: the toolbar's one primary action -- filled when armed,
+# clearly inert when the draft is clean.
+_SAVE_BUTTON_STYLE = """
+    QPushButton {
+        min-width: 0px;
+        min-height: 26px;
+        padding: 4px 14px;
+        border-radius: 5px;
+        border: 1px solid rgba(96, 144, 255, 190);
+        background: rgba(56, 84, 200, 190);
+        color: white;
+        font-size: 12px;
+        font-weight: 600;
+    }
+    QPushButton:hover:enabled {
+        border: 1px solid rgba(130, 170, 255, 230);
+        background: rgba(70, 100, 224, 220);
+    }
+    QPushButton:disabled {
+        border: 1px solid rgba(90, 100, 140, 60);
+        background: transparent;
+        color: rgba(120, 132, 168, 150);
+        font-weight: 400;
+    }
+"""
+
+# The restrained unsaved-changes indicator -- same corner the READ-ONLY
+# badge occupied in Phase 1, amber instead of alarming red, hidden
+# entirely when the draft is clean.
+_DIRTY_BADGE_STYLE = (
+    "color: rgba(255, 214, 120, 225); font-size: 10px; font-weight: 700;"
+    " letter-spacing: 1px; background: transparent;"
+)
+_SAVED_BADGE_STYLE = (
+    "color: rgba(130, 220, 160, 220); font-size: 10px; font-weight: 700;"
+    " letter-spacing: 1px; background: transparent;"
+)
 
 
 def _channel_enabled(channel_id, catalog_channel_settings):
@@ -119,7 +157,7 @@ def _build_channel_rows(studio_dialog):
     the fields schedule_model.build_board_model needs, plus a parallel
     ChannelStudioSummary lookup for the Channel Defaults panel. Mirrors
     channel_studio_pages.py's own local/companion assembly so this reuses
-    the exact same read-only data channel Studio already shows.
+    the exact same read-only data Channel Studio already shows.
     """
     infos = list(getattr(studio_dialog, "catalog_channel_infos", None) or [])
     catalog_channel_settings = getattr(studio_dialog, "catalog_channel_settings", None)
@@ -185,6 +223,20 @@ class ScheduleEditorWorkspace(QWidget):
         self._studio_channels_by_id = getattr(studio_dialog, "_studio_channels_by_id", None) or {}
         self._lanes_by_channel_id = {}
         self._window_start = _floor_to_half_hour(time.time())
+        # None until the non-empty-state branch below builds it -- every
+        # render/refresh path guards on this, so the empty-channels
+        # workspace (which still owns a live draft + toolbar) never
+        # crashes on a board it doesn't have.
+        self.board = None
+
+        # The draft layer: cloned base lanes + change records + command
+        # history. Everything the editing UI touches lives here until
+        # Save Schedule.
+        self._draft = DraftSchedule()
+        self._history = CommandHistory()
+        self._selected_block = None
+        self._recent_put_paths = []
+        self._saved_badge_timer = None
 
         outer = QVBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -216,7 +268,10 @@ class ScheduleEditorWorkspace(QWidget):
         self.board.program_selected.connect(self._on_program_selected)
         self.board.channel_selected.connect(self._on_channel_selected)
 
-        self._editing_tools_card = build_editing_tools_card()
+        self._editing_tools_card, self._tools = build_editing_tools_card(
+            on_put_on_air=self._put_on_air_clicked,
+            on_pull=self._pull_clicked,
+        )
         self._next_up_card, self._update_next_up = build_next_up_card()
         self._channel_defaults_card, self._update_channel_defaults = build_channel_defaults_card()
 
@@ -230,13 +285,6 @@ class ScheduleEditorWorkspace(QWidget):
         right_layout = QVBoxLayout(right_column)
         right_layout.setContentsMargins(0, 4, 0, 4)
         right_layout.setSpacing(18)
-        # All three cards get their natural content height (stretch=0) --
-        # Next Up already self-limits to 6 rows (build_next_up_card), so
-        # it doesn't need to greedily claim space; equal stretch=1/1 here
-        # previously stretched both cards' bodies to fill the scroll
-        # column's full allocated height, crowding Channel Defaults toward
-        # the bottom whenever Next Up's real row count grew. A trailing
-        # stretch collects any leftover space below the cards instead.
         right_layout.addWidget(self._editing_tools_card)
         right_layout.addWidget(self._next_up_card)
         right_layout.addWidget(self._channel_defaults_card)
@@ -278,16 +326,13 @@ class ScheduleEditorWorkspace(QWidget):
 
         self._refresh_board()
 
-    def _back(self):
-        if self._on_back is not None:
-            self._on_back()
+    # ── top bar ──────────────────────────────────────────────────────
 
     def _build_top_bar(self):
         """One compact row: Back on the far left, day navigation next to
-        it, Undo/Redo/Save right-aligned -- no page title, the guide
-        itself (and the window title, one level up) already say what this
-        is. The category legend lives under the guide board (see
-        __init__'s guide column), not up here.
+        it, the unsaved-changes badge and Undo/Redo/Revert/Save
+        right-aligned. The category legend lives under the guide board
+        (see __init__'s guide column), not up here.
         """
         bar = QWidget()
         bar.setObjectName("scheduleTopBar")
@@ -324,24 +369,83 @@ class ScheduleEditorWorkspace(QWidget):
 
         row.addStretch(1)
 
-        badge = QLabel("READ-ONLY PREVIEW")
-        badge.setStyleSheet(
-            "color: rgba(138, 158, 212, 190); font-size: 10px; font-weight: 700;"
-            " letter-spacing: 1px; background: transparent;"
-        )
-        row.addWidget(badge)
+        self._status_badge = QLabel("")
+        self._status_badge.setStyleSheet(_DIRTY_BADGE_STYLE)
+        row.addWidget(self._status_badge)
         row.addSpacing(6)
 
-        for label in ("Undo", "Redo", "Save Schedule"):
-            btn = QPushButton(label)
-            btn.setEnabled(False)
-            btn.setStyleSheet(_READONLY_BUTTON_STYLE)
-            btn.setToolTip(_READ_ONLY_TOOLTIP)
-            row.addWidget(btn)
+        self._undo_btn = QPushButton("Undo")
+        self._undo_btn.setStyleSheet(_NAV_BUTTON_STYLE)
+        self._undo_btn.clicked.connect(self._undo_clicked)
+        row.addWidget(self._undo_btn)
 
+        self._redo_btn = QPushButton("Redo")
+        self._redo_btn.setStyleSheet(_NAV_BUTTON_STYLE)
+        self._redo_btn.clicked.connect(self._redo_clicked)
+        row.addWidget(self._redo_btn)
+
+        self._revert_btn = QPushButton("Revert Draft")
+        self._revert_btn.setStyleSheet(_NAV_BUTTON_STYLE)
+        self._revert_btn.clicked.connect(self._revert_clicked)
+        row.addWidget(self._revert_btn)
+
+        self._save_btn = QPushButton("Save Schedule")
+        self._save_btn.setStyleSheet(_SAVE_BUTTON_STYLE)
+        self._save_btn.clicked.connect(self._save_clicked)
+        row.addWidget(self._save_btn)
+
+        self._update_toolbar_state()
         return bar
 
+    def _update_toolbar_state(self):
+        dirty = self._draft.is_dirty()
+
+        self._undo_btn.setEnabled(self._history.can_undo)
+        self._undo_btn.setToolTip(
+            f"Undo {self._history.undo_description}" if self._history.can_undo else "Nothing to undo yet."
+        )
+        self._redo_btn.setEnabled(self._history.can_redo)
+        self._redo_btn.setToolTip(
+            f"Redo {self._history.redo_description}" if self._history.can_redo else "Nothing to redo."
+        )
+
+        self._save_btn.setEnabled(dirty)
+        self._save_btn.setToolTip(
+            "Save your schedule changes." if dirty else "No unsaved changes."
+        )
+        self._revert_btn.setEnabled(dirty)
+        self._revert_btn.setVisible(dirty)
+        self._revert_btn.setToolTip("Discard every unsaved change and restore the generated lineup.")
+
+        if dirty:
+            self._status_badge.setStyleSheet(_DIRTY_BADGE_STYLE)
+            self._status_badge.setText("UNSAVED CHANGES")
+
+        elif self._status_badge.text() != "SAVED ✓":
+            self._status_badge.setText("")
+
+    def _flash_saved_badge(self):
+        self._status_badge.setStyleSheet(_SAVED_BADGE_STYLE)
+        self._status_badge.setText("SAVED ✓")
+
+        def _clear():
+            if self._status_badge.text() == "SAVED ✓":
+                self._status_badge.setText("")
+
+        QTimer.singleShot(4000, _clear)
+
+    # ── navigation ───────────────────────────────────────────────────
+
+    def _back(self):
+        if not self.confirm_leave():
+            return
+        if self._on_back is not None:
+            self._on_back()
+
     def _shift_day(self, delta_days):
+        # Draft changes are absolute-time anchored, so day navigation
+        # with a dirty draft is safe: edits on other days stay in the
+        # change list and reappear when navigating back.
         self._window_start += delta_days * 24 * 3600
         self._refresh_board()
 
@@ -349,28 +453,336 @@ class ScheduleEditorWorkspace(QWidget):
         self._window_start = _floor_to_half_hour(time.time())
         self._refresh_board()
 
+    # ── board rendering ──────────────────────────────────────────────
+
     def _refresh_board(self):
+        """Rebuild the base snapshot from the live channels for the
+        current window, then render the draft over it. Repeated calls are
+        idempotent (set_base_lanes replaces the clone wholesale; changes
+        are keyed by absolute time, never duplicated by a refresh).
+        """
+        if self.board is None:
+            return
         window_end = self._window_start + _WINDOW_HOURS * 3600
         lanes = build_board_model(self._channel_rows, self._studio_channels_by_id, self._window_start, window_end)
+        self._draft.set_base_lanes(lanes)
+        self._render_draft(preserve_scroll=False)
+
+    def _render_draft(self, preserve_scroll=True, reselect=None):
+        """Render the draft's presentation lanes onto the board. Keeps
+        scroll position by default (an edit shouldn't yank the board
+        around) and optionally restores selection to `(channel_id, start)`
+        -- or to the previously selected block when it still exists.
+        """
+        if self.board is None:
+            self._update_toolbar_state()
+            return
+        window_end = self._window_start + _WINDOW_HOURS * 3600
+        scroll = self.board.scroll_positions() if preserve_scroll else None
+
+        lanes = self._draft.presentation_lanes(self._window_start, window_end)
         self._lanes_by_channel_id = {lane.channel_id: lane for lane in lanes}
         self.board.set_lanes(lanes, self._window_start, window_end)
         self.board.set_corner_text(_compact_date(self._window_start))
-        self._update_next_up(None)
-        self._update_channel_defaults(None)
-        self._update_details(None, None)
+
+        if scroll is not None:
+            self.board.set_scroll_positions(scroll)
+
+        target = reselect
+        if target is None and self._selected_block is not None:
+            target = (self._selected_block.channel_id, self._selected_block.start)
+        reselected = False
+        if target is not None:
+            reselected = self.board.select_block_at(target[0], target[1])
+        if not reselected:
+            self._selected_block = None
+            self._update_next_up(None)
+            self._update_channel_defaults(None)
+            self._update_details(None, None)
+            self._update_tools_for_selection()
+        self._update_toolbar_state()
+
+    # ── selection ────────────────────────────────────────────────────
 
     def _on_program_selected(self, block):
+        self._selected_block = block
         lane = self._lanes_by_channel_id.get(block.channel_id)
         self._update_details(block, lane)
         if lane is not None:
             self._update_next_up(lane)
             self._update_channel_defaults(self._summaries_by_id.get(block.channel_id))
+        self._update_tools_for_selection()
 
     def _on_channel_selected(self, channel_id):
+        self._selected_block = None
         lane = self._lanes_by_channel_id.get(channel_id)
         self._update_next_up(lane)
         self._update_channel_defaults(self._summaries_by_id.get(channel_id))
         self._update_details(None, lane)
+        self._update_tools_for_selection()
+
+    def _update_tools_for_selection(self):
+        """Enable exactly the actions the current selection supports and
+        explain the state in the tools card's hint line -- a disabled
+        button always has its reason one line below it.
+        """
+        block = self._selected_block
+        put_btn = self._tools["put_btn"]
+        pull_btn = self._tools["pull_btn"]
+        set_hint = self._tools["set_hint"]
+
+        if block is None:
+            put_btn.setEnabled(False)
+            pull_btn.setEnabled(False)
+            set_hint("Select a program to pull it, or select open time to put something on air.")
+            return
+
+        lock_reason = self._draft.lane_lock_reason(block.channel_id)
+        if lock_reason:
+            put_btn.setEnabled(False)
+            pull_btn.setEnabled(False)
+            set_hint(lock_reason)
+            return
+
+        if block.media_type == "open":
+            put_btn.setEnabled(True)
+            pull_btn.setEnabled(False)
+            set_hint("Open time is selected — Put On Air fills it with a show or movie of your choice.")
+            return
+
+        put_btn.setEnabled(False)
+        validation = PullProgramCommand(block).validate(self._draft)
+        pull_btn.setEnabled(validation.ok)
+        if validation.ok:
+            set_hint(f"Pull removes “{block.title}” from the draft lineup and leaves open time.")
+        else:
+            set_hint(validation.reason)
+
+    # ── commands ─────────────────────────────────────────────────────
+
+    def _pull_clicked(self):
+        block = self._selected_block
+        if block is None:
+            return
+        command = PullProgramCommand(block)
+        validation = command.validate(self._draft)
+        if not validation.ok:
+            self._show_info("Can't pull this program", validation.reason)
+            return
+        self._history.execute(command, self._draft)
+        self._render_draft(reselect=(block.channel_id, block.start))
+
+    def _put_on_air_clicked(self):
+        block = self._selected_block
+        if block is None or block.media_type != "open":
+            return
+        lane = self._lanes_by_channel_id.get(block.channel_id)
+        if lane is None:
+            return
+        names_by_id = {cid: summary.name for cid, summary in self._summaries_by_id.items()}
+        items = build_picker_catalog(self._studio_channels_by_id, names_by_id)
+        if not items:
+            self._show_info(
+                "Nothing to schedule yet",
+                "No catalog media is available to put on air. Load a catalog with playable files first.",
+            )
+            return
+        picker = PutOnAirPickerDialog(
+            items,
+            lane.number,
+            lane.name,
+            block.true_start,
+            max(0.0, block.true_end - block.true_start),
+            recent_paths=self._recent_put_paths,
+            parent=self,
+        )
+        if picker.exec() != PutOnAirPickerDialog.Accepted:
+            return
+        item = picker.selected_item()
+        if item:
+            self._try_put_on_air(block, item, extend_over_following=False)
+
+    def _try_put_on_air(self, slot_block, item, extend_over_following=False):
+        media = {
+            "path": item["path"],
+            "title": item["title"],
+            "duration": item["duration"],
+            "media_type": item.get("media_type", "tv"),
+        }
+        command = PutOnAirCommand(
+            slot_block.channel_id,
+            slot_block.true_start,
+            media,
+            slot_end=slot_block.true_end,
+            extend_over_following=extend_over_following,
+        )
+        validation = command.validate(self._draft)
+        overlap = next((c for c in validation.conflicts if c["type"] == CONFLICT_OVERLAPS_FOLLOWING), None)
+        if not validation.ok and overlap is not None:
+            choice = self._ask_extend_conflict(overlap)
+            if choice == "extend":
+                self._try_put_on_air(slot_block, item, extend_over_following=True)
+            elif choice == "choose":
+                self._put_on_air_clicked()
+            return
+        if not validation.ok:
+            self._show_info("Can't schedule this here", validation.reason)
+            return
+        self._history.execute(command, self._draft)
+        self._recent_put_paths = [item["path"]] + [
+            path for path in self._recent_put_paths if path != item["path"]
+        ][:11]
+        self._render_draft(reselect=(slot_block.channel_id, slot_block.start))
+
+    def _undo_clicked(self):
+        command = self._history.undo(self._draft)
+        if command is not None:
+            self._render_draft()
+
+    def _redo_clicked(self):
+        command = self._history.redo(self._draft)
+        if command is not None:
+            self._render_draft()
+
+    # ── revert / save ────────────────────────────────────────────────
+
+    def _revert_clicked(self):
+        if not self._draft.is_dirty():
+            return
+        box = self._make_message_box(
+            QMessageBox.Question,
+            "Revert draft?",
+            "This discards every unsaved schedule change and restores the generated lineup.",
+        )
+        discard_btn = box.addButton("Discard Changes", QMessageBox.DestructiveRole)
+        box.addButton("Keep Editing", QMessageBox.RejectRole)
+        box.exec()
+        if box.clickedButton() is not discard_btn:
+            return
+        self._discard_draft()
+
+    def _discard_draft(self):
+        self._draft.clear_changes()
+        self._history.clear()
+        self._render_draft()
+
+    def _save_clicked(self):
+        """Validate -> serialize -> hand to the app's save pipeline ->
+        mark clean. On failure the draft and Undo history are untouched.
+        Returns True when the save completed.
+        """
+        if not self._draft.is_dirty():
+            return True
+        records = self._draft.overrides_for_save()
+        save = getattr(self._studio_dialog, "_schedule_overrides_save", None)
+        if save is None:
+            self._show_info(
+                "Saving isn't available",
+                "This window wasn't opened from a running MediaWave session, so schedule changes can't be saved here.",
+            )
+            return False
+        ok, error = save(records)
+        if not ok:
+            self._show_warning(
+                "The schedule couldn't be saved",
+                (error or "Something went wrong while writing the schedule file.")
+                + "\n\nYour draft is untouched — nothing was lost, and you can try saving again.",
+            )
+            return False
+
+        now = time.time()
+        covers_now = any(record["start"] <= now < record["end"] for record in records)
+
+        self._draft.clear_changes()
+        self._history.clear()
+        # Rebuild the base snapshot from the live channels: the saved
+        # overrides are now part of the effective lineup, so the board
+        # shows the same programming -- just no longer as draft edits.
+        if self.board is not None:
+            scroll = self.board.scroll_positions()
+            self._refresh_board()
+            self.board.set_scroll_positions(scroll)
+        else:
+            self._update_toolbar_state()
+
+        self._flash_saved_badge()
+        if covers_now:
+            self._show_info(
+                "Schedule saved",
+                "A change affects what's airing right now. The current program keeps playing — "
+                "your change takes effect after it ends.",
+            )
+        return True
+
+    # ── leave / close ────────────────────────────────────────────────
+
+    def has_unsaved_changes(self):
+        return self._draft.is_dirty()
+
+    def confirm_leave(self):
+        """The unsaved-changes flow for Back and for closing the whole
+        dialog: Save Changes / Discard Changes / Keep Editing. Returns
+        True when leaving may proceed.
+        """
+        if not self._draft.is_dirty():
+            return True
+        box = self._make_message_box(
+            QMessageBox.Question,
+            "Unsaved schedule changes",
+            "You have schedule edits that haven't been saved yet.",
+        )
+        save_btn = box.addButton("Save Changes", QMessageBox.AcceptRole)
+        discard_btn = box.addButton("Discard Changes", QMessageBox.DestructiveRole)
+        box.addButton("Keep Editing", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is save_btn:
+            return self._save_clicked()
+        if clicked is discard_btn:
+            self._discard_draft()
+            return True
+        return False
+
+    # ── message helpers ──────────────────────────────────────────────
+
+    def _make_message_box(self, icon, title, text):
+        box = QMessageBox(self)
+        box.setIcon(icon)
+        box.setWindowTitle(title)
+        box.setText(text)
+        return box
+
+    def _show_info(self, title, text):
+        self._make_message_box(QMessageBox.Information, title, text).exec()
+
+    def _show_warning(self, title, text):
+        self._make_message_box(QMessageBox.Warning, title, text).exec()
+
+    def _ask_extend_conflict(self, conflict):
+        """The longer-than-slot flow (spec sections 10-11): explain the
+        overrun in plain language and offer exactly the supported
+        choices. Extending masks the overlapped part of the following
+        program (it's joined in progress afterward) -- nothing is
+        silently truncated or auto-moved.
+        Returns "extend" | "choose" | "cancel".
+        """
+        box = self._make_message_box(
+            QMessageBox.Question,
+            "It runs longer than the open time",
+            conflict["message"]
+            + f"\n\nExtend into it, and “{conflict['following_title']}” will already be in progress "
+            "when it's joined afterward.",
+        )
+        extend_btn = box.addButton("Extend Into Following Time", QMessageBox.AcceptRole)
+        choose_btn = box.addButton("Choose Something Else", QMessageBox.ActionRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is extend_btn:
+            return "extend"
+        if clicked is choose_btn:
+            return "choose"
+        return "cancel"
 
 
 def _empty_state_label(text):
@@ -387,7 +799,7 @@ def build_schedule_editor_tab(studio_dialog, on_back=None):
     `AdvancedConfigDialog` can add both to its mode/footer stacks the
     identical way it already does for Channel Studio. `on_back`, if given,
     is called when the workspace's own top-toolbar "Back" button is
-    clicked.
+    clicked (after the unsaved-changes flow allows it).
 
     The footer is the workspace's own Selected Program inspector
     (utility_panels.build_selected_program_footer): the footer stack

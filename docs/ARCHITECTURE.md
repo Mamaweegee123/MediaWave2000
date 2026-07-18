@@ -28,6 +28,14 @@ Holds local artwork and description discovery, local asset-directory selection, 
 
 Holds pure lineup helpers for random and sequential channel playback, playback-order constants, and the shared half-hour live-channel schedule anchor.
 
+`mediawave/schedule_overrides.py`
+
+Holds the saved schedule-override model: per-date add/remove records from the Schedule Editor, schema-versioned atomic persistence, and the pure splice/resolution helpers that layer overrides onto the generated lineup. See `docs/SCHEDULE_EDITOR_ARCHITECTURE.md` for the full layer design (generated lineup / draft / saved overrides / live playback).
+
+`mediawave/schedule_editor/`
+
+The Schedule Editor workspace: the programming board (Phase 1) plus the Phase 2 draft layer (`draft_model.py`), Pull/Put On Air commands with undo/redo (`commands.py`), and the Put On Air catalog picker. Draft edits are isolated until Save Schedule persists them as overrides.
+
 `mediawave/channel_logos.py`
 
 Holds channel logo setting defaults, timing migration/normalization, placement option constants, and per-channel effective-setting resolution. Qt overlay drawing and logo image rendering remain in `channelsurfer2000.py`.

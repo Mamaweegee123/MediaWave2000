@@ -72,12 +72,15 @@ class ProgramBlock:
 
     channel_id: str
     title: str
-    media_type: str  # "tv" | "movie" | "commercial"
+    media_type: str  # "tv" | "movie" | "commercial" | "open" (an Open Time gap)
     start: float  # epoch seconds, clipped to the requested window
     end: float
     duration: float
     is_commercial: bool = False
-    source: str = "generated"  # the only value real schedules produce today
+    # "generated" (the automatic scheduler), "override" (a saved Schedule
+    # Editor edit spliced into the lineup), or "draft" (an unsaved edit,
+    # only ever produced by draft_model.py's presentation pass).
+    source: str = "generated"
     true_start: float = 0.0  # unclipped, for the details strip
     true_end: float = 0.0
     raw_entries: list = field(default_factory=list)
@@ -148,6 +151,10 @@ def _fetch_window_items(channel, window_start, window_end):
 
 def _group_key(item):
     entry = item.get("entry") or {}
+    if entry.get("kind") == "open_time":
+        # Each open-time interval is its own block -- keyed by start so
+        # two distinct gaps can never merge across an in-between program.
+        return f"open:{item.get('start', 0)}"
     path = entry.get("path", "") or item.get("path", "")
     return commercial_parent_path(entry, path) or path
 
@@ -165,10 +172,21 @@ def _group_into_blocks(channel_id, items):
             return
         first, last = current_items[0], current_items[-1]
         entries = [it.get("entry") or {} for it in current_items]
-        all_commercial = all(is_commercial_entry(e) for e in entries)
+        all_open = bool(entries) and all(e.get("kind") == "open_time" for e in entries)
+        all_commercial = not all_open and all(is_commercial_entry(e) for e in entries)
         content_entry = next((it for it in current_items if not is_commercial_entry(it.get("entry") or {})), first)
         content_path = (content_entry.get("entry") or {}).get("path", "") or content_entry.get("path", "")
-        media_type = "commercial" if all_commercial else _resolve_media_type(content_entry.get("entry"), content_path)
+        if all_open:
+            media_type = "open"
+        elif all_commercial:
+            media_type = "commercial"
+        else:
+            media_type = _resolve_media_type(content_entry.get("entry"), content_path)
+        # Saved Schedule Editor overrides mark their spliced entries with
+        # source "override" (mediawave/schedule_overrides.py) -- carried
+        # through so the details strip can say "Scheduled by you" instead
+        # of "Auto-generated schedule".
+        source = "override" if any(e.get("source") == "override" for e in entries) else "generated"
         start = float(first.get("start", 0) or 0)
         end = float(last.get("end", start) or start)
         blocks.append(
@@ -180,6 +198,7 @@ def _group_into_blocks(channel_id, items):
                 end=end,
                 duration=max(0.0, end - start),
                 is_commercial=all_commercial,
+                source=source,
                 true_start=start,
                 true_end=end,
                 raw_entries=list(entries),

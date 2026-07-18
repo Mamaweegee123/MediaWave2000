@@ -548,29 +548,35 @@ check(
 
 
 # ---------------------------------------------------------------------------
-section("Editing Tools: compact preview, no disabled-button wall")
+section("Editing Tools: two real actions, deferred tools as one dim line")
 # ---------------------------------------------------------------------------
 
 from PySide6.QtWidgets import QLabel, QPushButton
-from mediawave.schedule_editor.utility_panels import _EDITING_TOOL_NAMES, _READ_ONLY_NOTE, build_editing_tools_card
+from mediawave.schedule_editor.utility_panels import _COMING_LATER_TOOL_NAMES, build_editing_tools_card
 
-editing_tools_card = build_editing_tools_card()
+editing_tools_card, editing_tools_controls = build_editing_tools_card()
+editing_tools_buttons = editing_tools_card.findChildren(QPushButton)
 check(
-    "the Editing Tools card has no disabled buttons -- a compact note, not a button wall",
-    len(editing_tools_card.findChildren(QPushButton)) == 0,
-    len(editing_tools_card.findChildren(QPushButton)),
+    "exactly the two Phase 2 actions exist as buttons (no wall of deferred inert controls)",
+    sorted(b.text() for b in editing_tools_buttons) == ["Pull", "Put On Air"],
+    [b.text() for b in editing_tools_buttons],
+)
+check(
+    "both action buttons start disabled until a selection makes them meaningful",
+    all(b.isEnabled() is False for b in editing_tools_buttons),
+    [(b.text(), b.isEnabled()) for b in editing_tools_buttons],
 )
 
 editing_tools_text = " ".join(label.text() for label in editing_tools_card.findChildren(QLabel))
 check(
-    "every real future editing action name is still preserved, just as plain text",
-    all(name in editing_tools_text for name in _EDITING_TOOL_NAMES),
+    "every deferred bulk tool is still named, as a dim 'Coming later' line",
+    all(name in editing_tools_text for name in _COMING_LATER_TOOL_NAMES) and "Coming later" in editing_tools_text,
     editing_tools_text,
 )
+editing_tools_controls["set_hint"]("A test hint.")
 check(
-    "the read-only status message appears exactly once across the card (not duplicated)",
-    editing_tools_text.count(_READ_ONLY_NOTE) == 1,
-    editing_tools_text,
+    "the tools card exposes a working hint line for explaining the selection state",
+    "A test hint." in " ".join(label.text() for label in editing_tools_card.findChildren(QLabel)),
 )
 
 
@@ -613,22 +619,28 @@ if back_buttons:
     back_buttons[0].click()
     check("clicking the top-toolbar Back button invokes the on_back callback", back_calls == [1], back_calls)
 
-readonly_buttons = [b for b in workspace._top_bar.findChildren(QPushButton) if b.text() in ("Undo", "Redo", "Save Schedule")]
-check("Undo/Redo/Save are all present", len(readonly_buttons) == 3, [b.text() for b in readonly_buttons])
+history_buttons = [b for b in workspace._top_bar.findChildren(QPushButton) if b.text() in ("Undo", "Redo", "Save Schedule")]
+check("Undo/Redo/Save are all present", len(history_buttons) == 3, [b.text() for b in history_buttons])
 check(
-    "Undo/Redo/Save all stay disabled in this read-only phase",
-    all(b.isEnabled() is False for b in readonly_buttons),
-    [(b.text(), b.isEnabled()) for b in readonly_buttons],
+    "Undo/Redo/Save all start disabled for a clean, empty draft",
+    all(b.isEnabled() is False for b in history_buttons),
+    [(b.text(), b.isEnabled()) for b in history_buttons],
 )
 check(
-    "each disabled control explains itself via tooltip",
-    all("next phase" in b.toolTip() for b in readonly_buttons),
-    [b.toolTip() for b in readonly_buttons],
+    "each disabled history control explains itself via tooltip",
+    all(b.toolTip() for b in history_buttons),
+    [b.toolTip() for b in history_buttons],
 )
 check(
-    "a compact READ-ONLY PREVIEW badge sits in the toolbar, once",
-    top_bar_texts.count("READ-ONLY PREVIEW") == 1,
-    top_bar_texts,
+    "no unsaved-changes badge shows for a clean draft (and the READ-ONLY badge is gone)",
+    "READ-ONLY PREVIEW" not in top_bar_texts and workspace._status_badge.text() == "",
+    (top_bar_texts, workspace._status_badge.text()),
+)
+revert_buttons = [b for b in workspace._top_bar.findChildren(QPushButton) if b.text() == "Revert Draft"]
+check(
+    "Revert Draft exists but stays hidden while the draft is clean",
+    len(revert_buttons) == 1 and revert_buttons[0].isVisible() is False,
+    [(b.text(), b.isVisible()) for b in revert_buttons],
 )
 nav_buttons = [b for b in workspace._top_bar.findChildren(QPushButton) if b.text() in ("←  Back", "‹", "Today", "›")]
 check(

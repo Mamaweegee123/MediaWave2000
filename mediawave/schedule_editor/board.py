@@ -280,6 +280,39 @@ class ProgrammingBoard(QWidget):
         self._select_identity_cell(channel_id)
         self.channel_selected.emit(channel_id)
 
+    def scroll_positions(self):
+        """(horizontal, vertical) scrollbar values -- captured before a
+        draft-triggered set_lanes rebuild so an edit doesn't yank the
+        board back to the window's left edge.
+        """
+        return (
+            self._grid_scroll.horizontalScrollBar().value(),
+            self._grid_scroll.verticalScrollBar().value(),
+        )
+
+    def set_scroll_positions(self, positions):
+        horizontal, vertical = positions
+        self._grid_scroll.horizontalScrollBar().setValue(horizontal)
+        self._grid_scroll.verticalScrollBar().setValue(vertical)
+
+    def select_block_at(self, channel_id, start, tolerance=1.5):
+        """Programmatically select the block starting at (about) `start`
+        on the given channel -- the after-rebuild half of keeping
+        selection stable across draft edits. Runs the exact same
+        selection path a click does (so the same signals fire and the
+        side panels refresh). Returns True if a block was found.
+        """
+        if self._grid_content is None:
+            return False
+        for strip in self._grid_content.row_strips:
+            if strip.channel_id != channel_id:
+                continue
+            for widget in strip.block_widgets:
+                if abs(widget.block.start - start) <= tolerance:
+                    self._on_block_selected(widget)
+                    return True
+        return False
+
     def _on_block_selected(self, widget):
         if self._selected_widget is not None and self._selected_widget is not widget:
             self._selected_widget.set_selected(False)

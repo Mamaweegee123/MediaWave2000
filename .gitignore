@@ -30,6 +30,7 @@ catalog_cache.json
 library.json
 media_cache.json
 schedule_state.json
+schedule_overrides.json
 resume_state.json
 tmdb_cache.json
 tmdb_config.json

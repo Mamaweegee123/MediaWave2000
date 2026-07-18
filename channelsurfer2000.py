@@ -84,6 +84,13 @@ from mediawave.scheduling import (
     ordered_channel_lineup,
     remove_path_from_schedule,
 )
+from mediawave.schedule_overrides import (
+    load_schedule_overrides,
+    overrides_for_channel,
+    resolve_current_with_overrides,
+    save_schedule_overrides,
+    splice_overrides_into_window,
+)
 from mediawave.playback_state import active_playback_path, media_paths_match, playback_frame_matches, tune_context_matches
 from mediawave.playback_health import (
     LOCAL_PLAYBACK_HEALTHY,
@@ -620,6 +627,7 @@ def resolve_resource_path(*relative_candidates):
 
 MEDIA_CACHE_FILE = os.path.join(DATA_DIR, "media_cache.json")
 SCHEDULE_STATE_FILE = os.path.join(DATA_DIR, "schedule_state.json")
+SCHEDULE_OVERRIDES_FILE = os.path.join(DATA_DIR, "schedule_overrides.json")
 TMDB_CACHE_FILE = os.path.join(DATA_DIR, "tmdb_cache.json")
 TMDB_OVERRIDES_FILE = os.path.join(DATA_DIR, "tmdb_overrides.json")
 TMDB_REVIEW_FILE = os.path.join(DATA_DIR, "tmdb_review.json")
@@ -5742,6 +5750,14 @@ class Channel:
         self.schedule_anchor = GLOBAL_START
         self.schedule_entries = []
         self.playback_order = CATALOG_PLAYBACK_ORDER_RANDOM
+        # Saved Schedule Editor overrides for THIS channel (see
+        # mediawave/schedule_overrides.py). Only ever set on media
+        # channels (apply_schedule_overrides_to_channels); empty means
+        # every method below behaves exactly as before overrides existed.
+        self.schedule_overrides = []
+
+    def set_schedule_overrides(self, overrides):
+        self.schedule_overrides = list(overrides or [])
 
     def get_duration(self, file):
         cached = self.duration_cache.get(file)
@@ -5767,6 +5783,31 @@ class Channel:
             return 0
 
     def get_current_entry_and_offset(self):
+        # A saved override wins over the generated loop for the instant it
+        # covers: an added program plays (joined in progress if its start
+        # already passed), a pulled interval plays nothing. Resolution
+        # happens here -- the generated entries and anchor math below are
+        # never modified by overrides.
+        if self.schedule_overrides:
+            resolved = resolve_current_with_overrides(self.schedule_overrides, time.time())
+            if resolved is not None:
+                kind, record, media_offset = resolved
+                if kind == "add":
+                    duration = float(record["end"]) - float(record["start"])
+                    return (
+                        {
+                            "kind": "content",
+                            "path": record["path"],
+                            "title": record.get("title") or format_program_title(record["path"]),
+                            "duration": duration,
+                            "start_offset": 0.0,
+                            "end_offset": duration,
+                            "source": "override",
+                        },
+                        media_offset,
+                    )
+                return None, 0
+
         entries = self.get_schedule_entries()
         if not entries:
             return None, 0
@@ -5814,6 +5855,30 @@ class Channel:
         return 0, 0
 
     def get_now_next(self):
+        # With overrides present, now/next must agree with the spliced
+        # window the guide shows -- derive both from it. The synthetic
+        # current_index=0 is safe: consumers only use the index to widen
+        # commercial pods (commercial_parent_window), and override/open
+        # items are never commercial entries.
+        if self.schedule_overrides:
+            now = time.time()
+            items = self.get_programs_for_window(now - 1, count=8)
+            for position, item in enumerate(items):
+                if item["start"] <= now < item["end"]:
+                    next_item = items[position + 1] if position + 1 < len(items) else None
+                    return {
+                        "current_path": item.get("path", ""),
+                        "current_title": item.get("title", ""),
+                        "current_start": item["start"],
+                        "current_end": item["end"],
+                        "current_index": 0,
+                        "current_entry": item.get("entry") or {},
+                        "next_path": (next_item or {}).get("path", ""),
+                        "next_title": (next_item or {}).get("title", ""),
+                        "next_index": 0,
+                        "next_entry": (next_item or {}).get("entry") or {},
+                    }
+
         index, offset = self.get_current_index_and_offset()
         if index is None:
             return None
@@ -5905,6 +5970,8 @@ class Channel:
                     "end": end_time,
                 }
             )
+        if self.schedule_overrides:
+            items = splice_overrides_into_window(items, self.schedule_overrides)
         return items
 
     def set_schedule(self, paths, anchor_time):
@@ -20119,7 +20186,8 @@ def _clear_layout(layout):
 class AdvancedConfigDialog(QDialog):
     def __init__(self, settings, channel_names=None, parent=None, channel_infos=None,
                  airing_rules_config=None, channel_shows_lookup=None, channel_genre_lookup=None,
-                 channel_logo_lookup=None, studio_channels_by_id=None):
+                 channel_logo_lookup=None, studio_channels_by_id=None,
+                 schedule_overrides_save=None):
         super().__init__(parent)
         self._init_settings = dict(settings or {})
         self.review_requested = False
@@ -20144,6 +20212,12 @@ class AdvancedConfigDialog(QDialog):
         self._channel_logo_lookup = channel_logo_lookup if isinstance(channel_logo_lookup, dict) else {}
         self._shared_logos_dir = shared_channel_logos_dir()
         self._studio_channels_by_id = studio_channels_by_id if isinstance(studio_channels_by_id, dict) else {}
+        # The Schedule Editor's Save Schedule pipeline (the main window's
+        # save_schedule_overrides_from_editor). None means saving is
+        # unavailable (e.g. tests constructing this dialog standalone) --
+        # the workspace keeps its draft and explains rather than crashing.
+        self._schedule_overrides_save = schedule_overrides_save
+        self._schedule_editor_workspace = None
         self._channel_studio_drafts_file = CHANNEL_STUDIO_DRAFTS_FILE
         self._channel_studio_state_file = CHANNEL_STUDIO_STATE_FILE
         self.commercials_settings = normalize_commercials_config((settings or {}).get("commercials", {}))
@@ -20664,11 +20738,15 @@ class AdvancedConfigDialog(QDialog):
     def build_schedule_editor_tab(self):
         """Read-only programming board — see mediawave/schedule_editor/.
 
-        Same "own full-width mode" shape as Channel Studio above; touches
-        no scheduling or persisted state.
+        Phase 2: edits happen in an isolated draft; Save Schedule persists
+        per-date overrides through self._schedule_overrides_save. The
+        workspace reference is kept so closing this dialog with unsaved
+        draft changes can route through the same prompt as Back.
         """
         from mediawave.schedule_editor.dialog import build_schedule_editor_tab
-        return build_schedule_editor_tab(self, on_back=self._exit_schedule_editor_mode)
+        workspace, footer = build_schedule_editor_tab(self, on_back=self._exit_schedule_editor_mode)
+        self._schedule_editor_workspace = workspace
+        return workspace, footer
 
     def _on_adv_nav_clicked(self, idx):
         """Route main-settings nav clicks normally; Channel Studio and
@@ -20711,6 +20789,22 @@ class AdvancedConfigDialog(QDialog):
 
     def _exit_schedule_editor_mode(self):
         self._exit_to_main_settings()
+
+    def reject(self):
+        """Esc / window-close: if the Schedule Editor mode is showing a
+        dirty draft, route through its own Save / Discard / Keep Editing
+        prompt first -- closing the whole dialog must not silently drop
+        (or silently apply) draft schedule edits.
+        """
+        workspace = getattr(self, "_schedule_editor_workspace", None)
+        if (
+            workspace is not None
+            and self._mode_stack.currentIndex() == 2
+            and hasattr(workspace, "confirm_leave")
+            and not workspace.confirm_leave()
+        ):
+            return
+        super().reject()
 
     def _exit_to_main_settings(self):
         """Shared by every full-width mode's exit path (Channel Studio,
@@ -22721,6 +22815,13 @@ class ChannelSurfer(QWidget):
         self.duration_cache = load_json_file(MEDIA_CACHE_FILE, {})
         self.radiowave_metadata_cache = load_json_file(RADIOWAVE_METADATA_CACHE_FILE, {})
         self.schedule_state = load_json_file(SCHEDULE_STATE_FILE, {"catalogs": {}})
+        # Saved Schedule Editor overrides -- loaded once here, applied to
+        # live channels by apply_schedule_overrides_to_channels() every
+        # time apply_channel_schedules runs (startup, catalog reload,
+        # settings changes), and re-saved only by the Schedule Editor's
+        # own Save Schedule flow. A malformed file loads as empty without
+        # being rewritten (see mediawave/schedule_overrides.py).
+        self.schedule_overrides_data = load_schedule_overrides(SCHEDULE_OVERRIDES_FILE)
         self.commercial_library_cache_state = load_json_file(COMMERCIAL_LIBRARY_CACHE_FILE, {"signature": "", "root_folder": "", "assets": []})
         self.tmdb_cache = load_json_file(TMDB_CACHE_FILE, {})
         self.tmdb_overrides = load_json_file(TMDB_OVERRIDES_FILE, {"shows": {}})
@@ -24224,6 +24325,7 @@ class ChannelSurfer(QWidget):
             channel_genre_lookup=channel_genre_lookup,
             channel_logo_lookup=channel_logo_lookup,
             studio_channels_by_id=studio_channels_by_id,
+            schedule_overrides_save=self.save_schedule_overrides_from_editor,
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -25264,6 +25366,7 @@ class ChannelSurfer(QWidget):
                 channels_state.pop(name, None)
                 changed = True
 
+        self.apply_schedule_overrides_to_channels()
         if changed:
             save_json_file(SCHEDULE_STATE_FILE, self.schedule_state)
         if self.loading_card.isVisible() and rebuild_plan:
@@ -25280,6 +25383,49 @@ class ChannelSurfer(QWidget):
             rebuilt=len(rebuild_plan),
             cached=cached_count,
         )
+
+    def apply_schedule_overrides_to_channels(self):
+        """Attach each media channel's saved Schedule Editor overrides to
+        its live Channel object. Companion channels (WeatherStar,
+        RadioWaveTV, NetTV) are read-only in the Schedule Editor this
+        phase and never receive overrides. Safe to call repeatedly --
+        set_schedule_overrides replaces, never accumulates.
+        """
+        for channel in getattr(self, "channels", []) or []:
+            if getattr(channel, "channel_type", "media") != "media":
+                continue
+            if not hasattr(channel, "set_schedule_overrides"):
+                continue
+            channel_id = self.catalog_channel_id(channel)
+            channel.set_schedule_overrides(
+                overrides_for_channel(self.schedule_overrides_data, channel_id)
+            )
+
+    def save_schedule_overrides_from_editor(self, new_records):
+        """The Schedule Editor's Save Schedule pipeline: append the new
+        override records, persist atomically, and re-apply to live
+        channels. Returns (ok, error_message).
+
+        On failure nothing is applied to live channels and the in-memory
+        override list is rolled back, so the editor keeps its dirty draft
+        and Undo history intact (its own save handler relies on that).
+        Live playback is intentionally NOT restarted here -- get_current
+        re-resolves at the next program boundary or channel tune, so a
+        change covering the currently-airing slot takes effect after the
+        current program ends.
+        """
+        previous = [dict(record) for record in self.schedule_overrides_data.get("overrides", [])]
+        merged = dict(self.schedule_overrides_data)
+        merged["overrides"] = previous + [dict(record) for record in (new_records or [])]
+        ok, error = save_schedule_overrides(SCHEDULE_OVERRIDES_FILE, merged, now=time.time())
+        if not ok:
+            return False, error
+        self.schedule_overrides_data = load_schedule_overrides(SCHEDULE_OVERRIDES_FILE)
+        self.apply_schedule_overrides_to_channels()
+        self.guide_rows_cache = {}
+        if self.video_window.guide_overlay.isVisible():
+            self.refresh_guide()
+        return True, ""
 
     def stop_background_commercial_warmup(self):
         return
@@ -27265,6 +27411,34 @@ class ChannelSurfer(QWidget):
 
     # ---------------- PLAY ---------------- #
 
+    def schedule_open_time_retune(self, channel, end_epoch):
+        """Arm a one-shot timer to re-resolve live playback just after a
+        saved open-time gap ends, so a channel left tuned through a gap
+        picks its programming back up without user interaction. Token-
+        guarded: repeated tunes into the same gap arm exactly one timer,
+        and the timer no-ops if the user changed channels, left live
+        mode, or a newer gap superseded it.
+        """
+        token = (id(channel), float(end_epoch))
+        if getattr(self, "_open_time_retune_token", None) == token:
+            return
+        self._open_time_retune_token = token
+        delay_ms = max(500, int((float(end_epoch) - time.time()) * 1000) + 750)
+
+        def _retune():
+            if getattr(self, "_open_time_retune_token", None) != token:
+                return
+            self._open_time_retune_token = None
+            if not self.channels or not (0 <= self.current_channel < len(self.channels)):
+                return
+            if self.channels[self.current_channel] is not channel:
+                return
+            if self.playback_mode != "live":
+                return
+            self.play_channel(with_transition=False, show_channel_overlay=False, is_program_advance=True)
+
+        QTimer.singleShot(delay_ms, _retune)
+
     def play_channel(self, with_transition=True, show_channel_overlay=True, is_program_advance=False):
         if not self.channels:
             self.status.setText("Load a catalog to start surfing channels.")
@@ -27482,6 +27656,24 @@ class ChannelSurfer(QWidget):
         video, offset = ch.get_current()
 
         if not video:
+            resolved = (
+                resolve_current_with_overrides(ch.schedule_overrides, time.time())
+                if getattr(ch, "schedule_overrides", None)
+                else None
+            )
+            if resolved is not None and resolved[0] == "open":
+                # A saved Schedule Editor gap: this channel intentionally
+                # airs nothing right now. Stop playback (rather than
+                # leaving the previous channel's video running under an
+                # unrelated status line) and arm a one-shot re-tune for
+                # when the gap ends.
+                record = resolved[1]
+                self.stop_player()
+                self.playback_mode = "live"
+                until_label = time.strftime("%I:%M %p", time.localtime(record["end"])).lstrip("0")
+                self.status.setText(f"{ch.name}: open time until {until_label} — nothing is scheduled right now.")
+                self.schedule_open_time_retune(ch, record["end"])
+                return
             self.status.setText(f"{ch.name} does not have a playable video right now.")
             return
 
