@@ -304,6 +304,103 @@ def splice_overrides_into_window(items, overrides):
     return result
 
 
+def compact_overrides(records):
+    """The minimal equivalent override list for `records` (already in
+    creation/precedence order -- see module docstring).
+
+    Repeated editing sessions append-only (save_schedule_overrides_from_editor
+    in channelsurfer2000.py never rewrites older records), so the same time
+    range can accumulate several superseded records over time: an add later
+    fully pulled, a pull later re-filled, the same slot replaced again on a
+    later visit. None of that is wrong -- "last edit wins" already resolves
+    it correctly -- but persisting every superseded record forever makes the
+    file harder to read and grows without bound. This collapses the list to
+    only the records whose effect still shows through, using the exact same
+    sequential-mask logic (`subtract_interval`) the splice and draft
+    presentation already use, so compaction can never change what a channel
+    resolves to at any instant -- it only removes records that are already
+    entirely hidden.
+
+    Grouped by channel_id (channels never interact). Within a channel,
+    walks records in order maintaining the currently-surviving pieces of
+    every record seen so far; each new record trims the surviving pieces of
+    all earlier records to their still-visible remainder, then is added as a
+    fully-visible piece itself. Adjacent same-action/same-payload pieces are
+    merged back together afterward purely for file readability -- it does
+    not change resolution, since two adjacent pieces of the same action
+    already resolved identically either fused or split.
+    """
+    by_channel = {}
+    order = []
+    for record in records or []:
+        cid = record.get("channel_id", "")
+        if cid not in by_channel:
+            by_channel[cid] = []
+            order.append(cid)
+        by_channel[cid].append(record)
+
+    compacted = []
+    for cid in order:
+        compacted.extend(_compact_channel_overrides(by_channel[cid]))
+    return compacted
+
+
+def _compact_channel_overrides(records):
+    # Each survivor is (start, end, source_record) -- source_record supplies
+    # action/title/path/media_type/date for the piece.
+    survivors = []
+    for record in records:
+        start, end = record["start"], record["end"]
+        trimmed = []
+        for s_start, s_end, s_record in survivors:
+            for piece_start, piece_end in subtract_interval(s_start, s_end, start, end):
+                trimmed.append((piece_start, piece_end, s_record))
+        trimmed.append((start, end, record))
+        survivors = trimmed
+
+    survivors.sort(key=lambda item: item[0])
+    return _merge_adjacent(survivors)
+
+
+def _merge_adjacent(survivors):
+    merged = []
+    for start, end, record in survivors:
+        if merged:
+            prev_start, prev_end, prev_record = merged[-1]
+            same_payload = (
+                prev_record["action"] == record["action"]
+                and prev_record.get("path", "") == record.get("path", "")
+                and prev_record.get("title", "") == record.get("title", "")
+            )
+            if same_payload and prev_end == start:
+                merged[-1] = (prev_start, end, prev_record)
+                continue
+        merged.append((start, end, record))
+
+    result = []
+    for start, end, record in merged:
+        piece = dict(record)
+        piece["start"] = start
+        piece["end"] = end
+        result.append(piece)
+    return result
+
+
+def override_media_status(record, exists_fn):
+    """"resolved" | "unresolved" -- whether the saved override's target
+    media can still be found. Only add-type overrides reference media;
+    remove-type overrides (a saved Pull) have nothing to look up and are
+    always resolved. `exists_fn` is injected (real callers pass
+    os.path.isfile) so this stays testable without touching a filesystem.
+    """
+    if record.get("action") != OVERRIDE_ACTION_ADD:
+        return "resolved"
+    path = record.get("path", "")
+    if not path:
+        return "unresolved"
+    return "resolved" if exists_fn(path) else "unresolved"
+
+
 def resolve_current_with_overrides(overrides, now):
     """What the override layer says about instant `now`:
 

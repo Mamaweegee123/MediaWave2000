@@ -62,6 +62,19 @@ def channel_lock_reason(channel_type, has_data=True):
     return ""
 
 
+def _format_change_time_range(start_epoch, end_epoch):
+    """Pure time.strftime formatting (no Qt) -- kept local rather than
+    importing program_block.py's Qt-adjacent formatter, so this module
+    stays importable without a QApplication.
+    """
+    try:
+        start_label = time.strftime("%-I:%M", time.localtime(start_epoch))
+        end_label = time.strftime("%-I:%M %p", time.localtime(end_epoch))
+    except (OSError, OverflowError, ValueError):
+        return ""
+    return f"{start_label}–{end_label}"
+
+
 @dataclass
 class DraftChange:
     """One applied draft edit. `action` follows the saved-override
@@ -300,6 +313,31 @@ class DraftSchedule:
             if block.media_type != "open" and block.true_start < end and block.true_end > start
         ]
         return sorted(hits, key=lambda block: block.true_start)
+
+    # ── pending-changes summary (Phase 2.1) ──────────────────────────
+
+    def describe_pending_changes(self):
+        """Friendly-language rows for every currently-pending draft
+        change, in edit order -- the Pending Changes panel renders these
+        directly rather than keeping any list of its own (see dialog.py),
+        so it can never drift out of sync with the actual change model.
+        """
+        return [self._describe_change(change) for change in self._changes]
+
+    def _describe_change(self, change):
+        lane = self.lane_for(change.channel_id)
+        channel_label = f"Ch {lane.number} · {lane.name}" if lane is not None else "Ch ?"
+        time_label = _format_change_time_range(change.start, change.end)
+        if change.action == OVERRIDE_ACTION_ADD:
+            headline = f"Put “{change.title or 'this media'}” on air"
+        else:
+            headline = f"Pulled “{change.title or 'this program'}”"
+        return {
+            "change_id": change.change_id,
+            "action": change.action,
+            "headline": headline,
+            "subline": f"{channel_label} · {time_label}" if time_label else channel_label,
+        }
 
     # ── save serialization ───────────────────────────────────────────
 

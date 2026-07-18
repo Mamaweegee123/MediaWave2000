@@ -85,7 +85,9 @@ from mediawave.scheduling import (
     remove_path_from_schedule,
 )
 from mediawave.schedule_overrides import (
+    compact_overrides,
     load_schedule_overrides,
+    override_media_status,
     overrides_for_channel,
     resolve_current_with_overrides,
     save_schedule_overrides,
@@ -20187,7 +20189,8 @@ class AdvancedConfigDialog(QDialog):
     def __init__(self, settings, channel_names=None, parent=None, channel_infos=None,
                  airing_rules_config=None, channel_shows_lookup=None, channel_genre_lookup=None,
                  channel_logo_lookup=None, studio_channels_by_id=None,
-                 schedule_overrides_save=None):
+                 schedule_overrides_save=None, schedule_overrides_remove=None,
+                 schedule_overrides_data_get=None):
         super().__init__(parent)
         self._init_settings = dict(settings or {})
         self.review_requested = False
@@ -20217,6 +20220,15 @@ class AdvancedConfigDialog(QDialog):
         # unavailable (e.g. tests constructing this dialog standalone) --
         # the workspace keeps its draft and explains rather than crashing.
         self._schedule_overrides_save = schedule_overrides_save
+        # The Saved Changes manager's removal action (the main window's
+        # remove_schedule_override_from_editor). Same None-means-unavailable
+        # contract as _schedule_overrides_save above.
+        self._schedule_overrides_remove = schedule_overrides_remove
+        # A getter, not a snapshot -- the main window reassigns (not
+        # mutates) self.schedule_overrides_data on every successful save/
+        # remove, so a plain passed-through dict would go stale as soon as
+        # the Saved Changes manager caused its own first removal.
+        self._schedule_overrides_data_get = schedule_overrides_data_get
         self._schedule_editor_workspace = None
         self._channel_studio_drafts_file = CHANNEL_STUDIO_DRAFTS_FILE
         self._channel_studio_state_file = CHANNEL_STUDIO_STATE_FILE
@@ -24326,6 +24338,8 @@ class ChannelSurfer(QWidget):
             channel_logo_lookup=channel_logo_lookup,
             studio_channels_by_id=studio_channels_by_id,
             schedule_overrides_save=self.save_schedule_overrides_from_editor,
+            schedule_overrides_remove=self.remove_schedule_override_from_editor,
+            schedule_overrides_data_get=lambda: self.schedule_overrides_data,
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -25403,8 +25417,9 @@ class ChannelSurfer(QWidget):
 
     def save_schedule_overrides_from_editor(self, new_records):
         """The Schedule Editor's Save Schedule pipeline: append the new
-        override records, persist atomically, and re-apply to live
-        channels. Returns (ok, error_message).
+        override records, compact the accumulated list to its minimal
+        equivalent (Phase 2.1 -- see compact_overrides' docstring), persist
+        atomically, and re-apply to live channels. Returns (ok, error_message).
 
         On failure nothing is applied to live channels and the in-memory
         override list is rolled back, so the editor keeps its dirty draft
@@ -25416,7 +25431,38 @@ class ChannelSurfer(QWidget):
         """
         previous = [dict(record) for record in self.schedule_overrides_data.get("overrides", [])]
         merged = dict(self.schedule_overrides_data)
-        merged["overrides"] = previous + [dict(record) for record in (new_records or [])]
+        merged["overrides"] = compact_overrides(previous + [dict(record) for record in (new_records or [])])
+        ok, error = save_schedule_overrides(SCHEDULE_OVERRIDES_FILE, merged, now=time.time())
+        if not ok:
+            return False, error
+        self.schedule_overrides_data = load_schedule_overrides(SCHEDULE_OVERRIDES_FILE)
+        self.apply_schedule_overrides_to_channels()
+        self.guide_rows_cache = {}
+        if self.video_window.guide_overlay.isVisible():
+            self.refresh_guide()
+        return True, ""
+
+    def remove_schedule_override_from_editor(self, record):
+        """The Saved Changes manager's "Remove Saved Change" / "Restore
+        Generated Schedule" action: delete exactly one saved override
+        record and reapply. Returns (ok, error_message).
+
+        Matches by value (the manager passes back the exact record it
+        listed) rather than by a synthetic id -- there is nothing else to
+        key on, and removing every value-equal record would be wrong if a
+        malformed edit ever produced true duplicates, so only the first
+        match is removed. On failure nothing is applied and the in-memory
+        override list is untouched, so the saved schedule stays exactly as
+        it was before the removal attempt.
+        """
+        records = list(self.schedule_overrides_data.get("overrides", []))
+        try:
+            index = records.index(record)
+        except ValueError:
+            return False, "That saved change could not be found — it may have already been removed."
+        del records[index]
+        merged = dict(self.schedule_overrides_data)
+        merged["overrides"] = records
         ok, error = save_schedule_overrides(SCHEDULE_OVERRIDES_FILE, merged, now=time.time())
         if not ok:
             return False, error

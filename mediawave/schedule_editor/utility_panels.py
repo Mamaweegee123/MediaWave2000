@@ -6,6 +6,7 @@ inspector as a flat advFooter-chromed panel (it IS the mode's footer-stack
 page, see build_selected_program_footer). None of this writes settings.
 """
 
+import os
 import time
 
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
@@ -119,6 +120,97 @@ def build_editing_tools_card(on_put_on_air=None, on_pull=None):
     )
     controls = {"put_btn": put_btn, "pull_btn": pull_btn, "set_hint": set_hint}
     return card, controls
+
+
+_PENDING_ROW_BG = "rgba(50, 70, 160, 60)"
+_PENDING_UNDO_BUTTON_STYLE = """
+    QPushButton {
+        min-width: 0px;
+        min-height: 22px;
+        padding: 2px 8px;
+        border-radius: 5px;
+        border: 1px solid rgba(96, 144, 255, 130);
+        background: transparent;
+        color: rgba(210, 222, 252, 220);
+        font-size: 10px;
+    }
+    QPushButton:hover {
+        border: 1px solid rgba(130, 170, 255, 200);
+        background: rgba(60, 84, 190, 120);
+        color: white;
+    }
+"""
+
+
+def build_pending_changes_card():
+    """Returns (card, update_fn). `update_fn(rows, on_undo_change)` renders
+    the draft's current change-set -- `rows` is exactly
+    DraftSchedule.describe_pending_changes()'s output, so this card is a
+    pure view over the real change model, never a second list that could
+    drift out of sync (Phase 2.1 spec section 10). `on_undo_change(change_id)`
+    is called when a row's "Undo This Change" button is clicked.
+
+    Internal command/class names, change ids, and raw paths never appear
+    here -- only the friendly headline/subline text draft_model.py already
+    produced.
+    """
+    content = QWidget()
+    layout = QVBoxLayout(content)
+    layout.setContentsMargins(0, 0, 0, 0)
+    layout.setSpacing(8)
+    layout.addWidget(_note_label("No unsaved changes"))
+    layout.addWidget(_note_label("Your lineup matches the saved schedule."))
+
+    card = StudioSection(
+        "Pending Changes",
+        content=content,
+        collapsible=False,
+        accent=False,
+    )
+
+    def update(rows, on_undo_change=None):
+        while layout.count():
+            item = layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.hide()
+                widget.deleteLater()
+
+        if not rows:
+            layout.addWidget(_note_label("No unsaved changes"))
+            layout.addWidget(_note_label("Your lineup matches the saved schedule."))
+            return
+
+        count_label = f"{len(rows)} unsaved change" + ("" if len(rows) == 1 else "s") + " in this draft."
+        layout.addWidget(_note_label(count_label))
+        for row in rows:
+            row_widget = QWidget()
+            row_widget.setStyleSheet(f"background: {_PENDING_ROW_BG}; border-radius: 8px;")
+            row_layout = QHBoxLayout(row_widget)
+            row_layout.setContentsMargins(10, 8, 8, 8)
+            row_layout.setSpacing(8)
+
+            text_col = QVBoxLayout()
+            text_col.setSpacing(2)
+            headline = QLabel(row["headline"])
+            headline.setWordWrap(True)
+            headline.setStyleSheet(f"color: {_VALUE_COLOR}; font-size: 12px; font-weight: 600; background: transparent;")
+            text_col.addWidget(headline)
+            subline = QLabel(row["subline"])
+            subline.setWordWrap(True)
+            subline.setStyleSheet(f"color: {_NOTE_COLOR}; font-size: 10px; background: transparent;")
+            text_col.addWidget(subline)
+            row_layout.addLayout(text_col, 1)
+
+            if on_undo_change is not None:
+                undo_btn = QPushButton("Undo This Change")
+                undo_btn.setStyleSheet(_PENDING_UNDO_BUTTON_STYLE)
+                undo_btn.clicked.connect(lambda _checked=False, cid=row["change_id"]: on_undo_change(cid))
+                row_layout.addWidget(undo_btn)
+
+            layout.addWidget(row_widget)
+
+    return card, update
 
 
 def build_next_up_card():
@@ -316,12 +408,18 @@ def build_selected_program_footer():
 
         if block.media_type == "open":
             layout.addWidget(_dim_line("Nothing is scheduled here — use Put On Air to fill this open time."))
+            origin_label = "Open time from unsaved edit" if block.source == "draft" else "Open time"
+            layout.addWidget(_dim_line(origin_label))
             return
 
         if block.source == "draft":
             origin_parts = ["Your unsaved schedule edit"]
         elif block.source == "override":
-            origin_parts = ["Scheduled by you"]
+            override_path = (block.raw_entries[0] or {}).get("path", "") if block.raw_entries else ""
+            if override_path and not os.path.isfile(override_path):
+                origin_parts = ["Saved change needs attention"]
+            else:
+                origin_parts = ["Scheduled by you"]
         else:
             origin_parts = ["Auto-generated schedule"]
         has_internal_break = not block.is_commercial and any(

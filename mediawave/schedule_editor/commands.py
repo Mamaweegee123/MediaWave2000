@@ -68,6 +68,16 @@ class PullProgramCommand:
     def time_range(self):
         return (self._block.true_start, self._block.true_end)
 
+    def command_change_id(self):
+        """The DraftChange id this command currently owns in
+        `draft.changes`, or None if it doesn't own one right now (the
+        cancel-out branch of apply(), below, removes someone else's
+        add-change instead of creating its own -- when that happens there
+        is nothing left in draft.changes for this command to "own", so it
+        correctly can't be looked up as a pending change to remove).
+        """
+        return self._remove_change.change_id if self._remove_change is not None else None
+
     def validate(self, draft, now=None):
         now = time.time() if now is None else now
         block = self._block
@@ -158,6 +168,12 @@ class PutOnAirCommand:
     @property
     def time_range(self):
         return (self._start, self.end)
+
+    def command_change_id(self):
+        """The DraftChange id this command currently owns, or None before
+        it has ever been applied.
+        """
+        return self._add_change.change_id if self._add_change is not None else None
 
     def validate(self, draft, now=None):
         now = time.time() if now is None else now
@@ -271,3 +287,38 @@ class CommandHistory:
     def clear(self):
         self._undo_stack = []
         self._redo_stack = []
+
+    def remove_pending_change(self, change_id, draft):
+        """Undo one specific currently-pending change (a Pending Changes
+        row's "Undo This Change" action) without touching any other
+        change, and without the arbitrary-history-surgery risk of just
+        splicing the command out of the stack.
+
+        Safe model: find the command in the undo stack that currently
+        owns `change_id` (redo-stack commands are already-undone, not
+        pending, so they're not eligible); rebuild the draft's change-set
+        from scratch by replaying every OTHER already-applied command, in
+        their original order, against a cleared draft. Each apply() is
+        deterministic and re-derives its effect from the draft state at
+        that point, so replaying in original order reproduces exactly
+        what would have happened had the removed command never run --
+        including its knock-on effects on later commands (e.g. a later
+        Pull that was cancelling out an earlier Put On Air's add-change).
+
+        Clears the redo branch, same as any new mutating action: the
+        removed command (and anything that depended on it) is no longer a
+        coherent "next" step to redo.
+        """
+        index = next(
+            (i for i, command in enumerate(self._undo_stack) if command.command_change_id() == change_id),
+            None,
+        )
+        if index is None:
+            return False
+        remaining = self._undo_stack[:index] + self._undo_stack[index + 1:]
+        draft.clear_changes()
+        for command in remaining:
+            command.apply(draft)
+        self._undo_stack = remaining
+        self._redo_stack = []
+        return True

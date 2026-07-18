@@ -7,6 +7,7 @@ the same rounded-corner/glow language StudioSection already established
 "the same building", just not literally the same widget class.
 """
 
+import os
 import time
 
 from PySide6.QtCore import Qt, Signal
@@ -69,6 +70,46 @@ _TEXT_COLOR = "rgba(210, 222, 252, 235)"
 _TEXT_DIM = "rgba(158, 172, 210, 220)"
 _SELECTED_BORDER = "rgba(255, 218, 96, 235)"
 
+# Small corner pills distinguishing generated / unsaved-draft / saved-
+# override state (Phase 2.1 spec section 4) -- a corner badge, never a
+# title-covering banner, and only rendered at the "wide" content tier
+# where there's real room beside the title. Selection stays the strongest
+# visual cue (the yellow border, unaffected by any of this); these badges
+# are deliberately quieter than that.
+_DRAFT_BADGE_STYLE = (
+    "background: rgba(255, 188, 10, 215); color: rgba(40, 28, 4, 255);"
+    " font-size: 8px; font-weight: 700; letter-spacing: 0.5px;"
+    " border-radius: 5px; padding: 1px 5px;"
+)
+_SAVED_BADGE_STYLE = (
+    "background: rgba(130, 200, 170, 130); color: rgba(8, 26, 18, 255);"
+    " font-size: 8px; font-weight: 700; letter-spacing: 0.5px;"
+    " border-radius: 5px; padding: 1px 5px;"
+)
+_ATTENTION_BADGE_STYLE = (
+    "background: rgba(255, 130, 120, 215); color: rgba(40, 8, 6, 255);"
+    " font-size: 8px; font-weight: 700; letter-spacing: 0.5px;"
+    " border-radius: 5px; padding: 1px 5px;"
+)
+
+
+def _badge_spec(block):
+    """(text, stylesheet) for this block's corner badge, or None. Purely a
+    function of `block.source`/`media_type`/`raw_entries` -- no new state,
+    so it can never drift from what the inspector says about the same
+    block (utility_panels.py's build_selected_program_footer mirrors this
+    same source/path logic for its text-only equivalent).
+    """
+    if block.source == "draft":
+        return ("DRAFT", _DRAFT_BADGE_STYLE)
+    if block.source == "override":
+        if block.media_type != "open":
+            path = (block.raw_entries[0] or {}).get("path", "") if block.raw_entries else ""
+            if path and not os.path.isfile(path):
+                return ("NEEDS ATTENTION", _ATTENTION_BADGE_STYLE)
+        return ("SAVED", _SAVED_BADGE_STYLE)
+    return None
+
 
 def _format_time_range(start_epoch, end_epoch):
     try:
@@ -128,6 +169,17 @@ class ProgramBlockWidget(QFrame):
         self._level = _content_level(card_width)
         self._build_content(card_width)
         self._apply_style()
+
+        if self._level == "wide":
+            badge_spec = _badge_spec(block)
+            if badge_spec is not None:
+                badge_text, badge_style = badge_spec
+                badge = QLabel(badge_text, self._card)
+                badge.setStyleSheet(badge_style)
+                badge.adjustSize()
+                badge.move(max(0, card_width - badge.width() - 6), 6)
+                badge.show()
+                badge.raise_()
 
         time_label = _format_time_range(block.true_start, block.true_end)
         minutes = max(1, round(block.duration / 60))

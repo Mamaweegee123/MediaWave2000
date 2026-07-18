@@ -1,9 +1,13 @@
 # Schedule Editor Architecture
 
 Phase 2 introduced draft editing on top of the Phase 1 read-only board.
-This note documents the schedule-state layers, the draft/override design,
-and the policies the editor follows. It is the reference for later phases
-(drag-and-drop, resizing, recurring edits, bulk tools).
+Phase 2.1 added change review and saved-override management on top of
+that: a Pending Changes summary, safe per-change undo, a multi-change Save
+Review, clearer board/inspector state labels, a Saved Changes manager, and
+override compaction. This note documents the schedule-state layers, the
+draft/override design, and the policies the editor follows. It is the
+reference for later phases (drag-and-drop, resizing, recurring edits, bulk
+tools).
 
 ## The four schedule-state layers
 
@@ -148,12 +152,145 @@ progress afterward). **Deferred intentionally:** auto-shifting later
 programs, truncating media, auto-fill of gaps, replace-with-reflow, and
 any automatic conflict resolution.
 
+## Pending Changes (Phase 2.1)
+
+The right-column "Pending Changes" card (`utility_panels.build_pending_changes_card`)
+is a pure VIEW over `DraftSchedule.describe_pending_changes()` — it holds no
+list of its own, so it can never drift from the real change model (spec
+section 10). Each row is friendly text only ("Pulled “Viva La Bam”" / "Put
+“Samurai Cop” on air" plus a channel/time subline) — no command class
+names, change ids, or raw paths ever reach the UI. A clean draft shows the
+calm "No unsaved changes" state, never an empty list with no explanation.
+
+**Undoing one specific pending change** ("Undo This Change" per row) does
+not splice a command out of the undo stack directly — that would risk
+corrupting history ordering if a later command's effect depended on it
+(e.g. a Pull that cancels out an earlier Put On Air's add-change). Instead
+`CommandHistory.remove_pending_change` rebuilds the draft by clearing it
+and replaying every OTHER still-applied command, in original order,
+against the cleared draft. Each command's `apply()` re-derives its effect
+from the draft state at that point, so replaying reproduces exactly what
+would have happened had the removed command never run — including
+cascading through cancel-out chains. This clears the redo branch, the same
+as any new mutating action.
+
+## Save Review (Phase 2.1)
+
+`ScheduleEditorWorkspace._save_clicked` shows a review
+(`_confirm_save_review`) only when there is more than one pending change —
+a single simple edit stays a one-click save. The review lists a friendly
+bullet per change ("Pull “X” from CH 4", "Put “Y” on CH 4") and states
+explicitly that the changes apply to one date only, never a recurring
+rule. Choices are Save Schedule / Keep Editing / Cancel; the latter two
+both simply return to editing without saving.
+
+## Board and inspector state labels (Phase 2.1)
+
+Every block's `source` (`"generated"` | `"draft"` | `"override"`) drives a
+small corner badge (`program_block._badge_spec`) and the inspector's origin
+line (`utility_panels.build_selected_program_footer`) — the same
+source/path logic backs both, so they can never disagree:
+
+| source                              | board badge         | inspector label                  |
+|--------------------------------------|----------------------|-----------------------------------|
+| generated                            | none                 | "Auto-generated schedule"         |
+| draft, real program                  | `DRAFT`              | "Your unsaved schedule edit"      |
+| draft, open time                     | `DRAFT`              | "Open time from unsaved edit"     |
+| override, real program (media found) | `SAVED`              | "Scheduled by you"                |
+| override, open time                  | `SAVED`              | "Open time"                       |
+| override, media missing (Phase 2.1)  | `NEEDS ATTENTION`    | "Saved change needs attention"    |
+
+Badges are corner pills at the "wide" content tier only — they never cover
+a title, and selection (the yellow border) stays the strongest visual cue
+regardless of source.
+
+## Saved Changes manager (Phase 2.1)
+
+`mediawave/schedule_editor/saved_changes_manager.py`'s
+`SavedChangesManagerDialog` (opened via the toolbar's "Saved Changes"
+button) lists every saved override for the currently viewed date, grouped
+by channel in board order. Each row shows friendly text and one action:
+"Remove Change" for a saved add, "Restore Generated Schedule" for a saved
+pull — both are the same underlying action
+(`remove_schedule_override_from_editor` in channelsurfer2000.py: locate
+the exact record, delete it, atomically rewrite, reload, re-apply to live
+channels). A failed removal leaves the saved schedule untouched and shows
+a recoverable error; nothing is removed from the in-memory list until the
+write actually succeeds. The manager reads override data through a getter,
+not a snapshot, since a successful removal reassigns the whole
+`schedule_overrides_data` dict.
+
+## Unresolved overrides (Phase 2.1)
+
+A saved *add* override can go stale after saving — its target media may
+move, get renamed, or be deleted from the catalog. `override_media_status`
+(`mediawave/schedule_overrides.py`) reports `"unresolved"` when an add
+override's path no longer exists on disk (checked via an injected
+predicate, so it stays testable without touching a filesystem); remove-type
+overrides (a saved Pull) have no media to look up and are always
+`"resolved"`. This phase intentionally supports only two actions on an
+unresolved override — **Remove Saved Change** and **Keep for Later** (a
+no-op dismissal) — no replacement-media repair flow. Detection is a
+display-layer concern only: it does not change how `get_current`/the
+splice resolve at playback time, since the existing playback failure/retry
+paths already handle a missing file gracefully (this is not new
+Phase-2.1-introduced risk — a *generated* program can already reference
+deleted media the same way).
+
+## Override compaction (Phase 2.1)
+
+Saves are append-only (`save_schedule_overrides_from_editor` never rewrites
+older records), so repeated editing sessions on the same time range can
+accumulate several fully-superseded records over time (an add later fully
+pulled; the same slot replaced again on a later visit). `compact_overrides`
+(`mediawave/schedule_overrides.py`) collapses the accumulated list to its
+minimal equivalent before every save: grouped by channel, it walks records
+in order, sequentially masking each record's interval out of every earlier
+record's still-surviving pieces (reusing `subtract_interval`, the same
+sequential-mask primitive the splice and draft presentation already use),
+so compaction can never change what a channel resolves to at any instant —
+it only ever removes records that are already entirely hidden. Adjacent
+surviving pieces with the same action/payload are merged back together
+purely for file readability. Compaction never merges across a genuine gap
+(a real dependent ordering — e.g. add, then a partial pull creating a real
+hole in the middle, then the same add's tail) — the pieces separated by a
+different action's piece stay distinct.
+
+## User-language glossary
+
+**Pull** — Remove a program from this date's lineup. Leaves Open Time.
+
+**Put On Air** — Place library media into open time.
+
+**Undo This Change** — Reverse one specific pending edit, leaving every
+other pending edit untouched.
+
+**Revert Draft** — Discard every unsaved change for this editing session
+and return to the last saved (or originally generated) lineup. Never
+touches saved overrides.
+
+**Save Schedule** — Persist the current draft's changes as saved overrides
+for this date only.
+
+**Restore Generated Schedule** — Remove a saved manual change and return
+that time to MediaWave's automatic schedule.
+
+**Remove Change** — Remove a saved Put On Air; the time returns to
+whatever the automatic schedule would otherwise put there.
+
+**Saved change needs attention** — A saved override's target media could
+not be found in the current library.
+
 ## Testing
 
 `tools/test_schedule_draft.py` covers the 25 Phase 2 scenarios: draft
 isolation proofs (live `Channel` state untouched by editing), command
 semantics, dirty/revert behavior, override persistence (reload survival,
 malformed files, atomicity), companion protection, and workspace-level
-save/leave flows. `tools/test_schedule_editor.py` keeps the Phase 1
+save/leave flows. `tools/test_schedule_phase21.py` covers the 25 Phase 2.1
+scenarios: Pending Changes correctness, safe per-change undo, Save Review
+wording, board/inspector state labels, the Saved Changes manager, unresolved
+overrides, and compaction (no-op pairs, repeated replacement, and preserved
+dependent ordering). `tools/test_schedule_editor.py` keeps the Phase 1
 board/geometry coverage updated for the Phase 2 toolbar and Editing Tools
 card.

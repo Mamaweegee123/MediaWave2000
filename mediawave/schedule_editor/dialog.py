@@ -56,11 +56,13 @@ from .commands import (
 from .draft_model import DraftSchedule
 from .program_block import build_category_legend
 from .put_on_air_picker import PutOnAirPickerDialog, build_picker_catalog
+from .saved_changes_manager import SavedChangesManagerDialog
 from .schedule_model import build_board_model, sort_channel_rows
 from .utility_panels import (
     build_channel_defaults_card,
     build_editing_tools_card,
     build_next_up_card,
+    build_pending_changes_card,
     build_selected_program_footer,
 )
 
@@ -272,6 +274,7 @@ class ScheduleEditorWorkspace(QWidget):
             on_put_on_air=self._put_on_air_clicked,
             on_pull=self._pull_clicked,
         )
+        self._pending_changes_card, self._update_pending_changes = build_pending_changes_card()
         self._next_up_card, self._update_next_up = build_next_up_card()
         self._channel_defaults_card, self._update_channel_defaults = build_channel_defaults_card()
 
@@ -286,6 +289,7 @@ class ScheduleEditorWorkspace(QWidget):
         right_layout.setContentsMargins(0, 4, 0, 4)
         right_layout.setSpacing(18)
         right_layout.addWidget(self._editing_tools_card)
+        right_layout.addWidget(self._pending_changes_card)
         right_layout.addWidget(self._next_up_card)
         right_layout.addWidget(self._channel_defaults_card)
         right_layout.addStretch(1)
@@ -389,6 +393,12 @@ class ScheduleEditorWorkspace(QWidget):
         self._revert_btn.clicked.connect(self._revert_clicked)
         row.addWidget(self._revert_btn)
 
+        self._saved_changes_btn = QPushButton("Saved Changes")
+        self._saved_changes_btn.setStyleSheet(_NAV_BUTTON_STYLE)
+        self._saved_changes_btn.clicked.connect(self._open_saved_changes_manager)
+        self._saved_changes_btn.setToolTip("Review or remove schedule changes you've already saved for this date.")
+        row.addWidget(self._saved_changes_btn)
+
         self._save_btn = QPushButton("Save Schedule")
         self._save_btn.setStyleSheet(_SAVE_BUTTON_STYLE)
         self._save_btn.clicked.connect(self._save_clicked)
@@ -415,7 +425,7 @@ class ScheduleEditorWorkspace(QWidget):
         )
         self._revert_btn.setEnabled(dirty)
         self._revert_btn.setVisible(dirty)
-        self._revert_btn.setToolTip("Discard every unsaved change and restore the generated lineup.")
+        self._revert_btn.setToolTip("Discard all unsaved schedule changes for this editing session.")
 
         if dirty:
             self._status_badge.setStyleSheet(_DIRTY_BADGE_STYLE)
@@ -500,6 +510,7 @@ class ScheduleEditorWorkspace(QWidget):
             self._update_channel_defaults(None)
             self._update_details(None, None)
             self._update_tools_for_selection()
+        self._update_pending_changes(self._draft.describe_pending_changes(), self._undo_pending_change)
         self._update_toolbar_state()
 
     # ── selection ────────────────────────────────────────────────────
@@ -639,10 +650,65 @@ class ScheduleEditorWorkspace(QWidget):
         if command is not None:
             self._render_draft()
 
+    def _undo_pending_change(self, change_id):
+        """One Pending Changes row's "Undo This Change" action -- removes
+        just that change via CommandHistory's safe replay-based rebuild
+        (commands.py), leaving every other pending change untouched.
+        """
+        if self._history.remove_pending_change(change_id, self._draft):
+            self._render_draft()
+
     def _redo_clicked(self):
         command = self._history.redo(self._draft)
         if command is not None:
             self._render_draft()
+
+    # ── saved changes manager ────────────────────────────────────────
+
+    def _open_saved_changes_manager(self):
+        """Opens the Saved Changes manager for the currently viewed date
+        (Phase 2.1 spec section 5) -- lets the user remove a previously
+        SAVED override without touching schedule_overrides.json. Distinct
+        from Pending Changes/Revert, which only ever act on the unsaved
+        draft.
+        """
+        data_get = getattr(self._studio_dialog, "_schedule_overrides_data_get", None)
+        remove_fn = getattr(self._studio_dialog, "_schedule_overrides_remove", None)
+        if data_get is None or remove_fn is None:
+            self._show_info(
+                "Saved Changes isn't available",
+                "This window wasn't opened from a running MediaWave session, so saved changes can't be reviewed here.",
+            )
+            return
+        date_str = time.strftime("%Y-%m-%d", time.localtime(self._window_start))
+        date_label = time.strftime("%A, %B %-d", time.localtime(self._window_start))
+        channel_order = [
+            (row.get("channel_id", ""), f"Ch {row.get('number', 0)} · {row.get('name', 'Channel')}")
+            for row in self._channel_rows
+        ]
+        manager = SavedChangesManagerDialog(
+            date_str,
+            date_label,
+            channel_order,
+            data_get,
+            remove_fn,
+            on_changed=self._on_saved_changes_updated,
+            parent=self,
+        )
+        manager.exec()
+
+    def _on_saved_changes_updated(self):
+        """A saved override was removed from another dialog -- refresh
+        the board (and the guide cache upstream, already handled by
+        remove_schedule_override_from_editor) so this workspace shows the
+        restored/automatic programming immediately, without disturbing
+        scroll position or requiring the user to close and reopen.
+        """
+        if self.board is None:
+            return
+        scroll = self.board.scroll_positions()
+        self._refresh_board()
+        self.board.set_scroll_positions(scroll)
 
     # ── revert / save ────────────────────────────────────────────────
 
@@ -667,13 +733,47 @@ class ScheduleEditorWorkspace(QWidget):
         self._render_draft()
 
     def _save_clicked(self):
-        """Validate -> serialize -> hand to the app's save pipeline ->
-        mark clean. On failure the draft and Undo history are untouched.
-        Returns True when the save completed.
+        """Serialize the draft, ask for a Save Review when there's more
+        than one meaningful change (Phase 2.1 spec section 3 -- a single
+        simple change stays a plain one-click save), then perform the
+        save. Returns True when the save completed.
         """
         if not self._draft.is_dirty():
             return True
         records = self._draft.overrides_for_save()
+        if len(records) > 1 and not self._confirm_save_review(records):
+            return False
+        return self._perform_save(records)
+
+    def _confirm_save_review(self, records):
+        """The multi-change confirmation: a friendly bullet per change and
+        an explicit statement that these are one-date edits, never a
+        recurring rule. Returns True if the user chose to proceed.
+        """
+        date_label = time.strftime("%A, %B %-d", time.localtime(self._window_start))
+        bullets = "\n".join(f"•  {self._describe_record_for_review(record)}" for record in records)
+        box = self._make_message_box(
+            QMessageBox.Question,
+            f"Save {len(records)} lineup changes?",
+            f"{bullets}\n\nThese changes apply to {date_label} only.",
+        )
+        save_btn = box.addButton("Save Schedule", QMessageBox.AcceptRole)
+        box.addButton("Keep Editing", QMessageBox.RejectRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        return box.clickedButton() is save_btn
+
+    def _describe_record_for_review(self, record):
+        row = next((r for r in self._channel_rows if r.get("channel_id") == record.get("channel_id")), None)
+        channel_label = f"CH {row.get('number', '?')}" if row is not None else "this channel"
+        if record.get("action") == "add":
+            return f"Put “{record.get('title') or 'this media'}” on {channel_label}"
+        return f"Pull “{record.get('title') or 'this program'}” from {channel_label}"
+
+    def _perform_save(self, records):
+        """Validate -> hand to the app's save pipeline -> mark clean. On
+        failure the draft and Undo history are untouched.
+        """
         save = getattr(self._studio_dialog, "_schedule_overrides_save", None)
         if save is None:
             self._show_info(
