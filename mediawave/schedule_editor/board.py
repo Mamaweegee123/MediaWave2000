@@ -35,6 +35,7 @@ _BOARD_BG = "rgba(9, 11, 27, 255)"
 _RULER_BG = "rgba(16, 19, 44, 245)"
 _RULER_BORDER = "rgba(255, 255, 255, 24)"
 _RULER_TEXT = "rgba(158, 172, 210, 230)"
+_CORNER_DATE_TEXT = "rgba(138, 152, 190, 190)"
 _CORNER_BG = "rgba(13, 16, 38, 255)"
 _NOW_LINE_COLOR = "rgba(255, 218, 96, 210)"
 _NOW_BADGE_BG = "rgba(255, 218, 96, 235)"
@@ -121,6 +122,7 @@ class ProgrammingBoard(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self._selected_widget = None
+        self._selected_identity_cell = None
         self._px_per_minute = PX_PER_MINUTE
         self._lanes = None
         self._window_start = 0
@@ -138,14 +140,20 @@ class ProgrammingBoard(QWidget):
         self._corner_label = QLabel()
         self._corner_label.setObjectName("scheduleCornerDate")
         self._corner_label.setFixedSize(IDENTITY_COLUMN_WIDTH, TIME_HEADER_HEIGHT)
-        self._corner_label.setAlignment(Qt.AlignCenter)
+        # Right-aligned and tucked against the ruler's edge, with a
+        # smaller/dimmer weight than the ruler's own 12px DemiBold time
+        # labels -- reads as the first (secondary) cell of the guide
+        # ruler row, not a detached, equal-weight label floating in the
+        # corner's dead space.
+        self._corner_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        self._corner_label.setContentsMargins(0, 0, 10, 0)
         corner_font = self._corner_label.font()
-        corner_font.setPixelSize(12)
-        corner_font.setWeight(QFont.DemiBold)
+        corner_font.setPixelSize(11)
+        corner_font.setWeight(QFont.Normal)
         self._corner_label.setFont(corner_font)
         self._corner_label.setStyleSheet(
             f"QLabel#scheduleCornerDate {{ background: {_CORNER_BG};"
-            f" border-bottom: 1px solid {_RULER_BORDER}; color: {_RULER_TEXT}; }}"
+            f" border-bottom: 1px solid {_RULER_BORDER}; color: {_CORNER_DATE_TEXT}; }}"
         )
         outer.addWidget(self._corner_label, 0, 0)
 
@@ -217,6 +225,7 @@ class ProgrammingBoard(QWidget):
         lanes, window_start, window_end = self._lanes, self._window_start, self._window_end
 
         self._selected_widget = None
+        self._selected_identity_cell = None
 
         if self._ruler_content is not None:
             self._ruler_content.hide()
@@ -244,16 +253,37 @@ class ProgrammingBoard(QWidget):
         self._identity_content.setFixedSize(IDENTITY_COLUMN_WIDTH, max(len(lanes) * ROW_HEIGHT, 1))
         for index, lane in enumerate(lanes):
             cell = ChannelIdentityCell(lane, parent=self._identity_content)
-            cell.selected.connect(self.channel_selected.emit)
+            cell.selected.connect(self._on_channel_row_clicked)
             cell.move(0, index * ROW_HEIGHT)
             cell.show()
             self.identity_cells.append(cell)
         self._identity_content.move(0, 0)
         self._identity_content.show()
 
+    def _select_identity_cell(self, channel_id):
+        """The subtle "current selection context" state on the identity
+        column -- set both when a channel row is clicked directly and when
+        a program is selected (its channel is the selection context
+        either way, which is why Next Up/Channel Defaults update in both
+        cases). Distinct from `_selected_widget`'s strong per-program
+        state.
+        """
+        if self._selected_identity_cell is not None:
+            self._selected_identity_cell.set_selected(False)
+        self._selected_identity_cell = next(
+            (cell for cell in self.identity_cells if cell.channel_id == channel_id), None
+        )
+        if self._selected_identity_cell is not None:
+            self._selected_identity_cell.set_selected(True)
+
+    def _on_channel_row_clicked(self, channel_id):
+        self._select_identity_cell(channel_id)
+        self.channel_selected.emit(channel_id)
+
     def _on_block_selected(self, widget):
         if self._selected_widget is not None and self._selected_widget is not widget:
             self._selected_widget.set_selected(False)
         widget.set_selected(True)
         self._selected_widget = widget
+        self._select_identity_cell(widget.block.channel_id)
         self.program_selected.emit(widget.block)

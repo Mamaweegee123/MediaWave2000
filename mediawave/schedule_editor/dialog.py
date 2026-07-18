@@ -62,6 +62,49 @@ _TOP_BAR_BG = "rgba(9, 11, 27, 255)"
 _TOP_BAR_BORDER = "rgba(42, 54, 128, 255)"
 _SUBTITLE_COLOR = "rgba(138, 158, 212, 220)"
 
+_READ_ONLY_TOOLTIP = "Schedule editing will be enabled in the next phase."
+
+# A quiet, flat look for Back/prev/Today/next -- the app-wide QPushButton
+# rule (channelsurfer2000.py) gives every plain button a filled-blue
+# ~110x32px box, which made the whole toolbar read as a row of
+# similarly-weighted controls competing with the board for attention.
+# No min-width override, smaller padding -- these are navigation, not
+# primary actions.
+_NAV_BUTTON_STYLE = """
+    QPushButton {
+        min-width: 0px;
+        min-height: 26px;
+        padding: 4px 10px;
+        border-radius: 5px;
+        border: 1px solid rgba(68, 108, 235, 90);
+        background: transparent;
+        color: rgba(210, 222, 252, 230);
+        font-size: 12px;
+    }
+    QPushButton:hover, QPushButton:focus {
+        border: 1px solid rgba(96, 144, 255, 170);
+        background: rgba(50, 70, 160, 90);
+        color: white;
+    }
+"""
+
+# Undo/Redo/Save: visibly present, unmistakably inactive -- lower
+# contrast and no hover response at all (a hovering cursor over a
+# disabled control shouldn't invite a click), on top of a tooltip
+# explaining why.
+_READONLY_BUTTON_STYLE = """
+    QPushButton {
+        min-width: 0px;
+        min-height: 26px;
+        padding: 4px 10px;
+        border-radius: 5px;
+        border: 1px solid rgba(90, 100, 140, 60);
+        background: transparent;
+        color: rgba(120, 132, 168, 150);
+        font-size: 12px;
+    }
+"""
+
 
 def _channel_enabled(channel_id, catalog_channel_settings):
     settings = catalog_channel_settings if isinstance(catalog_channel_settings, dict) else {}
@@ -187,9 +230,17 @@ class ScheduleEditorWorkspace(QWidget):
         right_layout = QVBoxLayout(right_column)
         right_layout.setContentsMargins(0, 4, 0, 4)
         right_layout.setSpacing(18)
+        # All three cards get their natural content height (stretch=0) --
+        # Next Up already self-limits to 6 rows (build_next_up_card), so
+        # it doesn't need to greedily claim space; equal stretch=1/1 here
+        # previously stretched both cards' bodies to fill the scroll
+        # column's full allocated height, crowding Channel Defaults toward
+        # the bottom whenever Next Up's real row count grew. A trailing
+        # stretch collects any leftover space below the cards instead.
         right_layout.addWidget(self._editing_tools_card)
-        right_layout.addWidget(self._next_up_card, 1)
-        right_layout.addWidget(self._channel_defaults_card, 1)
+        right_layout.addWidget(self._next_up_card)
+        right_layout.addWidget(self._channel_defaults_card)
+        right_layout.addStretch(1)
         right_scroll = build_scroll_area(right_column)
         right_scroll.setFixedWidth(_RIGHT_COLUMN_WIDTH + 4)
         right_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -248,30 +299,44 @@ class ScheduleEditorWorkspace(QWidget):
         row.setSpacing(10)
 
         back_btn = QPushButton("←  Back")
+        back_btn.setStyleSheet(_NAV_BUTTON_STYLE)
         back_btn.clicked.connect(self._back)
         row.addWidget(back_btn)
 
         row.addSpacing(10)
 
         prev_btn = QPushButton("‹")
-        prev_btn.setFixedWidth(32)
+        prev_btn.setFixedWidth(30)
+        prev_btn.setStyleSheet(_NAV_BUTTON_STYLE)
         prev_btn.clicked.connect(lambda: self._shift_day(-1))
         row.addWidget(prev_btn)
 
         today_btn = QPushButton("Today")
+        today_btn.setStyleSheet(_NAV_BUTTON_STYLE)
         today_btn.clicked.connect(self._go_to_today)
         row.addWidget(today_btn)
 
         next_btn = QPushButton("›")
-        next_btn.setFixedWidth(32)
+        next_btn.setFixedWidth(30)
+        next_btn.setStyleSheet(_NAV_BUTTON_STYLE)
         next_btn.clicked.connect(lambda: self._shift_day(1))
         row.addWidget(next_btn)
 
         row.addStretch(1)
 
+        badge = QLabel("READ-ONLY PREVIEW")
+        badge.setStyleSheet(
+            "color: rgba(138, 158, 212, 190); font-size: 10px; font-weight: 700;"
+            " letter-spacing: 1px; background: transparent;"
+        )
+        row.addWidget(badge)
+        row.addSpacing(6)
+
         for label in ("Undo", "Redo", "Save Schedule"):
             btn = QPushButton(label)
             btn.setEnabled(False)
+            btn.setStyleSheet(_READONLY_BUTTON_STYLE)
+            btn.setToolTip(_READ_ONLY_TOOLTIP)
             row.addWidget(btn)
 
         return bar

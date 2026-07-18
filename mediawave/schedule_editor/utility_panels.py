@@ -8,16 +8,17 @@ page, see build_selected_program_footer). None of this writes settings.
 
 import time
 
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from mediawave.commercials import is_commercial_entry
 from mediawave.studio.cards import build_status_card
 from mediawave.studio.section import StudioSection
 
-from .program_block import MEDIA_TYPE_LABELS
+from .program_block import MEDIA_TYPE_ACCENTS, MEDIA_TYPE_LABELS
 
 _NOTE_COLOR = "rgba(138, 158, 212, 220)"
 _VALUE_COLOR = "rgba(210, 222, 252, 235)"
+_ACCENT_NEUTRAL = "rgba(255, 255, 255, 24)"
 
 _EDITING_TOOL_NAMES = [
     "Put On Air",
@@ -186,6 +187,17 @@ def build_selected_program_footer():
     outer.setContentsMargins(24, 10, 24, 12)
     outer.setSpacing(10)
 
+    # A thin category-colored accent, restrained on purpose -- reuses
+    # program_block.MEDIA_TYPE_ACCENTS (the exact palette the board's own
+    # blocks and the legend already use) so the inspector's accent can
+    # never drift from what the board shows. Neutral/transparent when
+    # nothing is selected.
+    accent_bar = QFrame()
+    accent_bar.setObjectName("selectedProgramAccentBar")
+    accent_bar.setFixedWidth(3)
+    accent_bar.setStyleSheet(f"background: {_ACCENT_NEUTRAL}; border-radius: 1px;")
+    outer.addWidget(accent_bar)
+
     column = QVBoxLayout()
     column.setSpacing(2)
     outer.addLayout(column, 1)
@@ -222,11 +234,15 @@ def build_selected_program_footer():
                 widget.deleteLater()
 
         if block is None:
+            accent_bar.setStyleSheet(f"background: {_ACCENT_NEUTRAL}; border-radius: 1px;")
             if lane is not None:
                 layout.addWidget(_prompt_label(f"Ch {lane.number} · {lane.name} selected — choose a program for full details."))
             else:
                 layout.addWidget(_prompt_label("Select a program to see its full details."))
             return
+
+        _, accent_color = MEDIA_TYPE_ACCENTS.get(block.media_type, MEDIA_TYPE_ACCENTS["tv"])
+        accent_bar.setStyleSheet(f"background: {accent_color}; border-radius: 1px;")
 
         title_lbl = QLabel(block.title)
         title_lbl.setStyleSheet(f"color: {_VALUE_COLOR}; font-size: 15px; font-weight: 700; background: transparent;")

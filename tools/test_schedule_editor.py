@@ -613,6 +613,30 @@ if back_buttons:
     back_buttons[0].click()
     check("clicking the top-toolbar Back button invokes the on_back callback", back_calls == [1], back_calls)
 
+readonly_buttons = [b for b in workspace._top_bar.findChildren(QPushButton) if b.text() in ("Undo", "Redo", "Save Schedule")]
+check("Undo/Redo/Save are all present", len(readonly_buttons) == 3, [b.text() for b in readonly_buttons])
+check(
+    "Undo/Redo/Save all stay disabled in this read-only phase",
+    all(b.isEnabled() is False for b in readonly_buttons),
+    [(b.text(), b.isEnabled()) for b in readonly_buttons],
+)
+check(
+    "each disabled control explains itself via tooltip",
+    all("next phase" in b.toolTip() for b in readonly_buttons),
+    [b.toolTip() for b in readonly_buttons],
+)
+check(
+    "a compact READ-ONLY PREVIEW badge sits in the toolbar, once",
+    top_bar_texts.count("READ-ONLY PREVIEW") == 1,
+    top_bar_texts,
+)
+nav_buttons = [b for b in workspace._top_bar.findChildren(QPushButton) if b.text() in ("←  Back", "‹", "Today", "›")]
+check(
+    "Back/prev/Today/next use the quiet nav style, not the app-wide 110px filled button box",
+    all("min-width: 0px" in b.styleSheet() for b in nav_buttons),
+    [(b.text(), b.styleSheet()) for b in nav_buttons],
+)
+
 
 # ---------------------------------------------------------------------------
 section("compact corner date: format, board placement, day navigation")
@@ -662,45 +686,92 @@ check(
 
 
 # ---------------------------------------------------------------------------
-section("channel identity: shared digital font, metric-compensated centering")
+section("channel identity: true ink-centered channel numbers (not advance-box AlignCenter)")
 # ---------------------------------------------------------------------------
 
+from PySide6.QtGui import QFont, QFontMetrics
 from mediawave.channel_studio.studio_styles import channel_number_font_family
-from mediawave.schedule_editor.channel_row import ChannelIdentityCell
+from mediawave.schedule_editor.channel_row import (
+    ChannelIdentityCell,
+    _ChannelNumberBadge,
+    _ink_centered_origin,
+    _NUMBER_LANE_WIDTH,
+)
+from mediawave.schedule_editor.layout_constants import ROW_HEIGHT
 
-identity_lane = ChannelLane(channel_id="ch1", name="Movies", number=4, channel_type="media", logo_path="", blocks=[], has_data=True)
+# The actual bug (verified against the real loaded font, not asserted):
+# Qt.AlignHCenter centers a string's *advance* box, but this pixel-styled
+# OSD font has uneven left/right glyph bearing that differs per digit --
+# "1" and "6" don't even share the same bearing as each other, let alone
+# with a two-digit number -- so advance-box centering necessarily lands
+# each string at a different visual position. This section proves the fix
+# (centering the measured ink rect instead) puts every one of them on the
+# exact same true center, for real one- and two-digit numbers.
+badge_font = QFont(channel_number_font_family(), QFont().pointSize() + 5, QFont.Bold)
+badge_fm = QFontMetrics(badge_font)
+box_w, box_h = _NUMBER_LANE_WIDTH, ROW_HEIGHT
+
+ink_centers = {}
+for number_text in ("1", "6", "10", "12", "16"):
+    pen_x, pen_y = _ink_centered_origin(badge_fm, number_text, box_w, box_h)
+    ink = badge_fm.boundingRect(number_text)
+    center = (pen_x + ink.x() + ink.width() / 2.0, pen_y + ink.y() + ink.height() / 2.0)
+    ink_centers[number_text] = center
+    check(
+        f"'{number_text}' ink lands on the lane's true geometric center (not just 'AlignCenter is set')",
+        abs(center[0] - box_w / 2.0) < 0.6 and abs(center[1] - box_h / 2.0) < 0.6,
+        (number_text, center, (box_w / 2.0, box_h / 2.0)),
+    )
+
+check(
+    "one-digit and two-digit numbers all land on the exact same visual center as each other",
+    len({(round(x, 1), round(y, 1)) for x, y in ink_centers.values()}) == 1,
+    ink_centers,
+)
+
+for identity_number in (1, 6, 10, 12, 16):
+    badge = _ChannelNumberBadge(identity_number)
+    check(
+        f"a real _ChannelNumberBadge({identity_number}) builds at the fixed lane size and paints without error",
+        badge.width() == _NUMBER_LANE_WIDTH and badge.height() == ROW_HEIGHT,
+        (badge.width(), badge.height()),
+    )
+    badge.repaint()  # exercises paintEvent for real -- would raise on a broken drawText call
+
+identity_lane = ChannelLane(channel_id="ch1", name="Movies", number=16, channel_type="media", logo_path="", blocks=[], has_data=True)
 identity_cell = ChannelIdentityCell(identity_lane)
-number_labels = [lbl for lbl in identity_cell.findChildren(QLabel) if lbl.text() == "4"]
-check("the identity cell renders the channel number", len(number_labels) == 1, [lbl.text() for lbl in identity_cell.findChildren(QLabel)])
-if number_labels:
-    number_lbl = number_labels[0]
+number_badges = [w for w in identity_cell.findChildren(_ChannelNumberBadge)]
+check("the identity cell renders exactly one channel-number badge", len(number_badges) == 1, len(number_badges))
+if number_badges:
     check(
         "the channel number uses the shared Channel Studio digital-font path",
-        number_lbl.font().family() == channel_number_font_family(),
-        (number_lbl.font().family(), channel_number_font_family()),
+        number_badges[0]._font.family() == channel_number_font_family(),
+        (number_badges[0]._font.family(), channel_number_font_family()),
     )
-    fm = number_lbl.fontMetrics()
-    expected_drop = max(0, fm.ascent() - fm.descent() - fm.capHeight())
-    check(
-        "the number label carries the metric-computed centering compensation for its real font",
-        f"padding-top: {expected_drop}px" in number_lbl.styleSheet(),
-        (expected_drop, number_lbl.styleSheet()),
-    )
-    check(
-        "the number label stays vertically centered within the row",
-        bool(number_lbl.alignment() & Qt.AlignVCenter),
-        int(number_lbl.alignment()),
-    )
-    check(
-        "the number is horizontally centered in its lane",
-        bool(number_lbl.alignment() & Qt.AlignHCenter),
-        int(number_lbl.alignment()),
-    )
-    check(
-        "the number lane is wide enough for centered one- or two-digit numbers",
-        number_lbl.width() >= 44 or number_lbl.maximumWidth() == 44,
-        (number_lbl.width(), number_lbl.maximumWidth()),
-    )
+    check("the badge renders the real channel number text", number_badges[0]._text == "16", number_badges[0]._text)
+
+# Selection state: subtle for a bare channel click, distinct from a
+# program's own strong yellow border (see program_block.ProgramBlockWidget).
+check("a fresh identity cell starts unselected", identity_cell._is_selected is False, identity_cell._is_selected)
+identity_cell.set_selected(True)
+check(
+    "set_selected(True) applies a distinctly different (subtle) style than the default",
+    "rgba(96, 144, 255, 30)" in identity_cell.styleSheet(),
+    identity_cell.styleSheet(),
+)
+from mediawave.schedule_editor.program_block import ProgramBlockWidget as _PBW
+
+selected_program_style = ""
+_sel_block = ProgramBlock(channel_id="ch1", title="X", media_type="tv", start=T0, end=T0 + 1800, duration=1800, true_start=T0, true_end=T0 + 1800)
+_sel_widget = _PBW(_sel_block)
+_sel_widget.set_selected(True)
+check(
+    "a selected program's own strong-state style is visually distinct from a selected channel row's subtle style",
+    identity_cell.styleSheet() != _sel_widget._card.styleSheet(),
+    None,
+)
+identity_cell.set_selected(False)
+check("set_selected(False) reverts to the unselected style", identity_cell._is_selected is False, identity_cell._is_selected)
 
 
 # ---------------------------------------------------------------------------
@@ -749,13 +820,28 @@ section("workspace integration: corner date wired to day navigation")
 # ---------------------------------------------------------------------------
 
 
+class _DynamicFakeChannel:
+    """Unlike FakeChannel (fixed T0-anchored items, clipped away entirely
+    once `window_start` drifts to "now"), this anchors its two shows to
+    whatever window_start is actually requested -- needed here since
+    ScheduleEditorWorkspace always opens on the real current time.
+    """
+
+    def get_programs_for_window(self, window_start, count=8):
+        return [
+            {"path": "/Media/A.mkv", "title": "Show A", "entry": {"path": "/Media/A.mkv", "kind": "content"}, "start": window_start, "end": window_start + 1800},
+            {"path": "/Media/B.mkv", "title": "Show B", "entry": {"path": "/Media/B.mkv", "kind": "content"}, "start": window_start + 1800, "end": window_start + 1800 + 3600},
+        ]
+
+
 class _FakeStudioDialogWithChannel:
     def __init__(self):
         self.catalog_channel_infos = [
-            {"id": "ch1", "name": "Channel One", "channel_type": "media", "default_number": 4}
+            {"id": "ch1", "name": "Channel One", "channel_type": "media", "default_number": 4},
+            {"id": "ch2", "name": "Channel Two", "channel_type": "media", "default_number": 5},
         ]
         self.catalog_channel_settings = {}
-        self._studio_channels_by_id = {"ch1": FakeChannel(two_show_items)}
+        self._studio_channels_by_id = {"ch1": _DynamicFakeChannel(), "ch2": _DynamicFakeChannel()}
 
 
 live_workspace = ScheduleEditorWorkspace(_FakeStudioDialogWithChannel())
@@ -773,6 +859,42 @@ if hasattr(live_workspace, "board"):
         and live_workspace.board._corner_label.text() != before_shift,
         (before_shift, live_workspace.board._corner_label.text()),
     )
+    right_column_widget = live_workspace._editing_tools_card.parentWidget()
+    right_layout = right_column_widget.layout()
+    card_indices = [right_layout.indexOf(w) for w in (live_workspace._editing_tools_card, live_workspace._next_up_card, live_workspace._channel_defaults_card)]
+    check(
+        "Editing Tools/Next Up/Channel Defaults all get their natural content height (stretch=0), "
+        "not equal-stretch that crowds Channel Defaults out",
+        all(right_layout.stretch(i) == 0 for i in card_indices),
+        [right_layout.stretch(i) for i in card_indices],
+    )
+
+    from PySide6.QtWidgets import QFrame as _QFrame
+
+    if live_workspace.board.identity_cells and live_workspace.board._grid_content.row_strips[0].block_widgets:
+        first_cell = live_workspace.board.identity_cells[0]
+        first_widget = live_workspace.board._grid_content.row_strips[0].block_widgets[0]
+        first_widget.selected.emit(first_widget.block)
+        check(
+            "selecting a program also marks its own channel row as the (subtle) selection context",
+            first_cell._is_selected is True,
+            first_cell._is_selected,
+        )
+        _, expected_accent = MEDIA_TYPE_ACCENTS.get(first_widget.block.media_type, MEDIA_TYPE_ACCENTS["tv"])
+        check(
+            "the Selected Program footer's accent bar matches the selected block's real category color",
+            expected_accent in live_workspace._details_footer.findChild(_QFrame, "selectedProgramAccentBar").styleSheet(),
+            live_workspace._details_footer.findChild(_QFrame, "selectedProgramAccentBar").styleSheet(),
+        )
+
+        if len(live_workspace.board.identity_cells) > 1:
+            second_cell = live_workspace.board.identity_cells[1]
+            second_cell.selected.emit(second_cell.channel_id)
+            check(
+                "selecting a different channel row clears the previous row's subtle state",
+                first_cell._is_selected is False and second_cell._is_selected is True,
+                (first_cell._is_selected, second_cell._is_selected),
+            )
 else:
     check("workspace with one real channel builds a board", False, "empty-state path hit unexpectedly")
 

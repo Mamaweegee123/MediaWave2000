@@ -5,8 +5,8 @@ identity column pinned during horizontal scrolling and the block strip
 scrolling, so they can never end up laid out inside the same scroll area.
 """
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QColor, QFont, QPixmap
+from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
 from mediawave.channel_studio.studio_styles import CHANNEL_NUMBER_COLOR, channel_number_font_family
@@ -20,6 +20,7 @@ _GRIDLINE_COLOR = "rgba(255, 255, 255, 12)"
 
 _ROW_BG = "rgba(16, 19, 44, 235)"
 _ROW_BORDER = "rgba(255, 255, 255, 18)"
+_ROW_SELECTED_BG = "rgba(96, 144, 255, 30)"
 _NAME_COLOR = "rgba(210, 222, 252, 235)"
 _SUBTITLE_COLOR = "rgba(138, 158, 212, 220)"
 
@@ -30,6 +31,63 @@ _ACCENT_BY_CHANNEL_TYPE = {
     "youtube": "rgba(96, 200, 255, 210)",
 }
 _DEFAULT_ACCENT = "rgba(68, 108, 235, 210)"
+_SELECTED_ACCENT = "rgba(150, 190, 255, 255)"
+
+_NUMBER_LANE_WIDTH = 44
+
+
+def _ink_centered_origin(font_metrics, text, box_width, box_height):
+    """The QPainter.drawText pen origin that centers `text`'s real ink --
+    QFontMetrics.boundingRect(), not the advance-width box AlignHCenter/
+    AlignVCenter use -- within a box_width x box_height box.
+
+    Digital/pixel-styled fonts (like the shared VHS/VCR OSD font) routinely
+    have uneven left/right glyph bearing that differs per character --
+    measured for this font, "1" has a 3px left / 7px right bearing, "6" has
+    0px left / 3px right, while two-digit numbers land close to symmetric.
+    Centering the advance box (what AlignHCenter does) therefore centers a
+    different amount of *dead space* around each string's ink, so different
+    numbers visually land at different horizontal positions even though
+    they're all nominally "centered". Centering the measured ink rect
+    itself is exact regardless of bearing, and correct for any string.
+    """
+    ink = font_metrics.boundingRect(text)
+    pen_x = (box_width - ink.width()) / 2.0 - ink.x()
+    pen_y = (box_height - ink.height()) / 2.0 - ink.y()
+    return pen_x, pen_y
+
+
+class _ChannelNumberBadge(QWidget):
+    """Paints a channel number using its measured ink bounding box (see
+    `_ink_centered_origin`) rather than relying on Qt.AlignCenter, which
+    only centers the font's advance-width box and drifts per-digit for
+    this font's uneven glyph bearing. Same VHS/VCR OSD font-loading path
+    and phosphor-green color Channel Studio's own channel numbers use
+    (channel_card.py's _build_channel_number_label) -- reused via the two
+    public ingredients (channel_number_font_family, CHANNEL_NUMBER_COLOR)
+    rather than re-approximated.
+    """
+
+    def __init__(self, number, parent=None):
+        super().__init__(parent)
+        self._text = str(number or "")
+        self.setFixedSize(_NUMBER_LANE_WIDTH, ROW_HEIGHT)
+        base_size = self.font().pointSize()
+        self._font = QFont(channel_number_font_family(), base_size + 5, QFont.Bold)
+
+        glow = QGraphicsDropShadowEffect(self)
+        glow.setColor(QColor(CHANNEL_NUMBER_COLOR))
+        glow.setBlurRadius(16)
+        glow.setOffset(0, 0)
+        self.setGraphicsEffect(glow)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setFont(self._font)
+        painter.setPen(QColor(CHANNEL_NUMBER_COLOR))
+        pen_x, pen_y = _ink_centered_origin(painter.fontMetrics(), self._text, self.width(), self.height())
+        painter.drawText(QPointF(pen_x, pen_y), self._text)
 
 
 class ChannelIdentityCell(QFrame):
@@ -42,55 +100,19 @@ class ChannelIdentityCell(QFrame):
     def __init__(self, lane, parent=None):
         super().__init__(parent)
         self.channel_id = lane.channel_id
+        self._is_selected = False
         self.setFixedSize(IDENTITY_COLUMN_WIDTH, ROW_HEIGHT)
         self.setCursor(Qt.PointingHandCursor)
         self.setObjectName("scheduleIdentityCell")
 
-        accent = _ACCENT_BY_CHANNEL_TYPE.get(lane.channel_type, _DEFAULT_ACCENT)
-        self.setStyleSheet(
-            "QFrame#scheduleIdentityCell {"
-            f" background: {_ROW_BG};"
-            f" border-bottom: 1px solid {_ROW_BORDER};"
-            f" border-left: 3px solid {accent};"
-            "}"
-        )
+        self._accent = _ACCENT_BY_CHANNEL_TYPE.get(lane.channel_type, _DEFAULT_ACCENT)
+        self._apply_style()
 
         row = QHBoxLayout(self)
         row.setContentsMargins(10, 8, 10, 8)
         row.setSpacing(10)
 
-        # A 44px number lane: wide enough that a centered one- OR
-        # two-digit number gets symmetric breathing room (34px left the
-        # big OSD digits visually crowding the lane's edges instead of
-        # reading as centered against the name/logo block beside them).
-        number_lbl = QLabel(str(lane.number or ""))
-        number_lbl.setFixedWidth(44)
-        number_lbl.setAlignment(Qt.AlignHCenter | Qt.AlignVCenter)
-        # Same VHS/VCR OSD font-loading path and phosphor-green treatment
-        # Channel Studio's own channel numbers use (channel_card.py's
-        # _build_channel_number_label) -- reused via the two public
-        # ingredients (channel_number_font_family, CHANNEL_NUMBER_COLOR)
-        # rather than re-approximated, so both tools read as the same
-        # product and share the same safe font-missing fallback.
-        base_size = number_lbl.font().pointSize()
-        number_lbl.setFont(QFont(channel_number_font_family(), base_size + 5, QFont.Bold))
-        # AlignVCenter centers the font's full line box, but digits only
-        # occupy [baseline - capHeight, baseline] of it -- with this OSD
-        # font's tall ascent, that leaves the visible glyphs floating above
-        # the row's true center. The glyph block sits (ascent - descent -
-        # capHeight)/2 above center, so padding the top by twice that
-        # re-centers what's actually drawn.
-        fm = number_lbl.fontMetrics()
-        drop = max(0, fm.ascent() - fm.descent() - fm.capHeight())
-        number_lbl.setStyleSheet(
-            f"color: {CHANNEL_NUMBER_COLOR}; background: transparent; padding-top: {drop}px;"
-        )
-        glow = QGraphicsDropShadowEffect(number_lbl)
-        glow.setColor(QColor(CHANNEL_NUMBER_COLOR))
-        glow.setBlurRadius(16)
-        glow.setOffset(0, 0)
-        number_lbl.setGraphicsEffect(glow)
-        row.addWidget(number_lbl)
+        row.addWidget(_ChannelNumberBadge(lane.number))
 
         text_col = QVBoxLayout()
         text_col.setSpacing(3)
@@ -119,6 +141,26 @@ class ChannelIdentityCell(QFrame):
 
         text_col.addStretch(1)
         row.addLayout(text_col, 1)
+
+    def _apply_style(self):
+        # A subtle tint + brighter accent line -- distinct from
+        # ProgramBlockWidget's strong 2px yellow border, so "this channel
+        # is the current selection context" reads as a quieter cue than
+        # "this exact program is selected".
+        border_color = _SELECTED_ACCENT if self._is_selected else self._accent
+        border_width = 4 if self._is_selected else 3
+        bg = _ROW_SELECTED_BG if self._is_selected else _ROW_BG
+        self.setStyleSheet(
+            "QFrame#scheduleIdentityCell {"
+            f" background: {bg};"
+            f" border-bottom: 1px solid {_ROW_BORDER};"
+            f" border-left: {border_width}px solid {border_color};"
+            "}"
+        )
+
+    def set_selected(self, is_selected):
+        self._is_selected = bool(is_selected)
+        self._apply_style()
 
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
