@@ -358,6 +358,144 @@ just `MoveProgramCommand`.
 multi-selection, bulk movement, automatic ripple of surrounding programs,
 cross-channel moves, and dragging directly from the Put On Air picker.
 
+## Duplicating and copying a program (Phase 3.1)
+
+`DuplicateProgramCommand` (`commands.py`) backs both **Duplicate Here…**
+and **Copy to Another Day…** -- they are mechanically identical (an
+optional set of explicitly pre-approved destination-overlap
+replace-removes, plus one add-change for the new airing) and share one
+class; `kind` ("duplicate" | "copy") controls only `description` and
+`group_kind`, never validation or apply/undo behavior. Unlike
+`MoveProgramCommand`, it never removes the source -- the original program
+is untouched by construction, not by a special case.
+
+- **Pending Changes / Save Review**: same `group_id`/`group_kind` tagging
+  scheme Move introduced (`DraftChange.group_id`, `DraftChange.group_kind`
+  -- generalized from Phase 3's `move_id` now that three different verbs
+  share the mechanism). `DraftSchedule._describe_group()` dispatches on
+  `group_kind` to produce "Duplicated "X"" or "Copied "X" to
+  <Weekday>" headlines; `group_id`/`group_kind` are draft-only, in-memory
+  tags that never reach `overrides_for_save()`'s output.
+- **Undo/Redo**: one step restores/reapplies the whole group (any
+  replaced blocks plus the new airing), exactly like Move.
+- **Conflict and replacement**: identical `CONFLICT_OVERLAPS_DESTINATION`
+  path, same Choose Another Time / Replace Overlapping Program / Cancel
+  resolution (`_try_duplicate` mirrors `_try_move` exactly). Unlike Move,
+  the source's own interval is a legitimate overlap target -- duplicating
+  "on top of" the original is reported like any other overlap rather than
+  silently excluded, since nothing about duplicating implies the original
+  should be treated as already-vacated.
+- **Same-channel only**, same reasoning as Move.
+
+**Duplicate Here…** (`duplicate_dialog.py`) is same-day, same-channel --
+a time picker only, styled like `MoveToDialog` but framed as
+"Original"/"New airing" (never "From"/"To", since nothing moves).
+
+**Copy to Another Day…** (`copy_to_day_dialog.py`) adds a `QDateEdit`
+(minimum today) on top of the same shape, and is the one workflow
+requiring a genuinely different calendar date. Its dialog text is
+regenerated on every date change to state explicitly: "This adds one
+airing on <date> only." -- there is no recurrence concept anywhere in the
+data model for this to accidentally imply.
+
+**Multi-date draft support.** `DraftSchedule` needed NO new plumbing for
+this: changes were already absolute-epoch anchored, not window-scoped
+(`_shift_day` has always kept the full change list across day navigation
+-- see `_shift_day`'s own docstring in `dialog.py`), so a Copy simply adds
+a `DraftChange` whose `start`/`end` land on a different date than the
+currently viewed window. What Phase 3.1 actually added is
+DISPLAY-layer date-grouping: every row `describe_pending_changes()`
+returns now carries `date`/`date_label` (derived from the row's own
+anchor change, same `time.strftime("%Y-%m-%d", ...)` rule
+`overrides_for_save()` already used), and both the Pending Changes card
+(`utility_panels.build_pending_changes_card`) and the Save Review dialog
+(`dialog._confirm_save_review`) group rows under a date heading ONLY once
+more than one distinct date is present -- the common single-date case
+renders exactly as it did before Phase 3.1.
+
+**Save is already atomic across dates.** `overrides_for_save()` returns
+one flat list regardless of how many dates its records span, and
+`save_schedule_overrides_from_editor` (`channelsurfer2000.py`) writes that
+whole list in one `save_schedule_overrides` call -- there was no separate
+"atomic multi-date save" mechanism to build; the existing single-file-
+write pipeline already has that property. A failed save leaves the entire
+draft (every date's pending changes) untouched, same as any other failed
+save. Revert Draft (`clear_changes()`) discards every unsaved change
+across every date in one call, same as always.
+
+**Midnight/start-date rule.** An airing belongs to the date on which it
+STARTS, full stop -- `overrides_for_save()`'s `time.strftime(...,
+time.localtime(change.start))` is the one and only place this is decided,
+and every write path (Move, Duplicate, Copy, Put On Air, Pull) goes
+through it identically. A copy whose destination time is 30 minutes
+before midnight and runs 90 minutes stays filed under the date it started
+on, even though it plays into the next calendar date -- consistent with
+how a saved move or put-on-air already behaved before Phase 3.1 gave
+users an easy way to place something deliberately near that boundary.
+
+**Recently Scheduled** (`recent_media.py`) is a small, schema-versioned,
+persisted history -- same shape as `schedule_overrides.py` (version
+field, `normalize_*`, atomic tempfile+`os.replace` write) -- of media
+placed into a lineup via Put On Air, Duplicate Here…, Copy to Another
+Day…, or Fill Open Time. Recorded ONLY on the success path of each
+action (`ScheduleEditorWorkspace._record_recent_placement`, called right
+after `self._history.execute(...)`), never on a cancelled picker or a
+failed validation. Deliberately separate from playback/watch history
+(which doesn't exist elsewhere in this codebase) -- this is "what has been
+scheduled", not "what has been watched". Keyed purely by `path` (never a
+live Channel/widget reference), newest-first, re-scheduling an
+already-recent item promotes it rather than duplicating it, capped at 30.
+Persists across restart; a recent item whose file has since vanished from
+the catalog simply doesn't appear in `build_picker_catalog`'s output, so
+it's silently absent rather than a dead/erroring row. Replaces Phase 3's
+session-only `_recent_put_paths` list entirely -- the persisted store IS
+the session's own recency too, since every placement write-throughs
+immediately.
+
+**Fill Open Time** (`fill_open_time_picker.py`) is a guided UI workflow
+over the EXISTING `PutOnAirCommand` -- not a new mutation path. It shares
+`build_picker_catalog`/`filter_picker_items` with the Put On Air picker
+(`put_on_air_picker.py`) and adds two pure helpers there:
+`rank_items_by_fit(items, gap_seconds, recent_paths)` (sort key: exact
+match first, then closer-fitting shorter media, then closer-fitting
+longer media; a recently-scheduled item breaks a tie between two equally-
+close candidates) and `fit_label(duration, gap)` ("Perfect fit" / "Leaves
+N min open" / "Runs N min long", always paired with the exact "X min for
+Y min open time" comparison -- an overrun is never hidden). Selecting an
+item calls the exact same `_try_put_on_air` Put On Air itself uses, so the
+existing longer-than-gap Extend Into Following Time/Choose Something
+Else/Cancel flow, and the exact-fit/shorter-leaves-remainder placement
+behavior, both come for free -- `PutOnAirCommand` only ever creates one
+add-change for its own duration, so a shorter fill naturally leaves the
+rest of the containing Open Time interval as Open Time via the same
+sequential-mask presentation logic that already re-splits it (no special-
+cased "remainder" code needed).
+
+**Override compaction** needed no changes for duplicate/copy: it already
+operates purely on interval math per channel (`subtract_interval` +
+adjacency-based merging in `schedule_overrides.py`), with no awareness of
+`group_id`/`group_kind` (which never reach the persisted record shape) --
+two intentional airings of the same media at different, non-adjacent
+times already survive as distinct records (adjacency + identical payload
+is required to merge), and a later remove/re-add at the same slot already
+collapses the superseded record away, exactly as it already did for
+repeated Put On Air/Pull edits.
+
+**Editing Tools layout.** Six real actions across two rows -- Put On
+Air/Pull/Move To… (the higher-frequency core) on top, Duplicate Here…/
+Copy to Another Day…/Fill Open Time (Phase 3.1's lineup-building
+shortcuts) below -- rather than one row of six competing for equal
+attention. Context rules: a real program selected enables Pull/Move
+To…/Duplicate Here…/Copy to Another Day… (Fill Open Time disabled); Open
+Time selected enables Put On Air/Fill Open Time (the other four
+disabled); a protected companion selection disables all six with the
+existing friendly lock-reason hint.
+
+**Deferred**: recurring/weekly copy, bulk duplication, multi-selection,
+edge resizing, ripple scheduling, companion-channel editing, cross-channel
+duplicate/copy, and dragging duplicate/copy interactions (both remain
+dialog-only this phase).
+
 ## User-language glossary
 
 **Pull** — Remove a program from this date's lineup. Leaves Open Time.
@@ -395,6 +533,16 @@ you place something there.
 **Saved change needs attention** — A saved override's target media could
 not be found in the current library.
 
+**Duplicate Here** — Add another airing of the selected program without
+moving the original.
+
+**Copy to Another Day** — Add one airing on a different date. This does
+not create a repeating rule.
+
+**Fill Open Time** — Find programs that fit the selected gap.
+
+**Recently Scheduled** — Media you recently placed into a lineup.
+
 ## Testing
 
 `tools/test_schedule_draft.py` covers the 25 Phase 2 scenarios: draft
@@ -413,6 +561,14 @@ and missing-media rejection, moving unsaved-added vs. saved-override
 blocks, cross-channel policy, and widget-level drag geometry (scroll-
 offset-aware channel/time mapping, frozen-column exclusion, preview
 valid/conflict/invalid styling, autoscroll start/stop, click-vs-drag
-threshold, and rebuild-mid-drag safety). `tools/test_schedule_editor.py`
+threshold, and rebuild-mid-drag safety). `tools/test_schedule_phase31.py`
+covers duplicate/copy command mechanics (original untouched, one Pending
+Changes row, Undo/Redo, conflict/replace), the destination-date and
+midnight/start-date rule for Copy to Another Day, multi-date Pending
+Changes grouping and Save Review, atomic multi-date save and its failure
+mode, Fill Open Time's ranking and fit labels, Recently Scheduled
+persistence (record/reload/dedup/cap/missing-media handling), override
+compaction of duplicate/copy scenarios, and context-sensitive Editing
+Tools enablement across all six actions. `tools/test_schedule_editor.py`
 keeps the Phase 1 board/geometry coverage updated for the Phase 2 toolbar
-and Editing Tools card (now including Move To…).
+and Editing Tools card (now all six Phase 3/3.1 actions).

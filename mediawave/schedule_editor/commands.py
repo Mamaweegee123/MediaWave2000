@@ -423,7 +423,7 @@ class MoveProgramCommand:
                     self._source_block.true_start,
                     self._source_block.true_end,
                     title=self._source_block.title,
-                    move_id=id(self),
+                    group_id=id(self),
                 )
         if self._removed_source_add_change is not None:
             draft.remove_change(self._removed_source_add_change.change_id)
@@ -442,7 +442,7 @@ class MoveProgramCommand:
                         replaced.true_start,
                         replaced.true_end,
                         title=replaced.title,
-                        move_id=id(self),
+                        group_id=id(self),
                     )
                     self._replace_changes.append(("remove", change))
         for kind, change in self._replace_changes:
@@ -461,7 +461,7 @@ class MoveProgramCommand:
                 title=self._source_block.title,
                 path=path,
                 media_type=self._source_block.media_type or "tv",
-                move_id=id(self),
+                group_id=id(self),
             )
         draft.apply_change(self._add_change)
 
@@ -477,6 +477,179 @@ class MoveProgramCommand:
             draft.apply_change(self._removed_source_add_change)
         elif self._pull_change is not None:
             draft.remove_change(self._pull_change.change_id)
+
+
+class DuplicateProgramCommand:
+    """Add another airing of an existing program WITHOUT touching the
+    original -- one command backs both "Duplicate Here…" (destination on
+    the same date) and "Copy to Another Day…" (destination on any date);
+    they're mechanically identical (an optional set of explicitly
+    pre-approved destination-overlap replace-removes, plus one add-change
+    for the new airing), differing only in which date the caller picks
+    and the user-facing verb. `kind` ("duplicate" | "copy") controls only
+    `description`/`group_kind` -- it has no effect on validate()/apply().
+
+    Same shape as MoveProgramCommand: `command_change_id()` hooks onto the
+    destination add-change, so Pending Changes/Save Review/per-change-
+    undo treat the whole group as one row, and undo restores every
+    replaced block exactly.
+
+    Same-channel-only for this phase (see MoveProgramCommand's docstring
+    for why cross-channel needs groundwork not yet established).
+    """
+
+    def __init__(self, source_block, destination_start, destination_channel_id=None, replace_blocks=None, kind="duplicate"):
+        self._source_block = source_block
+        self._destination_channel_id = destination_channel_id or source_block.channel_id
+        self._destination_start = float(destination_start)
+        self._replace_blocks = list(replace_blocks or [])
+        self._kind = kind
+
+        # Each entry: ("cancel", change) | ("remove", change) -- mirrors
+        # MoveProgramCommand's replace bookkeeping exactly.
+        self._replace_changes = []
+        self._add_change = None
+
+    @property
+    def description(self):
+        verb = "Duplicate" if self._kind == "duplicate" else "Copy"
+        return f"{verb} “{self._source_block.title}”"
+
+    @property
+    def source_channel_id(self):
+        return self._source_block.channel_id
+
+    @property
+    def source_start(self):
+        return self._source_block.true_start
+
+    @property
+    def destination_channel_id(self):
+        return self._destination_channel_id
+
+    @property
+    def destination_start(self):
+        return self._destination_start
+
+    @property
+    def duration(self):
+        return max(0.0, self._source_block.true_end - self._source_block.true_start)
+
+    @property
+    def destination_end(self):
+        return self._destination_start + self.duration
+
+    def command_change_id(self):
+        return self._add_change.change_id if self._add_change is not None else None
+
+    def validate(self, draft, now=None):
+        now = time.time() if now is None else now
+        block = self._source_block
+        verb = "duplicated" if self._kind == "duplicate" else "copied"
+
+        destination_lock = draft.lane_lock_reason(self._destination_channel_id)
+        if destination_lock:
+            return ValidationResult(False, destination_lock, [{"type": CONFLICT_PROTECTED_BLOCK, "message": destination_lock}])
+        # Phase 3.1 scope: same restriction as MoveProgramCommand, for the
+        # same reason -- a channel's catalog/airing context is
+        # channel-scoped groundwork that hasn't been established yet.
+        if self._destination_channel_id != block.channel_id:
+            verb_label = "Duplicating" if self._kind == "duplicate" else "Copying"
+            return ValidationResult(False, f"{verb_label} to another channel will be added later.")
+
+        if block.media_type == "open":
+            return ValidationResult(
+                False,
+                f"This is open time — there's nothing to {self._kind}. Use Put On Air to schedule something here.",
+            )
+        if block.is_commercial:
+            reason = f"Commercial breaks are placed by the commercial scheduler and can't be {verb} on their own."
+            return ValidationResult(False, reason, [{"type": CONFLICT_PROTECTED_BLOCK, "message": reason}])
+
+        path = (block.raw_entries[0] or {}).get("path", "") if block.raw_entries else ""
+        if not path:
+            reason = f"This program doesn't have a playable media file behind it, so it can't be {verb}."
+            return ValidationResult(False, reason, [{"type": CONFLICT_MISSING_MEDIA, "message": reason}])
+
+        duration = self.duration
+        if duration <= 0:
+            reason = f"This program doesn't have a usable duration, so it can't be {verb}."
+            return ValidationResult(False, reason, [{"type": CONFLICT_INVALID_DURATION, "message": reason}])
+
+        destination_end = self.destination_end
+        if destination_end <= now:
+            reason = "That time has already aired, so nothing new can be scheduled there."
+            return ValidationResult(False, reason, [{"type": CONFLICT_OUTSIDE_EDITABLE_RANGE, "message": reason}])
+
+        overlapped = draft.programs_overlapping(self._destination_channel_id, self._destination_start, destination_end)
+        overlapped = [
+            candidate
+            for candidate in overlapped
+            if not any(_block_identity_matches(candidate, replaced) for replaced in self._replace_blocks)
+        ]
+        if overlapped:
+            titles = [candidate.title for candidate in overlapped]
+            if len(titles) == 1:
+                overlap_start = max(self._destination_start, overlapped[0].true_start)
+                overlap_end = min(destination_end, overlapped[0].true_end)
+                overrun = max(0.0, overlap_end - overlap_start)
+                message = f"“{block.title}” would overlap “{titles[0]}” by {_minutes_label(overrun)}."
+            else:
+                joined = ", ".join(f"“{title}”" for title in titles)
+                message = f"“{block.title}” would overlap {joined}."
+            conflicts = [
+                {"type": CONFLICT_OVERLAPS_DESTINATION, "message": message, "overlapping_blocks": overlapped}
+            ]
+            return ValidationResult(False, message, conflicts)
+
+        return ValidationResult(True)
+
+    def apply(self, draft):
+        if not self._replace_changes and self._replace_blocks:
+            for replaced in self._replace_blocks:
+                existing = _draft_add_change_for_block(draft, replaced)
+                if existing is not None:
+                    self._replace_changes.append(("cancel", existing))
+                else:
+                    change = draft.new_change(
+                        OVERRIDE_ACTION_REMOVE,
+                        replaced.channel_id,
+                        replaced.true_start,
+                        replaced.true_end,
+                        title=replaced.title,
+                        group_id=id(self),
+                        group_kind=self._kind,
+                    )
+                    self._replace_changes.append(("remove", change))
+        for kind, change in self._replace_changes:
+            if kind == "cancel":
+                draft.remove_change(change.change_id)
+            else:
+                draft.apply_change(change)
+
+        if self._add_change is None:
+            path = (self._source_block.raw_entries[0] or {}).get("path", "") if self._source_block.raw_entries else ""
+            self._add_change = draft.new_change(
+                OVERRIDE_ACTION_ADD,
+                self._destination_channel_id,
+                self._destination_start,
+                self.destination_end,
+                title=self._source_block.title,
+                path=path,
+                media_type=self._source_block.media_type or "tv",
+                group_id=id(self),
+                group_kind=self._kind,
+            )
+        draft.apply_change(self._add_change)
+
+    def undo(self, draft):
+        if self._add_change is not None:
+            draft.remove_change(self._add_change.change_id)
+        for kind, change in reversed(self._replace_changes):
+            if kind == "cancel":
+                draft.apply_change(change)
+            else:
+                draft.remove_change(change.change_id)
 
 
 class CommandHistory:

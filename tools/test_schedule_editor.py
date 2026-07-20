@@ -548,7 +548,7 @@ check(
 
 
 # ---------------------------------------------------------------------------
-section("Editing Tools: three real actions, deferred tools as one dim line")
+section("Editing Tools: six real actions, deferred tools as one dim line")
 # ---------------------------------------------------------------------------
 
 from PySide6.QtWidgets import QLabel, QPushButton
@@ -557,8 +557,10 @@ from mediawave.schedule_editor.utility_panels import _COMING_LATER_TOOL_NAMES, b
 editing_tools_card, editing_tools_controls = build_editing_tools_card()
 editing_tools_buttons = editing_tools_card.findChildren(QPushButton)
 check(
-    "exactly the three real actions exist as buttons (no wall of deferred inert controls)",
-    sorted(b.text() for b in editing_tools_buttons) == ["Move To…", "Pull", "Put On Air"],
+    "exactly the six real actions exist as buttons (no wall of deferred inert controls)",
+    sorted(b.text() for b in editing_tools_buttons) == [
+        "Copy to Another Day…", "Duplicate Here…", "Fill Open Time", "Move To…", "Pull", "Put On Air",
+    ],
     [b.text() for b in editing_tools_buttons],
 )
 check(

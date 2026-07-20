@@ -9,9 +9,16 @@ listed but marked un-schedulable -- scheduling needs an exact duration,
 and inventing one would break the board's duration-true geometry. Their
 row explains this instead of silently hiding them.
 
-"Recently Used" is session-only by design this phase: a small list the
-workspace feeds back in after each confirmed Put On Air. Persisting
-recents is a later nicety, not schedule state.
+"Recently Scheduled" is backed by the persisted history in
+mediawave/schedule_editor/recent_media.py -- the workspace passes in
+the paths of media it has recently placed into a lineup (Put On Air,
+Duplicate Here…, Copy to Another Day…, Fill Open Time), newest first, so
+this stays a pure display concern with no direct file access.
+
+`rank_items_by_fit`/`fit_label`, below, back the Fill Open Time workflow
+(Phase 3.1): a dedicated ranking that puts an exact-duration match first,
+then closer-fitting shorter/longer media, over the same catalog this
+module already builds -- no second catalog model.
 """
 
 import os
@@ -32,7 +39,7 @@ from PySide6.QtWidgets import (
 
 from mediawave.local_media import parse_local_media
 
-_FILTERS = ["All", "Shows", "Movies", "Recently Used"]
+_FILTERS = ["All", "Shows", "Movies", "Recently Scheduled"]
 
 _TEXT_COLOR = "rgba(210, 222, 252, 235)"
 _DIM_COLOR = "rgba(138, 158, 212, 220)"
@@ -107,11 +114,14 @@ def build_picker_catalog(channels_by_id, channel_names_by_id=None):
 
 def filter_picker_items(items, mode="All", search="", recent_paths=None):
     """Pure filter used by the dialog: mode is one of _FILTERS; search
-    matches title/episode/channel case-insensitively; Recently Used keeps
-    the recent_paths order (most recent first).
+    matches title/episode/channel case-insensitively; Recently Scheduled
+    keeps the recent_paths order (most recent first) -- paths no longer
+    in the live catalog are simply absent from `items`, so a missing
+    recent item is handled gracefully by just not appearing rather than
+    erroring.
     """
     needle = (search or "").strip().lower()
-    if mode == "Recently Used":
+    if mode == "Recently Scheduled":
         by_path = {item["path"]: item for item in items}
         chosen = [by_path[path] for path in (recent_paths or []) if path in by_path]
     elif mode == "Shows":
@@ -130,6 +140,61 @@ def filter_picker_items(items, mode="All", search="", recent_paths=None):
             or needle in item["channel_name"].lower()
         ]
     return chosen
+
+
+# Fit tiers for Fill Open Time's ranking (Phase 3.1 spec section 6):
+# 0 exact, 1 shorter-than-gap, 2 longer-than-gap, 3 unknown duration
+# (never hidden, just always last -- there's no fit to rank it by).
+# Seconds of slack for "exact" is a float-rounding tolerance, not a
+# fuzzy-match window -- anything else is ranked purely by closeness.
+_EXACT_FIT_TOLERANCE_SECONDS = 30
+
+
+def fit_rank(item, gap_seconds, recent_paths=None):
+    """Sort key for one catalog item against an Open Time gap of
+    `gap_seconds`: (tier, distance_from_gap, recency_rank, title). Exact
+    matches sort first, then closer-fitting shorter media, then
+    closer-fitting longer media; within equally-close items, a recently
+    scheduled one sorts ahead of an equally-close unfamiliar one.
+    """
+    if not item.get("schedulable"):
+        return (3, 0.0, 0, item["title"].lower())
+    duration = float(item.get("duration", 0) or 0)
+    delta = duration - float(gap_seconds or 0)
+    if abs(delta) <= _EXACT_FIT_TOLERANCE_SECONDS:
+        tier = 0
+    elif delta < 0:
+        tier = 1
+    else:
+        tier = 2
+    recency_rank = 0 if item["path"] in (recent_paths or []) else 1
+    return (tier, abs(delta), recency_rank, item["title"].lower())
+
+
+def rank_items_by_fit(items, gap_seconds, recent_paths=None):
+    """`items` sorted for Fill Open Time -- see fit_rank's docstring for
+    the exact ordering. Stable Python sort, so items tied on every key
+    keep their incoming (alphabetical) order.
+    """
+    return sorted(items, key=lambda item: fit_rank(item, gap_seconds, recent_paths))
+
+
+def fit_label(duration_seconds, gap_seconds):
+    """The two-line fit explanation shown per row in Fill Open Time --
+    never hides an overrun (Phase 3.1 spec section 6): "Perfect fit",
+    "Leaves N min open", or "Runs N min long", each followed by the exact
+    "X min for Y min open time" comparison.
+    """
+    duration_seconds = float(duration_seconds or 0)
+    gap_seconds = float(gap_seconds or 0)
+    comparison = f"{format_duration_minutes(duration_seconds)} for {format_duration_minutes(gap_seconds)} open time"
+    delta = duration_seconds - gap_seconds
+    if abs(delta) <= _EXACT_FIT_TOLERANCE_SECONDS:
+        return f"Perfect fit\n{comparison}"
+    minutes = max(1, round(abs(delta) / 60))
+    if delta < 0:
+        return f"Leaves {minutes} min open\n{comparison}"
+    return f"Runs {minutes} min long\n{comparison}"
 
 
 def placement_preview_text(item, channel_number, channel_name, slot_start):
@@ -253,7 +318,12 @@ class PutOnAirPickerDialog(QDialog):
                 )
             self._list.addItem(row)
         if not visible:
-            placeholder = QListWidgetItem("Nothing here matches yet.")
+            text = (
+                "Nothing scheduled recently\n\nPrograms you put on air will appear here."
+                if self._mode == "Recently Scheduled" and not (self._search.text() or "").strip()
+                else "Nothing here matches yet."
+            )
+            placeholder = QListWidgetItem(text)
             placeholder.setFlags(placeholder.flags() & ~Qt.ItemIsEnabled)
             self._list.addItem(placeholder)
         self._selected = None

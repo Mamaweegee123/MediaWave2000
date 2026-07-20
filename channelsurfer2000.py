@@ -93,6 +93,11 @@ from mediawave.schedule_overrides import (
     save_schedule_overrides,
     splice_overrides_into_window,
 )
+from mediawave.schedule_editor.recent_media import (
+    load_recent_media,
+    record_recent_media,
+    save_recent_media,
+)
 from mediawave.playback_state import active_playback_path, media_paths_match, playback_frame_matches, tune_context_matches
 from mediawave.playback_health import (
     LOCAL_PLAYBACK_HEALTHY,
@@ -630,6 +635,7 @@ def resolve_resource_path(*relative_candidates):
 MEDIA_CACHE_FILE = os.path.join(DATA_DIR, "media_cache.json")
 SCHEDULE_STATE_FILE = os.path.join(DATA_DIR, "schedule_state.json")
 SCHEDULE_OVERRIDES_FILE = os.path.join(DATA_DIR, "schedule_overrides.json")
+SCHEDULE_RECENT_MEDIA_FILE = os.path.join(DATA_DIR, "schedule_recent_media.json")
 TMDB_CACHE_FILE = os.path.join(DATA_DIR, "tmdb_cache.json")
 TMDB_OVERRIDES_FILE = os.path.join(DATA_DIR, "tmdb_overrides.json")
 TMDB_REVIEW_FILE = os.path.join(DATA_DIR, "tmdb_review.json")
@@ -20190,7 +20196,8 @@ class AdvancedConfigDialog(QDialog):
                  airing_rules_config=None, channel_shows_lookup=None, channel_genre_lookup=None,
                  channel_logo_lookup=None, studio_channels_by_id=None,
                  schedule_overrides_save=None, schedule_overrides_remove=None,
-                 schedule_overrides_data_get=None):
+                 schedule_overrides_data_get=None, schedule_recent_media_get=None,
+                 schedule_recent_media_record=None):
         super().__init__(parent)
         self._init_settings = dict(settings or {})
         self.review_requested = False
@@ -20229,6 +20236,13 @@ class AdvancedConfigDialog(QDialog):
         # remove, so a plain passed-through dict would go stale as soon as
         # the Saved Changes manager caused its own first removal.
         self._schedule_overrides_data_get = schedule_overrides_data_get
+        # Recently Scheduled (Phase 3.1): same None-means-unavailable
+        # contract as the override callbacks above. A getter (not a
+        # snapshot) for the same reason schedule_overrides_data_get is --
+        # the main window reassigns self.schedule_recent_media_data on
+        # every successful record.
+        self._schedule_recent_media_get = schedule_recent_media_get
+        self._schedule_recent_media_record = schedule_recent_media_record
         self._schedule_editor_workspace = None
         self._channel_studio_drafts_file = CHANNEL_STUDIO_DRAFTS_FILE
         self._channel_studio_state_file = CHANNEL_STUDIO_STATE_FILE
@@ -22834,6 +22848,13 @@ class ChannelSurfer(QWidget):
         # own Save Schedule flow. A malformed file loads as empty without
         # being rewritten (see mediawave/schedule_overrides.py).
         self.schedule_overrides_data = load_schedule_overrides(SCHEDULE_OVERRIDES_FILE)
+        # Recently Scheduled (Phase 3.1): media recently placed into a
+        # lineup via the Schedule Editor (Put On Air / Duplicate Here… /
+        # Copy to Another Day… / Fill Open Time). Deliberately separate
+        # from playback/watch history -- this is about what's been
+        # SCHEDULED, not watched, and the two concepts have no reason to
+        # ever merge.
+        self.schedule_recent_media_data = load_recent_media(SCHEDULE_RECENT_MEDIA_FILE)
         self.commercial_library_cache_state = load_json_file(COMMERCIAL_LIBRARY_CACHE_FILE, {"signature": "", "root_folder": "", "assets": []})
         self.tmdb_cache = load_json_file(TMDB_CACHE_FILE, {})
         self.tmdb_overrides = load_json_file(TMDB_OVERRIDES_FILE, {"shows": {}})
@@ -24340,6 +24361,8 @@ class ChannelSurfer(QWidget):
             schedule_overrides_save=self.save_schedule_overrides_from_editor,
             schedule_overrides_remove=self.remove_schedule_override_from_editor,
             schedule_overrides_data_get=lambda: self.schedule_overrides_data,
+            schedule_recent_media_get=lambda: self.schedule_recent_media_data,
+            schedule_recent_media_record=self.record_recent_scheduled_media,
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -25472,6 +25495,23 @@ class ChannelSurfer(QWidget):
         if self.video_window.guide_overlay.isVisible():
             self.refresh_guide()
         return True, ""
+
+    def record_recent_scheduled_media(self, item):
+        """The Schedule Editor's Recently Scheduled write-through: called
+        right after a Put On Air / Duplicate Here… / Copy to Another
+        Day… / Fill Open Time action is applied to the draft (the same
+        moment the old session-only `_recent_put_paths` list used to
+        update) -- never on a cancelled picker or a validation failure,
+        since those never reach this call at all. `item` is a plain dict
+        with at least `path`/`title`/`media_type`/`duration`; unknown
+        extra keys are dropped by normalize_recent_item. Persists
+        immediately so history survives a restart; on a write failure the
+        in-memory list is simply left as it was (recent history is a
+        convenience, not schedule state, so it never blocks or reports
+        errors back to the caller).
+        """
+        self.schedule_recent_media_data = record_recent_media(self.schedule_recent_media_data, item, now=time.time())
+        save_recent_media(SCHEDULE_RECENT_MEDIA_FILE, self.schedule_recent_media_data)
 
     def stop_background_commercial_warmup(self):
         return

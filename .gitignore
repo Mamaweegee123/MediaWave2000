@@ -31,6 +31,7 @@ library.json
 media_cache.json
 schedule_state.json
 schedule_overrides.json
+schedule_recent_media.json
 resume_state.json
 tmdb_cache.json
 tmdb_config.json

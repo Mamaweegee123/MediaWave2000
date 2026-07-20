@@ -68,48 +68,72 @@ def _note_label(text):
     return label
 
 
-def build_editing_tools_card(on_put_on_air=None, on_pull=None, on_move_to=None):
-    """The real editing actions: Put On Air, Pull, and Move To… as live
-    controls, the deferred bulk tools as one dim "Coming later" line
-    (deliberately NOT more disabled buttons -- real actions shouldn't
-    share visual weight with inert ones).
+def build_editing_tools_card(
+    on_put_on_air=None,
+    on_pull=None,
+    on_move_to=None,
+    on_duplicate_here=None,
+    on_copy_to_day=None,
+    on_fill_open_time=None,
+):
+    """The real editing actions, grouped so six equally-real buttons never
+    read as one undifferentiated wall: Put On Air / Pull / Move To… (the
+    core, higher-frequency actions) share one row on top; Duplicate
+    Here… / Copy to Another Day… / Fill Open Time (Phase 3.1 --
+    lineup-building shortcuts) stack full-width below, one per line --
+    three-across clipped "Copy to Another Day…" at this card's width, and
+    these are the lower-frequency actions anyway, so a taller stack reads
+    better than truncated labels. The deferred bulk tools stay one dim
+    "Coming later" line underneath everything (deliberately NOT more
+    disabled buttons -- real actions shouldn't share visual weight with
+    inert ones).
 
-    Returns (card, controls): controls has `put_btn`, `pull_btn`,
-    `move_btn`, and `set_hint(text)` -- the hint line under the buttons
-    explains, in plain language, what the current selection allows (or why
-    it doesn't allow something), so a disabled button is never a mystery.
+    Returns (card, controls): controls has one `*_btn` per action plus
+    `set_hint(text)` -- the hint line under the buttons explains, in plain
+    language, what the current selection allows (or why it doesn't allow
+    something), so a disabled button is never a mystery.
     """
     content = QWidget()
     layout = QVBoxLayout(content)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
 
-    button_row = QHBoxLayout()
-    button_row.setSpacing(8)
-    put_btn = QPushButton("Put On Air")
-    put_btn.setStyleSheet(_TOOL_BUTTON_STYLE)
-    put_btn.setEnabled(False)
-    if on_put_on_air is not None:
-        put_btn.clicked.connect(on_put_on_air)
-    button_row.addWidget(put_btn)
+    def _tool_button(label, handler):
+        btn = QPushButton(label)
+        btn.setStyleSheet(_TOOL_BUTTON_STYLE)
+        btn.setEnabled(False)
+        if handler is not None:
+            btn.clicked.connect(handler)
+        return btn
 
-    pull_btn = QPushButton("Pull")
-    pull_btn.setStyleSheet(_TOOL_BUTTON_STYLE)
-    pull_btn.setEnabled(False)
-    if on_pull is not None:
-        pull_btn.clicked.connect(on_pull)
-    button_row.addWidget(pull_btn)
+    primary_row = QHBoxLayout()
+    primary_row.setSpacing(8)
+    put_btn = _tool_button("Put On Air", on_put_on_air)
+    primary_row.addWidget(put_btn)
+    pull_btn = _tool_button("Pull", on_pull)
+    primary_row.addWidget(pull_btn)
+    move_btn = _tool_button("Move To…", on_move_to)
+    primary_row.addWidget(move_btn)
+    primary_row.addStretch(1)
+    layout.addLayout(primary_row)
 
-    move_btn = QPushButton("Move To…")
-    move_btn.setStyleSheet(_TOOL_BUTTON_STYLE)
-    move_btn.setEnabled(False)
-    if on_move_to is not None:
-        move_btn.clicked.connect(on_move_to)
-    button_row.addWidget(move_btn)
-    button_row.addStretch(1)
-    layout.addLayout(button_row)
+    # Full-width, one per line -- three across (like the primary row)
+    # clipped "Copy to Another Day…" at this card's ~316px content width
+    # (verified in the running app). Stacking keeps every label fully
+    # readable regardless of window size, at the cost of a taller card;
+    # given these are the lower-frequency, longer-named lineup-building
+    # actions, that trade favors legibility.
+    secondary_col = QVBoxLayout()
+    secondary_col.setSpacing(6)
+    duplicate_btn = _tool_button("Duplicate Here…", on_duplicate_here)
+    secondary_col.addWidget(duplicate_btn)
+    copy_btn = _tool_button("Copy to Another Day…", on_copy_to_day)
+    secondary_col.addWidget(copy_btn)
+    fill_btn = _tool_button("Fill Open Time", on_fill_open_time)
+    secondary_col.addWidget(fill_btn)
+    layout.addLayout(secondary_col)
 
-    hint_lbl = _note_label("Select a program to pull or move it, or select open time to put something on air.")
+    hint_lbl = _note_label("Select a program to pull, move, duplicate, or copy it, or select open time to fill it.")
     layout.addWidget(hint_lbl)
 
     coming_lbl = _note_label("Coming later:  " + "  ·  ".join(_COMING_LATER_TOOL_NAMES))
@@ -125,7 +149,15 @@ def build_editing_tools_card(on_put_on_air=None, on_pull=None, on_move_to=None):
         collapsible=False,
         accent=False,
     )
-    controls = {"put_btn": put_btn, "pull_btn": pull_btn, "move_btn": move_btn, "set_hint": set_hint}
+    controls = {
+        "put_btn": put_btn,
+        "pull_btn": pull_btn,
+        "move_btn": move_btn,
+        "duplicate_btn": duplicate_btn,
+        "copy_btn": copy_btn,
+        "fill_btn": fill_btn,
+        "set_hint": set_hint,
+    }
     return card, controls
 
 
@@ -175,6 +207,33 @@ def build_pending_changes_card():
         accent=False,
     )
 
+    def _build_row_widget(row, on_undo_change):
+        row_widget = QWidget()
+        row_widget.setStyleSheet(f"background: {_PENDING_ROW_BG}; border-radius: 8px;")
+        row_layout = QHBoxLayout(row_widget)
+        row_layout.setContentsMargins(10, 8, 8, 8)
+        row_layout.setSpacing(8)
+
+        text_col = QVBoxLayout()
+        text_col.setSpacing(2)
+        headline = QLabel(row["headline"])
+        headline.setWordWrap(True)
+        headline.setStyleSheet(f"color: {_VALUE_COLOR}; font-size: 12px; font-weight: 600; background: transparent;")
+        text_col.addWidget(headline)
+        subline = QLabel(row["subline"])
+        subline.setWordWrap(True)
+        subline.setStyleSheet(f"color: {_NOTE_COLOR}; font-size: 10px; background: transparent;")
+        text_col.addWidget(subline)
+        row_layout.addLayout(text_col, 1)
+
+        if on_undo_change is not None:
+            undo_btn = QPushButton("Undo This Change")
+            undo_btn.setStyleSheet(_PENDING_UNDO_BUTTON_STYLE)
+            undo_btn.clicked.connect(lambda _checked=False, cid=row["change_id"]: on_undo_change(cid))
+            row_layout.addWidget(undo_btn)
+
+        return row_widget
+
     def update(rows, on_undo_change=None):
         while layout.count():
             item = layout.takeAt(0)
@@ -190,32 +249,26 @@ def build_pending_changes_card():
 
         count_label = f"{len(rows)} unsaved change" + ("" if len(rows) == 1 else "s") + " in this draft."
         layout.addWidget(_note_label(count_label))
-        for row in rows:
-            row_widget = QWidget()
-            row_widget.setStyleSheet(f"background: {_PENDING_ROW_BG}; border-radius: 8px;")
-            row_layout = QHBoxLayout(row_widget)
-            row_layout.setContentsMargins(10, 8, 8, 8)
-            row_layout.setSpacing(8)
 
-            text_col = QVBoxLayout()
-            text_col.setSpacing(2)
-            headline = QLabel(row["headline"])
-            headline.setWordWrap(True)
-            headline.setStyleSheet(f"color: {_VALUE_COLOR}; font-size: 12px; font-weight: 600; background: transparent;")
-            text_col.addWidget(headline)
-            subline = QLabel(row["subline"])
-            subline.setWordWrap(True)
-            subline.setStyleSheet(f"color: {_NOTE_COLOR}; font-size: 10px; background: transparent;")
-            text_col.addWidget(subline)
-            row_layout.addLayout(text_col, 1)
+        distinct_dates = list(dict.fromkeys(row.get("date", "") for row in rows))
+        # Only show date headers once a session actually spans more than
+        # one date (Copy to Another Day) -- the common single-date case
+        # stays exactly as calm as it was before Phase 3.1 (spec section
+        # 18: don't make this overwhelming for a single simple action).
+        if len(distinct_dates) <= 1:
+            for row in rows:
+                layout.addWidget(_build_row_widget(row, on_undo_change))
+            return
 
-            if on_undo_change is not None:
-                undo_btn = QPushButton("Undo This Change")
-                undo_btn.setStyleSheet(_PENDING_UNDO_BUTTON_STYLE)
-                undo_btn.clicked.connect(lambda _checked=False, cid=row["change_id"]: on_undo_change(cid))
-                row_layout.addWidget(undo_btn)
-
-            layout.addWidget(row_widget)
+        for date_key in distinct_dates:
+            date_rows = [row for row in rows if row.get("date", "") == date_key]
+            header = QLabel(date_rows[0].get("date_label", date_key))
+            header.setStyleSheet(
+                "color: rgba(150, 190, 255, 235); font-size: 11px; font-weight: 700; background: transparent;"
+            )
+            layout.addWidget(header)
+            for row in date_rows:
+                layout.addWidget(_build_row_widget(row, on_undo_change))
 
     return card, update
 

@@ -51,11 +51,15 @@ from .commands import (
     CONFLICT_OVERLAPS_DESTINATION,
     CONFLICT_OVERLAPS_FOLLOWING,
     CommandHistory,
+    DuplicateProgramCommand,
     MoveProgramCommand,
     PullProgramCommand,
     PutOnAirCommand,
 )
+from .copy_to_day_dialog import CopyToAnotherDayDialog
 from .draft_model import DraftSchedule
+from .duplicate_dialog import DuplicateHereDialog
+from .fill_open_time_picker import FillOpenTimePickerDialog
 from .move_to_dialog import MoveToDialog
 from .program_block import build_category_legend
 from .put_on_air_picker import PutOnAirPickerDialog, build_picker_catalog
@@ -240,7 +244,6 @@ class ScheduleEditorWorkspace(QWidget):
         self._draft = DraftSchedule()
         self._history = CommandHistory()
         self._selected_block = None
-        self._recent_put_paths = []
         self._saved_badge_timer = None
 
         outer = QVBoxLayout(self)
@@ -279,6 +282,9 @@ class ScheduleEditorWorkspace(QWidget):
             on_put_on_air=self._put_on_air_clicked,
             on_pull=self._pull_clicked,
             on_move_to=self._move_to_clicked,
+            on_duplicate_here=self._duplicate_here_clicked,
+            on_copy_to_day=self._copy_to_day_clicked,
+            on_fill_open_time=self._fill_open_time_clicked,
         )
         self._pending_changes_card, self._update_pending_changes = build_pending_changes_card()
         self._next_up_card, self._update_next_up = build_next_up_card()
@@ -547,47 +553,77 @@ class ScheduleEditorWorkspace(QWidget):
         put_btn = self._tools["put_btn"]
         pull_btn = self._tools["pull_btn"]
         move_btn = self._tools["move_btn"]
+        duplicate_btn = self._tools["duplicate_btn"]
+        copy_btn = self._tools["copy_btn"]
+        fill_btn = self._tools["fill_btn"]
         set_hint = self._tools["set_hint"]
 
-        if block is None:
+        def _disable_all():
             put_btn.setEnabled(False)
             pull_btn.setEnabled(False)
             move_btn.setEnabled(False)
-            set_hint("Select a program to pull or move it, or select open time to put something on air.")
+            duplicate_btn.setEnabled(False)
+            copy_btn.setEnabled(False)
+            fill_btn.setEnabled(False)
+
+        if block is None:
+            _disable_all()
+            set_hint("Select a program to pull, move, duplicate, or copy it, or select open time to fill it.")
             return
 
         lock_reason = self._draft.lane_lock_reason(block.channel_id)
         if lock_reason:
-            put_btn.setEnabled(False)
-            pull_btn.setEnabled(False)
-            move_btn.setEnabled(False)
+            _disable_all()
             set_hint(lock_reason)
             return
 
         if block.media_type == "open":
+            _disable_all()
             put_btn.setEnabled(True)
-            pull_btn.setEnabled(False)
-            move_btn.setEnabled(False)
-            set_hint("Open time is selected — Put On Air fills it with a show or movie of your choice.")
+            fill_btn.setEnabled(True)
+            set_hint(
+                "Open time is selected — Put On Air lets you choose anything; "
+                "Fill Open Time ranks media by how well it fits this gap."
+            )
             return
 
         put_btn.setEnabled(False)
+        fill_btn.setEnabled(False)
         validation = PullProgramCommand(block).validate(self._draft)
         pull_btn.setEnabled(validation.ok)
-        # Move To… uses a placeholder same-time destination purely to ask
-        # "can this block be moved at all" (protected/commercial/already-
-        # aired/missing-media) -- the real destination time is only known
-        # once the dialog is open, so its own overlap check happens later.
+        # Move To…/Duplicate Here…/Copy to Another Day… each use a
+        # placeholder same-time-ish destination purely to ask "can this
+        # block be acted on at all" (protected/commercial/already-aired/
+        # missing-media) -- the real destination time is only known once
+        # the relevant dialog is open, so its own overlap check happens
+        # later. All three share the exact same underlying validate()
+        # shape (Move via MoveProgramCommand, Duplicate/Copy via
+        # DuplicateProgramCommand), so a destination-overlap-only failure
+        # means "still possible, just needs a different time" for all of
+        # them alike.
         move_probe = MoveProgramCommand(block, block.channel_id, block.true_start + 60)
         move_probe_result = move_probe.validate(self._draft)
         move_ok = move_probe_result.ok or any(
             c["type"] == CONFLICT_OVERLAPS_DESTINATION for c in move_probe_result.conflicts
         )
         move_btn.setEnabled(move_ok)
+
+        duplicate_probe = DuplicateProgramCommand(block, block.true_start + 60, kind="duplicate")
+        duplicate_probe_result = duplicate_probe.validate(self._draft)
+        duplicate_ok = duplicate_probe_result.ok or any(
+            c["type"] == CONFLICT_OVERLAPS_DESTINATION for c in duplicate_probe_result.conflicts
+        )
+        duplicate_btn.setEnabled(duplicate_ok)
+        # Copy to Another Day shares Duplicate's validate() shape exactly
+        # (same-channel, different-date destinations aren't checked by
+        # validate() at all -- only the dialog constrains which date is
+        # offered), so the same probe result governs both buttons.
+        copy_btn.setEnabled(duplicate_ok)
+
         if validation.ok:
             set_hint(f"Pull removes “{block.title}” from the draft lineup and leaves open time.")
         elif move_ok:
-            set_hint(validation.reason + " You can still move it to a different time.")
+            set_hint(validation.reason + " You can still move, duplicate, or copy it to a different time.")
         else:
             set_hint(validation.reason)
 
@@ -660,7 +696,7 @@ class ScheduleEditorWorkspace(QWidget):
             lane.name,
             block.true_start,
             max(0.0, block.true_end - block.true_start),
-            recent_paths=self._recent_put_paths,
+            recent_paths=self._recent_paths(),
             parent=self,
         )
         if picker.exec() != PutOnAirPickerDialog.Accepted:
@@ -696,10 +732,50 @@ class ScheduleEditorWorkspace(QWidget):
             self._show_info("Can't schedule this here", validation.reason)
             return
         self._history.execute(command, self._draft)
-        self._recent_put_paths = [item["path"]] + [
-            path for path in self._recent_put_paths if path != item["path"]
-        ][:11]
+        lane = self._lanes_by_channel_id.get(slot_block.channel_id)
+        self._record_recent_placement(
+            item["path"], item["title"], item.get("media_type", "tv"), item["duration"],
+            channel_name=lane.name if lane is not None else "",
+        )
         self._render_draft(reselect=(slot_block.channel_id, slot_block.start))
+
+    # ── recently scheduled (Phase 3.1) ────────────────────────────────
+
+    def _recent_paths(self):
+        """Paths of media recently placed into a lineup, newest first --
+        the persisted history (recent_media.py) IS the session's own
+        recency too, since every successful placement write-throughs
+        immediately (see _record_recent_placement); there is no separate
+        session-only list to keep in sync.
+        """
+        getter = getattr(self._studio_dialog, "_schedule_recent_media_get", None)
+        if getter is None:
+            return []
+        data = getter() or {}
+        return [item.get("path", "") for item in (data.get("items") or []) if item.get("path")]
+
+    def _record_recent_placement(self, path, title, media_type, duration, channel_name=""):
+        """Records one successful placement (Put On Air / Duplicate
+        Here… / Copy to Another Day… / Fill Open Time) -- called only
+        from the success path of each action, right after
+        `self._history.execute(...)`, so a cancelled picker or a failed
+        validation never reaches this. Silently a no-op when this
+        workspace wasn't opened from a running MediaWave session (tests,
+        or `_schedule_recent_media_record` otherwise unavailable) --
+        recent history is a convenience, never schedule state.
+        """
+        recorder = getattr(self._studio_dialog, "_schedule_recent_media_record", None)
+        if recorder is None or not path:
+            return
+        recorder(
+            {
+                "path": path,
+                "title": title,
+                "media_type": media_type,
+                "duration": duration,
+                "channel_name": channel_name,
+            }
+        )
 
     def _move_to_clicked(self):
         """The guided, non-drag reference workflow (Phase 3 spec section
@@ -783,6 +859,125 @@ class ScheduleEditorWorkspace(QWidget):
             return "choose"
         return "cancel"
 
+    # ── duplicate / copy to another day (Phase 3.1) ───────────────────
+
+    def _duplicate_here_clicked(self):
+        """Duplicate Here…: another airing of the selected program on the
+        same channel and date -- the source program is never touched.
+        """
+        block = self._selected_block
+        if block is None:
+            return
+        lane = self._lanes_by_channel_id.get(block.channel_id)
+        if lane is None:
+            return
+        dialog = DuplicateHereDialog(block, lane, parent=self)
+        if dialog.exec() != DuplicateHereDialog.Accepted:
+            return
+        self._try_duplicate(
+            block, block.channel_id, dialog.destination_start(),
+            kind="duplicate", on_choose_another=self._duplicate_here_clicked,
+        )
+
+    def _copy_to_day_clicked(self):
+        """Copy to Another Day…: one airing on a different calendar date
+        -- explicitly NOT a recurring rule (spec section 4). The
+        underlying command is identical to Duplicate Here…'s; only the
+        destination date (and the wording) differ.
+        """
+        block = self._selected_block
+        if block is None:
+            return
+        lane = self._lanes_by_channel_id.get(block.channel_id)
+        if lane is None:
+            return
+        dialog = CopyToAnotherDayDialog(block, lane, default_date_epoch=self._window_start + 24 * 3600, parent=self)
+        if dialog.exec() != CopyToAnotherDayDialog.Accepted:
+            return
+        self._try_duplicate(
+            block, block.channel_id, dialog.destination_start(),
+            kind="copy", on_choose_another=self._copy_to_day_clicked,
+        )
+
+    def _try_duplicate(self, source_block, destination_channel_id, destination_start, replace_blocks=None, kind="duplicate", on_choose_another=None):
+        """The one path both Duplicate Here… and Copy to Another Day…
+        funnel through -- mirrors `_try_move`'s shape exactly (same
+        validate/conflict-resolution/execute flow, same shared conflict
+        dialog), since DuplicateProgramCommand backs both workflows and
+        never removes the source.
+        """
+        command = DuplicateProgramCommand(
+            source_block, destination_start, destination_channel_id, replace_blocks=replace_blocks, kind=kind,
+        )
+        validation = command.validate(self._draft)
+        overlap = next((c for c in validation.conflicts if c["type"] == CONFLICT_OVERLAPS_DESTINATION), None)
+        if not validation.ok and overlap is not None:
+            choice = self._ask_move_conflict(source_block, overlap)
+            if choice == "replace":
+                self._try_duplicate(
+                    source_block,
+                    destination_channel_id,
+                    destination_start,
+                    replace_blocks=overlap["overlapping_blocks"],
+                    kind=kind,
+                    on_choose_another=on_choose_another,
+                )
+            elif choice == "choose" and on_choose_another is not None:
+                on_choose_another()
+            return
+        if not validation.ok:
+            verb_label = "duplicate" if kind == "duplicate" else "copy"
+            self._show_info(f"Can't {verb_label} this program", validation.reason)
+            return
+        self._history.execute(command, self._draft)
+        path = (source_block.raw_entries[0] or {}).get("path", "") if source_block.raw_entries else ""
+        self._record_recent_placement(
+            path, source_block.title, source_block.media_type or "tv",
+            max(0.0, source_block.true_end - source_block.true_start),
+            channel_name=self._lanes_by_channel_id.get(destination_channel_id).name
+            if self._lanes_by_channel_id.get(destination_channel_id) is not None else "",
+        )
+        self._render_draft(reselect=(destination_channel_id, destination_start))
+
+    # ── fill open time (Phase 3.1) ────────────────────────────────────
+
+    def _fill_open_time_clicked(self):
+        """A guided UI workflow over the existing Put On Air command
+        (spec section 7) -- the ranked picker just chooses WHAT fills the
+        gap; placement, conflict handling (including the longer-than-gap
+        Extend/Choose Something Else/Cancel flow), and Open Time bookkeeping
+        all go through the exact same `_try_put_on_air` Put On Air itself
+        uses, so there is no second fill mutation path.
+        """
+        block = self._selected_block
+        if block is None or block.media_type != "open":
+            return
+        lane = self._lanes_by_channel_id.get(block.channel_id)
+        if lane is None:
+            return
+        names_by_id = {cid: summary.name for cid, summary in self._summaries_by_id.items()}
+        items = build_picker_catalog(self._studio_channels_by_id, names_by_id)
+        if not items:
+            self._show_info(
+                "Nothing to schedule yet",
+                "No catalog media is available to put on air. Load a catalog with playable files first.",
+            )
+            return
+        picker = FillOpenTimePickerDialog(
+            items,
+            lane.number,
+            lane.name,
+            block.true_start,
+            max(0.0, block.true_end - block.true_start),
+            recent_paths=self._recent_paths(),
+            parent=self,
+        )
+        if picker.exec() != FillOpenTimePickerDialog.Accepted:
+            return
+        item = picker.selected_item()
+        if item:
+            self._try_put_on_air(block, item, extend_over_following=False)
+
     def _undo_clicked(self):
         command = self._history.undo(self._draft)
         if command is not None:
@@ -804,15 +999,17 @@ class ScheduleEditorWorkspace(QWidget):
 
     def _reselect_target_for(self, command, after_undo):
         """Where selection should land after Undo/Redo of `command` --
-        explicit for MoveProgramCommand, since a plain fallback to the
-        stale `self._selected_block`'s (channel, start) would try to
-        reselect at a location the move just vacated (Phase 3 spec
-        section 13: selection follows the restored/moved block). Every
-        other command already reselects correctly via `_render_draft`'s
-        own fallback (the block's location didn't change), so returning
-        None there is deliberate, not an oversight.
+        explicit for MoveProgramCommand/DuplicateProgramCommand, since a
+        plain fallback to the stale `self._selected_block`'s (channel,
+        start) would try to reselect at a location the action just
+        vacated (Phase 3 spec section 13: selection follows the restored/
+        moved block; Phase 3.1 extends the same idea to duplicate/copy --
+        undo returns to the original, redo returns to the new airing).
+        Every other command already reselects correctly via
+        `_render_draft`'s own fallback (the block's location didn't
+        change), so returning None there is deliberate, not an oversight.
         """
-        if isinstance(command, MoveProgramCommand):
+        if isinstance(command, (MoveProgramCommand, DuplicateProgramCommand)):
             if after_undo:
                 return (command.source_channel_id, command.source_start)
             return (command.destination_channel_id, command.destination_start)
@@ -909,17 +1106,32 @@ class ScheduleEditorWorkspace(QWidget):
     def _confirm_save_review(self, pending_rows):
         """The multi-change confirmation: a friendly bullet per pending
         row (the exact same rows Pending Changes already shows -- a move
-        is one bullet, never separate pull/add lines) and an explicit
-        statement that these are one-date edits, never a recurring rule.
-        Returns True if the user chose to proceed.
+        is one bullet, never separate pull/add lines). When every pending
+        row lands on the same date, this stays exactly the single-date
+        summary Phase 2.1 shipped; when Copy to Another Day has put
+        changes on more than one date, the bullets are grouped under a
+        date heading per date instead (Phase 3.1 spec section 13), and
+        the title says how many days are affected. Either way, every
+        bullet's own change is still explicitly one-date (a copy's own
+        subline never implies recurrence). Returns True if the user chose
+        to proceed.
         """
-        date_label = time.strftime("%A, %B %-d", time.localtime(self._window_start))
-        bullets = "\n".join(f"•  {row['headline']} ({row['subline']})" for row in pending_rows)
-        box = self._make_message_box(
-            QMessageBox.Question,
-            f"Save {len(pending_rows)} lineup changes?",
-            f"{bullets}\n\nThese changes apply to {date_label} only.",
-        )
+        distinct_dates = list(dict.fromkeys(row.get("date", "") for row in pending_rows))
+        if len(distinct_dates) <= 1:
+            date_label = pending_rows[0].get("date_label") or time.strftime("%A, %B %-d", time.localtime(self._window_start))
+            bullets = "\n".join(f"•  {row['headline']} ({row['subline']})" for row in pending_rows)
+            body = f"{bullets}\n\nThese changes apply to {date_label} only."
+            title = f"Save {len(pending_rows)} lineup changes?"
+        else:
+            sections = []
+            for date_key in distinct_dates:
+                date_rows = [row for row in pending_rows if row.get("date", "") == date_key]
+                heading = date_rows[0].get("date_label", date_key)
+                bullets = "\n".join(f"•  {row['headline']} ({row['subline']})" for row in date_rows)
+                sections.append(f"{heading}\n{bullets}")
+            body = "\n\n".join(sections)
+            title = f"Save {len(pending_rows)} lineup changes across {len(distinct_dates)} days?"
+        box = self._make_message_box(QMessageBox.Question, title, body)
         save_btn = box.addButton("Save Schedule", QMessageBox.AcceptRole)
         box.addButton("Keep Editing", QMessageBox.RejectRole)
         box.addButton("Cancel", QMessageBox.RejectRole)
