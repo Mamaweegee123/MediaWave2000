@@ -29,6 +29,28 @@ CONFLICT_OUTSIDE_EDITABLE_RANGE = "outside_editable_range"
 CONFLICT_PROTECTED_BLOCK = "protected_block"
 CONFLICT_INVALID_DURATION = "invalid_media_duration"
 CONFLICT_MISSING_MEDIA = "missing_source_media"
+# Phase 3: a move's destination overlaps one or more existing blocks. Not
+# reused from CONFLICT_OVERLAPS_FOLLOWING -- a move's destination can
+# overlap on either side (or be fully covered by) an existing block, not
+# only "runs past the end of an open slot into what follows".
+CONFLICT_OVERLAPS_DESTINATION = "overlaps_destination"
+
+# The one shared snap-to-time interval for Move To…, drag placement math,
+# and command validation, so all three can never disagree about where a
+# placement actually lands. Not user-configurable yet (spec: later phases
+# may offer other increments; this phase ships one fixed default).
+SNAP_INTERVAL_SECONDS = 5 * 60
+
+
+def snap_to_interval(epoch_seconds, interval_seconds=SNAP_INTERVAL_SECONDS):
+    """Round to the nearest interval boundary -- 5:02 PM -> 5:00 PM, 5:03 PM
+    -> 5:05 PM, 5:28 PM -> 5:30 PM. Epoch-modulo rounding is timezone-safe
+    for any offset that is itself a multiple of `interval_seconds` (true
+    for the vast majority of real-world timezones), matching how
+    `auto_schedule_anchor`/`_floor_to_half_hour` already treat epoch-
+    modulo as safe half-hour alignment elsewhere in this codebase.
+    """
+    return round(epoch_seconds / interval_seconds) * interval_seconds
 
 
 @dataclass
@@ -41,6 +63,37 @@ class ValidationResult:
 def _minutes_label(seconds):
     minutes = max(1, round(abs(seconds) / 60))
     return f"{minutes} minute" + ("" if minutes == 1 else "s")
+
+
+def _draft_add_change_for_block(draft, block):
+    """The pending ADD change a draft-added (unsaved) block corresponds
+    to, if any -- shared by PullProgramCommand and MoveProgramCommand so
+    "remove this block from the draft" always means the same thing
+    regardless of which command does it: cancel out its own not-yet-saved
+    add-change rather than stacking a redundant remove on top of it. A
+    generated or already-saved-override block never matches (its
+    placement isn't a pending add-change at all), so this correctly
+    returns None for those.
+    """
+    if block.source != "draft" or block.media_type == "open":
+        return None
+    for change in draft.changes:
+        if (
+            change.action == OVERRIDE_ACTION_ADD
+            and change.channel_id == block.channel_id
+            and change.start == block.true_start
+            and change.end == block.true_end
+        ):
+            return change
+    return None
+
+
+def _block_identity_matches(block, other):
+    return (
+        block.channel_id == other.channel_id
+        and block.true_start == other.true_start
+        and block.true_end == other.true_end
+    )
 
 
 class PullProgramCommand:
@@ -97,20 +150,9 @@ class PullProgramCommand:
             return ValidationResult(False, reason, [{"type": CONFLICT_OUTSIDE_EDITABLE_RANGE, "message": reason}])
         return ValidationResult(True)
 
-    def _find_draft_add_change(self, draft):
-        for change in draft.changes:
-            if (
-                change.action == OVERRIDE_ACTION_ADD
-                and change.channel_id == self._block.channel_id
-                and change.start == self._block.true_start
-                and change.end == self._block.true_end
-            ):
-                return change
-        return None
-
     def apply(self, draft):
         if self._block.source == "draft" and self._block.media_type != "open":
-            existing = self._find_draft_add_change(draft)
+            existing = _draft_add_change_for_block(draft, self._block)
             if existing is not None:
                 self._removed_add_change = existing
                 draft.remove_change(existing.change_id)
@@ -237,6 +279,206 @@ class PutOnAirCommand:
             draft.remove_change(self._add_change.change_id)
 
 
+class MoveProgramCommand:
+    """Change when (and optionally which channel) a program airs, without
+    changing its length -- one user action in the draft's change history,
+    even though it's internally equivalent to pulling the block from its
+    source interval and putting the same media at the destination.
+    `command_change_id()` hooks onto the destination add-change, so
+    Pending Changes/Save Review/per-change-undo all treat a move as one
+    row, never separate Pull + Put On Air rows.
+
+    `replace_blocks`, if given, are destination-overlapping blocks the
+    user has ALREADY explicitly chosen to replace (via the Move To…/drag
+    conflict dialog) -- passing them here means validate() should treat
+    those specific overlaps as pre-approved rather than reporting them
+    again. Each is identified by (channel_id, true_start, true_end) since
+    blocks have no other stable identity across a presentation rebuild.
+    """
+
+    def __init__(self, source_block, destination_channel_id, destination_start, replace_blocks=None):
+        self._source_block = source_block
+        self._destination_channel_id = destination_channel_id
+        self._destination_start = float(destination_start)
+        self._replace_blocks = list(replace_blocks or [])
+
+        self._pull_change = None
+        self._removed_source_add_change = None
+        # Each entry: ("cancel", change) | ("remove", change) -- mirrors
+        # the source's own cancel-or-remove choice, per replaced block.
+        self._replace_changes = []
+        self._add_change = None
+
+    @property
+    def description(self):
+        return f"Move “{self._source_block.title}”"
+
+    @property
+    def source_channel_id(self):
+        return self._source_block.channel_id
+
+    @property
+    def source_start(self):
+        return self._source_block.true_start
+
+    @property
+    def destination_channel_id(self):
+        return self._destination_channel_id
+
+    @property
+    def destination_start(self):
+        return self._destination_start
+
+    @property
+    def duration(self):
+        return max(0.0, self._source_block.true_end - self._source_block.true_start)
+
+    @property
+    def destination_end(self):
+        return self._destination_start + self.duration
+
+    def command_change_id(self):
+        return self._add_change.change_id if self._add_change is not None else None
+
+    def validate(self, draft, now=None):
+        now = time.time() if now is None else now
+        block = self._source_block
+
+        source_lock = draft.lane_lock_reason(block.channel_id)
+        if source_lock:
+            return ValidationResult(False, source_lock, [{"type": CONFLICT_PROTECTED_BLOCK, "message": source_lock}])
+        destination_lock = draft.lane_lock_reason(self._destination_channel_id)
+        if destination_lock:
+            return ValidationResult(False, destination_lock, [{"type": CONFLICT_PROTECTED_BLOCK, "message": destination_lock}])
+        # Phase 3 scope: moving between channels needs safe cross-channel
+        # media-identity handling (a channel's catalog/airing context is
+        # channel-scoped) that hasn't been established yet -- same-channel
+        # moves only, for now.
+        if self._destination_channel_id != block.channel_id:
+            return ValidationResult(False, "Moving programs between channels will be added later.")
+
+        if block.media_type == "open":
+            return ValidationResult(
+                False,
+                "This is open time — there's nothing to move. Use Put On Air to schedule something here.",
+            )
+        if block.is_commercial:
+            reason = "Commercial breaks are placed by the commercial scheduler and can't be moved on their own."
+            return ValidationResult(False, reason, [{"type": CONFLICT_PROTECTED_BLOCK, "message": reason}])
+        if block.true_end <= now:
+            reason = "This program has already aired, so it can't be moved."
+            return ValidationResult(False, reason, [{"type": CONFLICT_OUTSIDE_EDITABLE_RANGE, "message": reason}])
+
+        path = (block.raw_entries[0] or {}).get("path", "") if block.raw_entries else ""
+        if not path:
+            reason = "This program doesn't have a playable media file behind it, so it can't be moved."
+            return ValidationResult(False, reason, [{"type": CONFLICT_MISSING_MEDIA, "message": reason}])
+
+        duration = self.duration
+        if duration <= 0:
+            reason = "This program doesn't have a usable duration, so it can't be moved."
+            return ValidationResult(False, reason, [{"type": CONFLICT_INVALID_DURATION, "message": reason}])
+
+        destination_end = self.destination_end
+        if destination_end <= now:
+            reason = "That time has already aired, so nothing can be moved there."
+            return ValidationResult(False, reason, [{"type": CONFLICT_OUTSIDE_EDITABLE_RANGE, "message": reason}])
+
+        if self._destination_channel_id == block.channel_id and abs(self._destination_start - block.true_start) < 1.0:
+            return ValidationResult(False, "This is already where it airs.")
+
+        overlapped = draft.programs_overlapping(self._destination_channel_id, self._destination_start, destination_end)
+        overlapped = [
+            candidate
+            for candidate in overlapped
+            if not _block_identity_matches(candidate, block)
+            and not any(_block_identity_matches(candidate, replaced) for replaced in self._replace_blocks)
+        ]
+        if overlapped:
+            titles = [candidate.title for candidate in overlapped]
+            if len(titles) == 1:
+                overlap_start = max(self._destination_start, overlapped[0].true_start)
+                overlap_end = min(destination_end, overlapped[0].true_end)
+                overrun = max(0.0, overlap_end - overlap_start)
+                message = f"“{block.title}” would overlap “{titles[0]}” by {_minutes_label(overrun)}."
+            else:
+                joined = ", ".join(f"“{title}”" for title in titles)
+                message = f"“{block.title}” would overlap {joined}."
+            conflicts = [
+                {"type": CONFLICT_OVERLAPS_DESTINATION, "message": message, "overlapping_blocks": overlapped}
+            ]
+            return ValidationResult(False, message, conflicts)
+
+        return ValidationResult(True)
+
+    def apply(self, draft):
+        if self._pull_change is None and self._removed_source_add_change is None:
+            existing = _draft_add_change_for_block(draft, self._source_block)
+            if existing is not None:
+                self._removed_source_add_change = existing
+            else:
+                self._pull_change = draft.new_change(
+                    OVERRIDE_ACTION_REMOVE,
+                    self._source_block.channel_id,
+                    self._source_block.true_start,
+                    self._source_block.true_end,
+                    title=self._source_block.title,
+                    move_id=id(self),
+                )
+        if self._removed_source_add_change is not None:
+            draft.remove_change(self._removed_source_add_change.change_id)
+        else:
+            draft.apply_change(self._pull_change)
+
+        if not self._replace_changes and self._replace_blocks:
+            for replaced in self._replace_blocks:
+                existing = _draft_add_change_for_block(draft, replaced)
+                if existing is not None:
+                    self._replace_changes.append(("cancel", existing))
+                else:
+                    change = draft.new_change(
+                        OVERRIDE_ACTION_REMOVE,
+                        replaced.channel_id,
+                        replaced.true_start,
+                        replaced.true_end,
+                        title=replaced.title,
+                        move_id=id(self),
+                    )
+                    self._replace_changes.append(("remove", change))
+        for kind, change in self._replace_changes:
+            if kind == "cancel":
+                draft.remove_change(change.change_id)
+            else:
+                draft.apply_change(change)
+
+        if self._add_change is None:
+            path = (self._source_block.raw_entries[0] or {}).get("path", "") if self._source_block.raw_entries else ""
+            self._add_change = draft.new_change(
+                OVERRIDE_ACTION_ADD,
+                self._destination_channel_id,
+                self._destination_start,
+                self.destination_end,
+                title=self._source_block.title,
+                path=path,
+                media_type=self._source_block.media_type or "tv",
+                move_id=id(self),
+            )
+        draft.apply_change(self._add_change)
+
+    def undo(self, draft):
+        if self._add_change is not None:
+            draft.remove_change(self._add_change.change_id)
+        for kind, change in reversed(self._replace_changes):
+            if kind == "cancel":
+                draft.apply_change(change)
+            else:
+                draft.remove_change(change.change_id)
+        if self._removed_source_add_change is not None:
+            draft.apply_change(self._removed_source_add_change)
+        elif self._pull_change is not None:
+            draft.remove_change(self._pull_change.change_id)
+
+
 class CommandHistory:
     """Undo/redo stacks over an ordered command list. execute() assumes
     the caller already validated; a new command after Undo clears the
@@ -308,17 +550,23 @@ class CommandHistory:
         Clears the redo branch, same as any new mutating action: the
         removed command (and anything that depended on it) is no longer a
         coherent "next" step to redo.
+
+        Returns the removed command (truthy) so callers can restore
+        selection to wherever it belongs -- e.g. a MoveProgramCommand's
+        source location -- or None if `change_id` wasn't found among the
+        currently-pending commands.
         """
         index = next(
             (i for i, command in enumerate(self._undo_stack) if command.command_change_id() == change_id),
             None,
         )
         if index is None:
-            return False
+            return None
+        removed = self._undo_stack[index]
         remaining = self._undo_stack[:index] + self._undo_stack[index + 1:]
         draft.clear_changes()
         for command in remaining:
             command.apply(draft)
         self._undo_stack = remaining
         self._redo_stack = []
-        return True
+        return removed

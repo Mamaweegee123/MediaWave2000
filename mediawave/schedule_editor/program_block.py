@@ -10,8 +10,8 @@ the same rounded-corner/glow language StudioSection already established
 import os
 import time
 
-from PySide6.QtCore import Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtCore import Qt, QPoint, Signal
+from PySide6.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 from .layout_constants import (
     BLOCK_GAP_PX,
@@ -144,11 +144,30 @@ class ProgramBlockWidget(QFrame):
     """
 
     selected = Signal(object)  # emits the underlying ProgramBlock
+    # Phase 3 direct manipulation -- mechanical mouse tracking only; every
+    # interpretation (destination channel/time, validity, conflicts) is
+    # owned by ProgrammingBoard/the workspace, not this widget. Each
+    # signal carries (self, global_pos) so the receiver can read
+    # `widget.block` and map the position itself.
+    drag_started = Signal(object, QPoint)
+    drag_moved = Signal(object, QPoint)
+    drag_finished = Signal(object, QPoint)
 
-    def __init__(self, block, px_per_minute=PX_PER_MINUTE, parent=None):
+    def __init__(self, block, px_per_minute=PX_PER_MINUTE, parent=None, draggable=True):
         super().__init__(parent)
         self.block = block
         self._is_selected = False
+        # A click must always still select (spec section 7: "A simple
+        # click must continue selecting the program") -- dragging is an
+        # ADDITIONAL behavior layered on the same press, gated by the
+        # platform's real drag-start distance so an ordinary click never
+        # misfires as a drag. Never draggable for open time (nothing to
+        # move), a commercial pod (protected, same as Pull), or a
+        # companion/no-data lane (draggable=False, set by the caller from
+        # lane.channel_type/has_data).
+        self._draggable = bool(draggable) and block.media_type != "open" and not block.is_commercial
+        self._press_global = None
+        self._dragging = False
         self.setObjectName("scheduleProgramBlockSlot")
         self.setCursor(Qt.PointingHandCursor)
         self.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Fixed)
@@ -182,7 +201,11 @@ class ProgramBlockWidget(QFrame):
                 badge.raise_()
 
         time_label = _format_time_range(block.true_start, block.true_end)
-        minutes = max(1, round(block.duration / 60))
+        # true_end - true_start, not block.duration -- duration is clipped
+        # to the visible window (a program landing near the window's edge
+        # would otherwise show its full, uncropped time range next to a
+        # truncated-looking minute count).
+        minutes = max(1, round((block.true_end - block.true_start) / 60))
         tooltip = block.title
         if time_label:
             tooltip += f"\n{time_label}"
@@ -222,7 +245,9 @@ class ProgramBlockWidget(QFrame):
             layout.addWidget(time_lbl)
 
         if self._level == "wide" and self.block.media_type != "tv":
-            minutes = max(1, round(self.block.duration / 60))
+            # true_end - true_start, matching the time_lbl range above --
+            # see the tooltip's identical fix earlier in __init__.
+            minutes = max(1, round((self.block.true_end - self.block.true_start) / 60))
             detail = f"Available · {minutes} min" if is_open else f"{MEDIA_TYPE_LABELS.get(self.block.media_type, '')} · {minutes} min"
             type_lbl = QLabel(detail)
             type_lbl.setStyleSheet(f"color: {_TEXT_DIM}; font-size: 10px; background: transparent;")
@@ -253,7 +278,29 @@ class ProgramBlockWidget(QFrame):
     def mousePressEvent(self, event):
         if event.button() == Qt.LeftButton:
             self.selected.emit(self.block)
+            self._press_global = event.globalPosition().toPoint()
+            self._dragging = False
         super().mousePressEvent(event)
+
+    def mouseMoveEvent(self, event):
+        if self._press_global is not None and event.buttons() & Qt.LeftButton:
+            current = event.globalPosition().toPoint()
+            if not self._dragging:
+                if self._draggable and (current - self._press_global).manhattanLength() >= QApplication.startDragDistance():
+                    self._dragging = True
+                    self.drag_started.emit(self, current)
+            if self._dragging:
+                self.drag_moved.emit(self, current)
+                return
+        super().mouseMoveEvent(event)
+
+    def mouseReleaseEvent(self, event):
+        if event.button() == Qt.LeftButton:
+            if self._dragging:
+                self.drag_finished.emit(self, event.globalPosition().toPoint())
+            self._press_global = None
+            self._dragging = False
+        super().mouseReleaseEvent(event)
 
 
 def build_category_legend():

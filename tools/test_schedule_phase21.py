@@ -135,7 +135,7 @@ check("the removed change's effect is undone (Show A restored)", ("Show A", "tv"
 check("removing a change clears the redo branch", not history.can_redo)
 
 not_found = history.remove_pending_change(999999, draft)
-check("removing a nonexistent change_id is a safe no-op", not_found is False and len(draft.describe_pending_changes()) == 1)
+check("removing a nonexistent change_id is a safe no-op", not_found is None and len(draft.describe_pending_changes()) == 1)
 
 
 # ---------------------------------------------------------------------------
@@ -207,14 +207,14 @@ section("7-8. Save Review: friendly descriptions and one-date scope")
 
 ws3 = _silence_dialogs(ScheduleEditorWorkspace(_EmptyStudioDialog(), on_back=lambda: None))
 ws3._channel_rows = [{"channel_id": CH, "name": "Comedy", "number": 4, "channel_type": "media", "logo_path": ""}]
-records = [
-    {"action": "remove", "channel_id": CH, "date": "2026-07-17", "start": T0, "end": T0 + 1800, "title": "Viva La Bam", "path": "", "media_type": "tv"},
-    {"action": "add", "channel_id": CH, "date": "2026-07-17", "start": T0, "end": T0 + 900, "title": "Samurai Cop", "path": "/m/x.mp4", "media_type": "movie"},
-]
-descriptions = [ws3._describe_record_for_review(r) for r in records]
+ws3._draft.set_base_lanes([make_lane()])
+ws3._draft.apply_change(ws3._draft.new_change("remove", CH, T0, T0 + 1800, title="Viva La Bam"))
+ws3._draft.apply_change(ws3._draft.new_change("add", CH, T0, T0 + 900, title="Samurai Cop", path="/m/x.mp4", media_type="movie"))
+pending_rows = ws3._draft.describe_pending_changes()
+descriptions = [row["headline"] for row in pending_rows]
 check(
     "7. multi-change save review shows correct friendly descriptions",
-    descriptions == ['Pull “Viva La Bam” from CH 4', 'Put “Samurai Cop” on CH 4'],
+    descriptions == ['Pulled “Viva La Bam”', 'Put “Samurai Cop” on air'],
     descriptions,
 )
 
@@ -252,10 +252,10 @@ def _fake_message_box(icon, title, text):
 
 ws3._make_message_box = _fake_message_box
 ws3._window_start = T0
-proceed = ws3._confirm_save_review(records)
+proceed = ws3._confirm_save_review(pending_rows)
 check("7b. Save Review returns True when Save Schedule is chosen", proceed is True)
-check("8. the review states this is a one-date edit, not a recurring rule", "only" in captured["text"] and "recurring" not in captured["text"].lower() or "only" in captured["text"], captured.get("text"))
-check("8b. every bullet from the change list appears in the review text", all(d in captured["text"] for d in descriptions), captured.get("text"))
+check("8. the review states this is a one-date edit, not a recurring rule", "only" in captured["text"], captured.get("text"))
+check("8b. every bullet from the pending-changes list appears in the review text", all(d in captured["text"] for d in descriptions), captured.get("text"))
 
 
 # ---------------------------------------------------------------------------

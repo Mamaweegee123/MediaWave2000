@@ -4,10 +4,12 @@ Phase 2 introduced draft editing on top of the Phase 1 read-only board.
 Phase 2.1 added change review and saved-override management on top of
 that: a Pending Changes summary, safe per-change undo, a multi-change Save
 Review, clearer board/inspector state labels, a Saved Changes manager, and
-override compaction. This note documents the schedule-state layers, the
-draft/override design, and the policies the editor follows. It is the
-reference for later phases (drag-and-drop, resizing, recurring edits, bulk
-tools).
+override compaction. Phase 3 added the first direct-manipulation workflow:
+moving an existing program to a new time, via both a guided Move To…
+dialog and dragging the program card itself. This note documents the
+schedule-state layers, the draft/override design, and the policies the
+editor follows. It is the reference for later phases (resizing, recurring
+edits, bulk tools, cross-channel moves).
 
 ## The four schedule-state layers
 
@@ -256,11 +258,120 @@ purely for file readability. Compaction never merges across a genuine gap
 hole in the middle, then the same add's tail) — the pieces separated by a
 different action's piece stay distinct.
 
+## Moving a program (Phase 3)
+
+`mediawave/schedule_editor/commands.py`'s `MoveProgramCommand` is the one
+command behind both interactions this phase adds -- there is no second
+mutation path for dragging. It is internally equivalent to a Pull at the
+source plus a Put On Air at the destination (reusing the exact same
+"cancel an unsaved add in place, or create a real remove" choice
+`PullProgramCommand` already makes, via the shared
+`_draft_add_change_for_block` helper both commands call), but behaves as
+ONE user action everywhere it's visible:
+
+- **Pending Changes / Save Review**: every `DraftChange` a move produces
+  (the source pull, any replaced-destination removes, and the destination
+  add) is tagged with the same `move_id` (`DraftChange.move_id`, set to
+  `id(self)` on the command instance). `DraftSchedule.describe_pending_changes()`
+  collapses a shared `move_id` into one "Moved …" row instead of separate
+  Pull/Put On Air rows; Save Review renders the identical rows as its
+  bullets, so the two can never disagree. `move_id` is a draft-only,
+  in-memory tag -- it never reaches `overrides_for_save()`'s output, so
+  the persisted override schema is unaffected by it.
+- **Undo/Redo**: restores/reapplies the whole move (source location,
+  every replaced block, and the destination) as one step, including
+  through `CommandHistory.remove_pending_change`'s per-change-undo replay.
+- **Saved overrides**: on Save, a plain move persists as the minimal
+  remove (old placement) + add (new placement) pair; `compact_overrides`
+  (Phase 2.1) then handles collapsing that against any OLDER saved
+  placement for the same slot on a later save, exactly as it already does
+  for repeated Put On Air/Pull edits.
+
+**Same-channel only.** A channel's catalog, duration cache, and airing
+context are channel-scoped; moving media's identity safely across that
+boundary needs groundwork this phase doesn't establish. `MoveProgramCommand.validate()`
+rejects a cross-channel destination with "Moving programs between
+channels will be added later." -- both Move To… and drag enforce this
+identically, since both call the same `validate()`.
+
+**Move To…** (`mediawave/schedule_editor/move_to_dialog.py`) is the
+guided, non-drag reference implementation, built and tested BEFORE
+dragging so there is always a precise, pointer-free way to move a program
+(keyboard users, motor-limitation accessibility, exact time entry, or
+just a preference for dialogs). It only ever changes the time (a
+`QTimeEdit`, snapped via the shared `snap_to_interval`), never the channel
+or date -- the destination channel is shown as fixed, read-only text.
+
+**Snap-to-time.** `commands.snap_to_interval` (default 5 minutes) is the
+one shared primitive for Move To…, drag placement math
+(`ProgrammingBoard._channel_and_time_at`), and command validation, so all
+three can never disagree about where a placement actually lands. Not
+user-configurable this phase.
+
+**Conflict and replacement.** `MoveProgramCommand.validate()` reports a
+`CONFLICT_OVERLAPS_DESTINATION` conflict listing every block the
+destination would actually overlap (not just the first). The workspace's
+`_ask_move_conflict` offers exactly Choose Another Time / Replace
+Overlapping Program / Cancel -- no automatic ripple/reflow of surrounding
+programs. Replacing constructs a NEW `MoveProgramCommand` with those
+specific blocks passed as `replace_blocks`, which the caller has already
+explicitly approved; validate() then treats exactly those overlaps as
+resolved (matched by channel/start/end, since blocks have no other stable
+identity across a presentation rebuild) rather than reporting them again.
+Undo restores the moved program's original spot AND every replaced
+program, all as part of undoing the one move command.
+
+**Open Time.** Moving a program away leaves Open Time at the source
+(the pull's own interval). Moving into Open Time consumes exactly the
+program's own duration from that interval; if the interval is larger, the
+remainder stays open. A destination that's part open, part an existing
+generated program is a normal overlap conflict against that program --
+Open Time itself is never something you can "conflict" with.
+
+**Drag-and-drop** (`program_block.py`, `channel_row.py`, `board.py`) is a
+purely mechanical, visual front end for the identical command/validation
+path: `ProgramBlockWidget` tracks mouse press/move/release and only
+declares a drag once the pointer has moved past
+`QApplication.startDragDistance()` (so an ordinary click still just
+selects, per spec section 7) and the block is draggable (not open time,
+not a commercial pod, and only on a "media"-type, has-data lane -- the
+same companion policy `draft_model.channel_lock_reason` already enforces,
+computed once per lane in `ChannelRowStrip` and passed down). Drag/move/
+finish signals bubble widget → row strip → `ProgrammingBoard`, which owns
+ALL interpretation: mapping a global pointer position to `(channel_id,
+snapped_start)` (`_channel_and_time_at`, scroll-offset-aware since it maps
+through the actual widget hierarchy), rendering a translucent placement
+preview colored for valid/conflict/invalid (never color alone -- each
+state also carries a label), and a small edge-zone autoscroll timer on
+both axes. The board never mutates the draft itself: a drop only emits
+`move_drop(source_block, channel_id, start)`, which the workspace routes
+through the exact same `_try_move`/conflict-resolution path Move To…
+uses. Escape cancels an active drag with no draft mutation.
+
+**Accessibility.** Move To… is never removed or hidden in favor of
+dragging -- it is the answer for keyboard users, motor-limitation
+accessibility, precise time entry, and anyone who simply prefers a
+dialog. Both paths validate identically because both are, underneath,
+just `MoveProgramCommand`.
+
+**Deferred**: duration/edge resizing, recurring or weekly moves, copying,
+multi-selection, bulk movement, automatic ripple of surrounding programs,
+cross-channel moves, and dragging directly from the Put On Air picker.
+
 ## User-language glossary
 
 **Pull** — Remove a program from this date's lineup. Leaves Open Time.
 
 **Put On Air** — Place library media into open time.
+
+**Move Program** — Change when a program airs without changing its
+length. Same channel and date only, for now.
+
+**Move To…** — The guided, dialog-based way to move a program; also the
+accessible alternative to dragging.
+
+**Replace Overlapping Program** — Move the selected program into that
+time and pull the program already there. Fully undoable as one step.
 
 **Undo This Change** — Reverse one specific pending edit, leaving every
 other pending edit untouched.
@@ -278,6 +389,9 @@ that time to MediaWave's automatic schedule.
 **Remove Change** — Remove a saved Put On Air; the time returns to
 whatever the automatic schedule would otherwise put there.
 
+**Open Time** — Time in the lineup that MediaWave may leave empty until
+you place something there.
+
 **Saved change needs attention** — A saved override's target media could
 not be found in the current library.
 
@@ -291,6 +405,14 @@ save/leave flows. `tools/test_schedule_phase21.py` covers the 25 Phase 2.1
 scenarios: Pending Changes correctness, safe per-change undo, Save Review
 wording, board/inspector state labels, the Saved Changes manager, unresolved
 overrides, and compaction (no-op pairs, repeated replacement, and preserved
-dependent ordering). `tools/test_schedule_editor.py` keeps the Phase 1
-board/geometry coverage updated for the Phase 2 toolbar and Editing Tools
-card.
+dependent ordering). `tools/test_schedule_phase3.py` covers the 40 Phase 3
+scenarios: move-command mechanics (one Pending Changes row, Undo/Redo,
+minimal saved overrides), snap-to-5-minutes boundaries, Open Time
+interaction, overlap/replace conflicts and their Undo, protected-channel
+and missing-media rejection, moving unsaved-added vs. saved-override
+blocks, cross-channel policy, and widget-level drag geometry (scroll-
+offset-aware channel/time mapping, frozen-column exclusion, preview
+valid/conflict/invalid styling, autoscroll start/stop, click-vs-drag
+threshold, and rebuild-mid-drag safety). `tools/test_schedule_editor.py`
+keeps the Phase 1 board/geometry coverage updated for the Phase 2 toolbar
+and Editing Tools card (now including Move To…).

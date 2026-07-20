@@ -48,12 +48,15 @@ from mediawave.studio.styles import build_scroll_area
 
 from .board import ProgrammingBoard
 from .commands import (
+    CONFLICT_OVERLAPS_DESTINATION,
     CONFLICT_OVERLAPS_FOLLOWING,
     CommandHistory,
+    MoveProgramCommand,
     PullProgramCommand,
     PutOnAirCommand,
 )
 from .draft_model import DraftSchedule
+from .move_to_dialog import MoveToDialog
 from .program_block import build_category_legend
 from .put_on_air_picker import PutOnAirPickerDialog, build_picker_catalog
 from .saved_changes_manager import SavedChangesManagerDialog
@@ -269,10 +272,13 @@ class ScheduleEditorWorkspace(QWidget):
         self.board = ProgrammingBoard()
         self.board.program_selected.connect(self._on_program_selected)
         self.board.channel_selected.connect(self._on_channel_selected)
+        self.board.move_drop.connect(self._on_move_drop)
+        self.board.set_drop_validator(self._validate_drop_preview)
 
         self._editing_tools_card, self._tools = build_editing_tools_card(
             on_put_on_air=self._put_on_air_clicked,
             on_pull=self._pull_clicked,
+            on_move_to=self._move_to_clicked,
         )
         self._pending_changes_card, self._update_pending_changes = build_pending_changes_card()
         self._next_up_card, self._update_next_up = build_next_up_card()
@@ -540,34 +546,84 @@ class ScheduleEditorWorkspace(QWidget):
         block = self._selected_block
         put_btn = self._tools["put_btn"]
         pull_btn = self._tools["pull_btn"]
+        move_btn = self._tools["move_btn"]
         set_hint = self._tools["set_hint"]
 
         if block is None:
             put_btn.setEnabled(False)
             pull_btn.setEnabled(False)
-            set_hint("Select a program to pull it, or select open time to put something on air.")
+            move_btn.setEnabled(False)
+            set_hint("Select a program to pull or move it, or select open time to put something on air.")
             return
 
         lock_reason = self._draft.lane_lock_reason(block.channel_id)
         if lock_reason:
             put_btn.setEnabled(False)
             pull_btn.setEnabled(False)
+            move_btn.setEnabled(False)
             set_hint(lock_reason)
             return
 
         if block.media_type == "open":
             put_btn.setEnabled(True)
             pull_btn.setEnabled(False)
+            move_btn.setEnabled(False)
             set_hint("Open time is selected — Put On Air fills it with a show or movie of your choice.")
             return
 
         put_btn.setEnabled(False)
         validation = PullProgramCommand(block).validate(self._draft)
         pull_btn.setEnabled(validation.ok)
+        # Move To… uses a placeholder same-time destination purely to ask
+        # "can this block be moved at all" (protected/commercial/already-
+        # aired/missing-media) -- the real destination time is only known
+        # once the dialog is open, so its own overlap check happens later.
+        move_probe = MoveProgramCommand(block, block.channel_id, block.true_start + 60)
+        move_probe_result = move_probe.validate(self._draft)
+        move_ok = move_probe_result.ok or any(
+            c["type"] == CONFLICT_OVERLAPS_DESTINATION for c in move_probe_result.conflicts
+        )
+        move_btn.setEnabled(move_ok)
         if validation.ok:
             set_hint(f"Pull removes “{block.title}” from the draft lineup and leaves open time.")
+        elif move_ok:
+            set_hint(validation.reason + " You can still move it to a different time.")
         else:
             set_hint(validation.reason)
+
+    # ── drag-and-drop (Phase 3) ──────────────────────────────────────
+
+    def _validate_drop_preview(self, block, channel_id, start):
+        """The board's drop-preview callback (set via
+        `self.board.set_drop_validator`) -- reuses MoveProgramCommand's
+        own validate() so a drag preview can never disagree with what an
+        actual drop would do. Returns (state, label) where state is
+        "valid" | "conflict" | "invalid"; an empty label lets the board
+        fall back to its own plain time-range text for a clean valid
+        placement.
+        """
+        command = MoveProgramCommand(block, channel_id, start)
+        result = command.validate(self._draft)
+        if result.ok:
+            return "valid", ""
+        conflict = next((c for c in result.conflicts if c["type"] == CONFLICT_OVERLAPS_DESTINATION), None)
+        if conflict is not None:
+            return "conflict", conflict["message"]
+        return "invalid", result.reason
+
+    def _on_move_drop(self, source_block, destination_channel_id, destination_start):
+        """A confirmed drop (board.py's move_drop signal) -- funnels
+        through the exact same `_try_move` Move To… uses, so a drag and a
+        dialog-driven move share one execution/conflict-resolution path.
+        """
+        self._try_move(source_block, destination_channel_id, destination_start)
+
+    def keyPressEvent(self, event):
+        if event.key() == Qt.Key_Escape and self.board is not None and self.board.is_dragging:
+            self.board.cancel_drag()
+            event.accept()
+            return
+        super().keyPressEvent(event)
 
     # ── commands ─────────────────────────────────────────────────────
 
@@ -645,23 +701,122 @@ class ScheduleEditorWorkspace(QWidget):
         ][:11]
         self._render_draft(reselect=(slot_block.channel_id, slot_block.start))
 
+    def _move_to_clicked(self):
+        """The guided, non-drag reference workflow (Phase 3 spec section
+        3) -- also the accessible alternative dragging must never be the
+        only way to reach (section 15).
+        """
+        block = self._selected_block
+        if block is None:
+            return
+        lane = self._lanes_by_channel_id.get(block.channel_id)
+        if lane is None:
+            return
+        dialog = MoveToDialog(block, lane, parent=self)
+        if dialog.exec() != MoveToDialog.Accepted:
+            return
+        self._try_move(block, block.channel_id, dialog.destination_start(), on_choose_another=self._move_to_clicked)
+
+    def _try_move(self, source_block, destination_channel_id, destination_start, replace_blocks=None, on_choose_another=None):
+        """The one path both Move To… and drag-and-drop funnel through --
+        neither interaction mutates the draft directly; both end up here,
+        which validates via the exact same MoveProgramCommand.validate()
+        and, on a destination conflict, offers the exact same Choose
+        Another Time / Replace Overlapping Program / Cancel resolution
+        (Phase 3 spec section 9: "Move To… and drag use the same
+        validation path").
+
+        `on_choose_another`, if given, is called when the user picks
+        "Choose Another Time" -- Move To… reopens its dialog; a drag drop
+        passes None, since "try again" there just means dragging again,
+        not popping a dialog after the gesture already ended.
+        """
+        command = MoveProgramCommand(source_block, destination_channel_id, destination_start, replace_blocks=replace_blocks)
+        validation = command.validate(self._draft)
+        overlap = next((c for c in validation.conflicts if c["type"] == CONFLICT_OVERLAPS_DESTINATION), None)
+        if not validation.ok and overlap is not None:
+            choice = self._ask_move_conflict(source_block, overlap)
+            if choice == "replace":
+                self._try_move(
+                    source_block,
+                    destination_channel_id,
+                    destination_start,
+                    replace_blocks=overlap["overlapping_blocks"],
+                    on_choose_another=on_choose_another,
+                )
+            elif choice == "choose" and on_choose_another is not None:
+                on_choose_another()
+            return
+        if not validation.ok:
+            self._show_info("Can't move this program", validation.reason)
+            return
+        self._history.execute(command, self._draft)
+        self._render_draft(reselect=(destination_channel_id, destination_start))
+
+    def _ask_move_conflict(self, source_block, conflict):
+        """The move-destination-overlap flow (Phase 3 spec section 5-6):
+        explain exactly what would be overlapped/replaced in plain
+        language, and offer only the supported resolutions. Replacing
+        removes the overlapped block(s) from the draft -- fully undoable
+        as part of the same one move command (commands.py). Returns
+        "replace" | "choose" | "cancel".
+        """
+        overlapping = conflict.get("overlapping_blocks") or []
+        if len(overlapping) == 1:
+            detail = f"Replacing will pull “{overlapping[0].title}” from the lineup."
+        else:
+            names = ", ".join(f"“{block.title}”" for block in overlapping)
+            detail = f"Replacing will pull {names} from the lineup."
+        box = self._make_message_box(
+            QMessageBox.Question,
+            "This time is already scheduled",
+            f"{conflict['message']}\n\nWhat should MediaWave do?\n\n{detail}",
+        )
+        choose_btn = box.addButton("Choose Another Time", QMessageBox.ActionRole)
+        replace_btn = box.addButton("Replace Overlapping Program", QMessageBox.DestructiveRole)
+        box.addButton("Cancel", QMessageBox.RejectRole)
+        box.exec()
+        clicked = box.clickedButton()
+        if clicked is replace_btn:
+            return "replace"
+        if clicked is choose_btn:
+            return "choose"
+        return "cancel"
+
     def _undo_clicked(self):
         command = self._history.undo(self._draft)
         if command is not None:
-            self._render_draft()
+            self._render_draft(reselect=self._reselect_target_for(command, after_undo=True))
 
     def _undo_pending_change(self, change_id):
         """One Pending Changes row's "Undo This Change" action -- removes
         just that change via CommandHistory's safe replay-based rebuild
         (commands.py), leaving every other pending change untouched.
         """
-        if self._history.remove_pending_change(change_id, self._draft):
-            self._render_draft()
+        removed = self._history.remove_pending_change(change_id, self._draft)
+        if removed is not None:
+            self._render_draft(reselect=self._reselect_target_for(removed, after_undo=True))
 
     def _redo_clicked(self):
         command = self._history.redo(self._draft)
         if command is not None:
-            self._render_draft()
+            self._render_draft(reselect=self._reselect_target_for(command, after_undo=False))
+
+    def _reselect_target_for(self, command, after_undo):
+        """Where selection should land after Undo/Redo of `command` --
+        explicit for MoveProgramCommand, since a plain fallback to the
+        stale `self._selected_block`'s (channel, start) would try to
+        reselect at a location the move just vacated (Phase 3 spec
+        section 13: selection follows the restored/moved block). Every
+        other command already reselects correctly via `_render_draft`'s
+        own fallback (the block's location didn't change), so returning
+        None there is deliberate, not an oversight.
+        """
+        if isinstance(command, MoveProgramCommand):
+            if after_undo:
+                return (command.source_channel_id, command.source_start)
+            return (command.destination_channel_id, command.destination_start)
+        return None
 
     # ── saved changes manager ────────────────────────────────────────
 
@@ -737,24 +892,32 @@ class ScheduleEditorWorkspace(QWidget):
         than one meaningful change (Phase 2.1 spec section 3 -- a single
         simple change stays a plain one-click save), then perform the
         save. Returns True when the save completed.
+
+        "Meaningful change" is counted by Pending Changes ROWS, not raw
+        override records -- a single Move produces two records (a pull +
+        an add) but is exactly one user action, and should stay a
+        one-click save like any other single edit (Phase 3).
         """
         if not self._draft.is_dirty():
             return True
+        pending_rows = self._draft.describe_pending_changes()
         records = self._draft.overrides_for_save()
-        if len(records) > 1 and not self._confirm_save_review(records):
+        if len(pending_rows) > 1 and not self._confirm_save_review(pending_rows):
             return False
         return self._perform_save(records)
 
-    def _confirm_save_review(self, records):
-        """The multi-change confirmation: a friendly bullet per change and
-        an explicit statement that these are one-date edits, never a
-        recurring rule. Returns True if the user chose to proceed.
+    def _confirm_save_review(self, pending_rows):
+        """The multi-change confirmation: a friendly bullet per pending
+        row (the exact same rows Pending Changes already shows -- a move
+        is one bullet, never separate pull/add lines) and an explicit
+        statement that these are one-date edits, never a recurring rule.
+        Returns True if the user chose to proceed.
         """
         date_label = time.strftime("%A, %B %-d", time.localtime(self._window_start))
-        bullets = "\n".join(f"•  {self._describe_record_for_review(record)}" for record in records)
+        bullets = "\n".join(f"•  {row['headline']} ({row['subline']})" for row in pending_rows)
         box = self._make_message_box(
             QMessageBox.Question,
-            f"Save {len(records)} lineup changes?",
+            f"Save {len(pending_rows)} lineup changes?",
             f"{bullets}\n\nThese changes apply to {date_label} only.",
         )
         save_btn = box.addButton("Save Schedule", QMessageBox.AcceptRole)
@@ -762,13 +925,6 @@ class ScheduleEditorWorkspace(QWidget):
         box.addButton("Cancel", QMessageBox.RejectRole)
         box.exec()
         return box.clickedButton() is save_btn
-
-    def _describe_record_for_review(self, record):
-        row = next((r for r in self._channel_rows if r.get("channel_id") == record.get("channel_id")), None)
-        channel_label = f"CH {row.get('number', '?')}" if row is not None else "this channel"
-        if record.get("action") == "add":
-            return f"Put “{record.get('title') or 'this media'}” on {channel_label}"
-        return f"Pull “{record.get('title') or 'this program'}” from {channel_label}"
 
     def _perform_save(self, records):
         """Validate -> hand to the app's save pipeline -> mark clean. On

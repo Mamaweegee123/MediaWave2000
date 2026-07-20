@@ -5,7 +5,7 @@ identity column pinned during horizontal scrolling and the block strip
 scrolling, so they can never end up laid out inside the same scroll area.
 """
 
-from PySide6.QtCore import QPointF, Qt, Signal
+from PySide6.QtCore import QPoint, QPointF, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QPainter, QPixmap
 from PySide6.QtWidgets import QFrame, QGraphicsDropShadowEffect, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 
@@ -174,10 +174,22 @@ class ChannelRowStrip(QWidget):
     """
 
     block_widget_selected = Signal(object)  # the ProgramBlockWidget instance
+    # Phase 3: bubbled straight from each ProgramBlockWidget's own signals
+    # (same widget-instance-plus-global-pos shape) up to ProgrammingBoard,
+    # which owns all drag interpretation/rendering.
+    block_drag_started = Signal(object, QPoint)
+    block_drag_moved = Signal(object, QPoint)
+    block_drag_finished = Signal(object, QPoint)
 
     def __init__(self, lane, window_start, window_end, px_per_minute=PX_PER_MINUTE, parent=None):
         super().__init__(parent)
         self.channel_id = lane.channel_id
+        # Only "media" channels with real scheduled data are editable at
+        # all (draft_model.channel_lock_reason) -- computed once per lane
+        # here rather than re-derived per block, and passed straight
+        # through to each ProgramBlockWidget so a companion/no-data row's
+        # cards never even attempt to start a drag.
+        self._draggable = lane.channel_type == "media" and lane.has_data
         total_minutes = max(0.0, (window_end - window_start) / 60.0)
         self.setFixedSize(round(total_minutes * px_per_minute), ROW_HEIGHT)
         self.setObjectName("scheduleRowStrip")
@@ -200,11 +212,14 @@ class ChannelRowStrip(QWidget):
 
         self.block_widgets = []
         for block in lane.blocks:
-            widget = ProgramBlockWidget(block, px_per_minute=px_per_minute, parent=self)
+            widget = ProgramBlockWidget(block, px_per_minute=px_per_minute, parent=self, draggable=self._draggable)
             x = round((block.start - window_start) / 60.0 * px_per_minute)
             y = (ROW_HEIGHT - widget.height()) // 2
             widget.move(max(0, x), y)
             widget.selected.connect(lambda _block, w=widget: self.block_widget_selected.emit(w))
+            widget.drag_started.connect(self.block_drag_started)
+            widget.drag_moved.connect(self.block_drag_moved)
+            widget.drag_finished.connect(self.block_drag_finished)
             widget.show()
             self.block_widgets.append(widget)
 

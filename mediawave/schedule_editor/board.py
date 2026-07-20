@@ -16,7 +16,7 @@ kept in sync with the grid's scroll position via `_on_h_scroll`/
 
 import time
 
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import QPoint, Qt, QTimer, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import (
     QFrame,
@@ -28,8 +28,27 @@ from PySide6.QtWidgets import (
 
 from .board_ticks import tick_times
 from .channel_row import ChannelIdentityCell, ChannelRowStrip
+from .commands import snap_to_interval
 from .layout_constants import IDENTITY_COLUMN_WIDTH, ROW_HEIGHT, TIME_HEADER_HEIGHT
 from .schedule_model import PX_PER_MINUTE
+
+# Drag placement preview colors (Phase 3 spec section 7) -- valid/conflict/
+# invalid are distinguished by color AND by the label text set alongside
+# them (never color alone, per that section's own instruction).
+_PREVIEW_VALID_BORDER = "rgba(120, 220, 160, 235)"
+_PREVIEW_VALID_BG = "rgba(120, 220, 160, 60)"
+_PREVIEW_CONFLICT_BORDER = "rgba(255, 170, 90, 235)"
+_PREVIEW_CONFLICT_BG = "rgba(255, 170, 90, 60)"
+_PREVIEW_INVALID_BORDER = "rgba(158, 172, 210, 160)"
+_PREVIEW_INVALID_BG = "rgba(158, 172, 210, 40)"
+
+# How close the pointer must get to a viewport edge to trigger autoscroll,
+# and how far each tick nudges the scrollbar -- a small zone/step so
+# autoscroll assists reaching off-screen destinations without making
+# precise placement near an edge unreachable (spec section 8).
+_AUTOSCROLL_EDGE_PX = 36
+_AUTOSCROLL_STEP_PX = 14
+_AUTOSCROLL_INTERVAL_MS = 30
 
 _BOARD_BG = "rgba(9, 11, 27, 255)"
 _RULER_BG = "rgba(16, 19, 44, 245)"
@@ -118,6 +137,11 @@ class ProgrammingBoard(QWidget):
 
     program_selected = Signal(object)  # ProgramBlock
     channel_selected = Signal(str)  # channel_id
+    # Phase 3: emitted once, on a valid drop -- (source_block,
+    # destination_channel_id, destination_start). The board never applies
+    # a move itself; the workspace owns validation/execution, reusing the
+    # exact same path Move To… uses (see dialog.py's _try_move).
+    move_drop = Signal(object, str, float)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -127,6 +151,17 @@ class ProgrammingBoard(QWidget):
         self._lanes = None
         self._window_start = 0
         self._window_end = 0
+
+        # Phase 3 drag state -- one drag at a time, no persisted list of
+        # its own beyond what's needed to render the current preview and
+        # answer autoscroll ticks.
+        self._drag_block = None
+        self._drag_preview = None
+        self._drop_validator = None  # callback(block, channel_id, start) -> (state, label)
+        self._last_pointer_viewport_pos = None
+        self._autoscroll_timer = QTimer(self)
+        self._autoscroll_timer.setInterval(_AUTOSCROLL_INTERVAL_MS)
+        self._autoscroll_timer.timeout.connect(self._autoscroll_tick)
 
         outer = QGridLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
@@ -226,6 +261,12 @@ class ProgrammingBoard(QWidget):
 
         self._selected_widget = None
         self._selected_identity_cell = None
+        # A rebuild mid-drag would destroy the preview's parent (the old
+        # _grid_content) out from under it -- nothing in this single-
+        # threaded UI normally mutates the draft while a drag is active,
+        # but this guard keeps that combination safe rather than crashing
+        # on a dangling preview reference if it ever happens.
+        self._cancel_drag_state()
 
         if self._ruler_content is not None:
             self._ruler_content.hide()
@@ -248,6 +289,9 @@ class ProgrammingBoard(QWidget):
         self._grid_scroll.setWidget(self._grid_content)
         for strip in self._grid_content.row_strips:
             strip.block_widget_selected.connect(self._on_block_selected)
+            strip.block_drag_started.connect(self._on_drag_started)
+            strip.block_drag_moved.connect(self._on_drag_moved)
+            strip.block_drag_finished.connect(self._on_drag_finished)
 
         self._identity_content = QWidget(self._identity_viewport)
         self._identity_content.setFixedSize(IDENTITY_COLUMN_WIDTH, max(len(lanes) * ROW_HEIGHT, 1))
@@ -320,3 +364,171 @@ class ProgrammingBoard(QWidget):
         self._selected_widget = widget
         self._select_identity_cell(widget.block.channel_id)
         self.program_selected.emit(widget.block)
+
+    # ── Phase 3: drag-and-drop ─────────────────────────────────────────
+
+    def set_drop_validator(self, callback):
+        """`callback(block, channel_id, start) -> (state, label)` where
+        state is "valid" | "conflict" | "invalid" -- consulted on every
+        pointer move during a drag so the preview can be colored/labeled
+        without the board itself knowing anything about drafts, channels,
+        or commands.
+        """
+        self._drop_validator = callback
+
+    @property
+    def is_dragging(self):
+        return self._drag_block is not None
+
+    def cancel_drag(self):
+        """Escape cancels an active drag (spec section 15) -- restores
+        the original visual state with no draft mutation, since no
+        `move_drop` is ever emitted for a cancelled drag.
+        """
+        self._cancel_drag_state()
+
+    def _cancel_drag_state(self):
+        self._autoscroll_timer.stop()
+        self._clear_preview()
+        self._drag_block = None
+        self._last_pointer_viewport_pos = None
+
+    def _on_drag_started(self, widget, global_pos):
+        self._drag_block = widget.block
+        self._ensure_preview()
+        self._autoscroll_timer.start()
+        self._update_drag_preview(global_pos)
+
+    def _on_drag_moved(self, widget, global_pos):
+        if self._drag_block is None:
+            return
+        self._update_drag_preview(global_pos)
+
+    def _on_drag_finished(self, widget, global_pos):
+        if self._drag_block is None:
+            return
+        source_block = self._drag_block
+        result = self._channel_and_time_at(global_pos)
+        self._cancel_drag_state()
+        if result is not None:
+            channel_id, start = result
+            self.move_drop.emit(source_block, channel_id, start)
+
+    def _viewport_pos_from_global(self, global_pos):
+        return self._grid_scroll.viewport().mapFromGlobal(global_pos)
+
+    def _channel_and_time_at(self, global_pos):
+        """(channel_id, snapped_start) for a global pointer position, or
+        None if it isn't over any channel lane. Accounts for the grid's
+        own scroll offset (mapFrom already resolves this via the actual
+        widget geometry) -- the frozen identity column lives in a
+        completely separate viewport, so it needs no separate correction
+        here at all.
+        """
+        if self._grid_content is None or self._lanes is None:
+            return None
+        viewport_pos = self._viewport_pos_from_global(global_pos)
+        if not self._grid_scroll.viewport().rect().contains(viewport_pos):
+            return None
+        content_pos = self._grid_content.mapFromGlobal(global_pos)
+        if content_pos.x() < 0 or content_pos.y() < 0:
+            return None
+        row_index = int(content_pos.y() // ROW_HEIGHT)
+        if row_index < 0 or row_index >= len(self._lanes):
+            return None
+        channel_id = self._lanes[row_index].channel_id
+        minutes = content_pos.x() / self._px_per_minute
+        raw_start = self._window_start + minutes * 60.0
+        return channel_id, snap_to_interval(raw_start)
+
+    def _ensure_preview(self):
+        if self._drag_preview is not None or self._grid_content is None:
+            return
+        preview = QFrame(self._grid_content)
+        preview.setObjectName("scheduleDragPreview")
+        preview.setAttribute(Qt.WA_TransparentForMouseEvents, True)
+        label = QLabel(preview)
+        label.setAlignment(Qt.AlignCenter)
+        label.setStyleSheet("color: white; font-size: 11px; font-weight: 700; background: transparent;")
+        preview.hide()
+        self._drag_preview = preview
+        self._drag_preview_label = label
+
+    def _clear_preview(self):
+        if self._drag_preview is not None:
+            self._drag_preview.hide()
+            self._drag_preview.deleteLater()
+        self._drag_preview = None
+        self._drag_preview_label = None
+
+    def _update_drag_preview(self, global_pos):
+        self._last_pointer_viewport_pos = self._viewport_pos_from_global(global_pos)
+        result = self._channel_and_time_at(global_pos)
+        if result is None or self._drag_block is None or self._drag_preview is None:
+            if self._drag_preview is not None:
+                self._drag_preview.hide()
+            return
+
+        channel_id, start = result
+        duration = max(0.0, self._drag_block.true_end - self._drag_block.true_start)
+        end = start + duration
+        state, label_text = "valid", ""
+        if self._drop_validator is not None:
+            state, label_text = self._drop_validator(self._drag_block, channel_id, start)
+
+        if state == "conflict":
+            border, bg = _PREVIEW_CONFLICT_BORDER, _PREVIEW_CONFLICT_BG
+        elif state == "invalid":
+            border, bg = _PREVIEW_INVALID_BORDER, _PREVIEW_INVALID_BG
+        else:
+            border, bg = _PREVIEW_VALID_BORDER, _PREVIEW_VALID_BG
+        self._drag_preview.setStyleSheet(
+            f"QFrame#scheduleDragPreview {{ background: {bg}; border: 2px dashed {border}; border-radius: 10px; }}"
+        )
+
+        row_index = next((i for i, lane in enumerate(self._lanes) if lane.channel_id == channel_id), None)
+        if row_index is None:
+            self._drag_preview.hide()
+            return
+        x = round((start - self._window_start) / 60.0 * self._px_per_minute)
+        width = max(1, round(duration / 60.0 * self._px_per_minute))
+        y = row_index * ROW_HEIGHT + 4
+        self._drag_preview.setGeometry(max(0, x), y, width, ROW_HEIGHT - 8)
+        self._drag_preview_label.setGeometry(0, 0, width, ROW_HEIGHT - 8)
+        self._drag_preview_label.setText(label_text or self._format_preview_time(start, end))
+        self._drag_preview.show()
+        self._drag_preview.raise_()
+
+    def _format_preview_time(self, start, end):
+        start_label = time.strftime("%-I:%M", time.localtime(start))
+        end_label = time.strftime("%-I:%M %p", time.localtime(end))
+        return f"{start_label}–{end_label}"
+
+    def _autoscroll_tick(self):
+        if self._drag_block is None or self._last_pointer_viewport_pos is None:
+            self._autoscroll_timer.stop()
+            return
+        viewport = self._grid_scroll.viewport()
+        rect = viewport.rect()
+        pos = self._last_pointer_viewport_pos
+        h_bar = self._grid_scroll.horizontalScrollBar()
+        v_bar = self._grid_scroll.verticalScrollBar()
+        moved = False
+        if pos.x() < rect.left() + _AUTOSCROLL_EDGE_PX and h_bar.value() > h_bar.minimum():
+            h_bar.setValue(max(h_bar.minimum(), h_bar.value() - _AUTOSCROLL_STEP_PX))
+            moved = True
+        elif pos.x() > rect.right() - _AUTOSCROLL_EDGE_PX and h_bar.value() < h_bar.maximum():
+            h_bar.setValue(min(h_bar.maximum(), h_bar.value() + _AUTOSCROLL_STEP_PX))
+            moved = True
+        if pos.y() < rect.top() + _AUTOSCROLL_EDGE_PX and v_bar.value() > v_bar.minimum():
+            v_bar.setValue(max(v_bar.minimum(), v_bar.value() - _AUTOSCROLL_STEP_PX))
+            moved = True
+        elif pos.y() > rect.bottom() - _AUTOSCROLL_EDGE_PX and v_bar.value() < v_bar.maximum():
+            v_bar.setValue(min(v_bar.maximum(), v_bar.value() + _AUTOSCROLL_STEP_PX))
+            moved = True
+        if moved:
+            # Autoscroll moves content under a STATIONARY pointer -- the
+            # preview must be recomputed against the new scroll position,
+            # using the same (unchanged) global pointer location.
+            global_pos = viewport.mapToGlobal(pos)
+            self._update_drag_preview(global_pos)

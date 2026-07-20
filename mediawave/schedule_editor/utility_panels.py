@@ -68,16 +68,16 @@ def _note_label(text):
     return label
 
 
-def build_editing_tools_card(on_put_on_air=None, on_pull=None):
-    """The real Phase 2 editing actions: Put On Air and Pull as live
+def build_editing_tools_card(on_put_on_air=None, on_pull=None, on_move_to=None):
+    """The real editing actions: Put On Air, Pull, and Move To… as live
     controls, the deferred bulk tools as one dim "Coming later" line
-    (deliberately NOT four more disabled buttons -- two real actions
-    shouldn't share visual weight with four inert ones).
+    (deliberately NOT more disabled buttons -- real actions shouldn't
+    share visual weight with inert ones).
 
-    Returns (card, controls): controls has `put_btn`, `pull_btn`, and
-    `set_hint(text)` -- the hint line under the buttons explains, in plain
-    language, what the current selection allows (or why it doesn't allow
-    something), so a disabled button is never a mystery.
+    Returns (card, controls): controls has `put_btn`, `pull_btn`,
+    `move_btn`, and `set_hint(text)` -- the hint line under the buttons
+    explains, in plain language, what the current selection allows (or why
+    it doesn't allow something), so a disabled button is never a mystery.
     """
     content = QWidget()
     layout = QVBoxLayout(content)
@@ -99,10 +99,17 @@ def build_editing_tools_card(on_put_on_air=None, on_pull=None):
     if on_pull is not None:
         pull_btn.clicked.connect(on_pull)
     button_row.addWidget(pull_btn)
+
+    move_btn = QPushButton("Move To…")
+    move_btn.setStyleSheet(_TOOL_BUTTON_STYLE)
+    move_btn.setEnabled(False)
+    if on_move_to is not None:
+        move_btn.clicked.connect(on_move_to)
+    button_row.addWidget(move_btn)
     button_row.addStretch(1)
     layout.addLayout(button_row)
 
-    hint_lbl = _note_label("Select a program to pull it, or select open time to put something on air.")
+    hint_lbl = _note_label("Select a program to pull or move it, or select open time to put something on air.")
     layout.addWidget(hint_lbl)
 
     coming_lbl = _note_label("Coming later:  " + "  ·  ".join(_COMING_LATER_TOOL_NAMES))
@@ -118,7 +125,7 @@ def build_editing_tools_card(on_put_on_air=None, on_pull=None):
         collapsible=False,
         accent=False,
     )
-    controls = {"put_btn": put_btn, "pull_btn": pull_btn, "set_hint": set_hint}
+    controls = {"put_btn": put_btn, "pull_btn": pull_btn, "move_btn": move_btn, "set_hint": set_hint}
     return card, controls
 
 
@@ -247,7 +254,12 @@ def build_next_up_card():
             row_layout.setContentsMargins(0, 0, 0, 0)
             row_layout.setSpacing(2)
             time_label = time.strftime("%-I:%M %p", time.localtime(block.true_start))
-            minutes = max(1, round(block.duration / 60))
+            # true_end - true_start, not block.duration -- duration is
+            # clipped to the visible window (schedule_model._clip_to_window /
+            # draft_model._build_change_block), so a program landing near
+            # the window's edge would otherwise show its real, uncropped
+            # time range next to a truncated-looking minute count.
+            minutes = max(1, round((block.true_end - block.true_start) / 60))
             headline = QLabel(f"{time_label} · {block.title}")
             headline.setWordWrap(True)
             headline.setStyleSheet(f"color: {_VALUE_COLOR}; font-size: 12px; font-weight: 600; background: transparent;")
@@ -398,7 +410,10 @@ def build_selected_program_footer():
 
         start_label = time.strftime("%-I:%M %p", time.localtime(block.true_start))
         end_label = time.strftime("%-I:%M %p", time.localtime(block.true_end))
-        minutes = max(1, round(block.duration / 60))
+        # true_end - true_start, not block.duration -- see build_next_up_card's
+        # identical fix for why (block.duration is clipped to the visible
+        # window, true_start/true_end are not).
+        minutes = max(1, round((block.true_end - block.true_start) / 60))
         media_label = MEDIA_TYPE_LABELS.get(block.media_type, "Program")
         detail_parts = []
         if lane is not None:

@@ -62,10 +62,11 @@ def channel_lock_reason(channel_type, has_data=True):
     return ""
 
 
-def _format_change_time_range(start_epoch, end_epoch):
+def format_time_range(start_epoch, end_epoch):
     """Pure time.strftime formatting (no Qt) -- kept local rather than
     importing program_block.py's Qt-adjacent formatter, so this module
-    stays importable without a QApplication.
+    stays importable without a QApplication. Public: commands.py's
+    MoveProgramCommand.describe() also uses this.
     """
     try:
         start_label = time.strftime("%-I:%M", time.localtime(start_epoch))
@@ -75,11 +76,31 @@ def _format_change_time_range(start_epoch, end_epoch):
     return f"{start_label}–{end_label}"
 
 
+def format_clock_time(epoch_seconds):
+    """A single wall-clock label, both digits and AM/PM -- used for the
+    two endpoints of a move ("4:30 PM → 5:30 PM"), which reads as "moved
+    from X to Y" and is deliberately NOT the same compact "start–end"
+    format `format_time_range` produces for a single block's own span.
+    """
+    try:
+        return time.strftime("%-I:%M %p", time.localtime(epoch_seconds))
+    except (OSError, OverflowError, ValueError):
+        return ""
+
+
 @dataclass
 class DraftChange:
     """One applied draft edit. `action` follows the saved-override
     vocabulary (mediawave/schedule_overrides.py) on purpose -- saving is a
     direct translation, not a re-interpretation.
+
+    `move_id` is None for a plain Pull or Put On Air. MoveProgramCommand
+    (commands.py) tags every change IT produces (the source pull and/or
+    each replaced-block removal and the destination add) with the same
+    move_id (its own `id(self)`) purely so `describe_pending_changes()`
+    can present them as one "Moved …" row -- it never reaches
+    `overrides_for_save()`'s output, so the persisted override schema is
+    unaffected by it.
     """
 
     change_id: int
@@ -90,6 +111,7 @@ class DraftChange:
     title: str = ""
     path: str = ""
     media_type: str = "tv"
+    move_id: int = None
 
 
 class DraftSchedule:
@@ -131,7 +153,7 @@ class DraftSchedule:
 
     # ── change bookkeeping ───────────────────────────────────────────
 
-    def new_change(self, action, channel_id, start, end, title="", path="", media_type="tv"):
+    def new_change(self, action, channel_id, start, end, title="", path="", media_type="tv", move_id=None):
         """A DraftChange with a fresh id -- NOT yet applied; commands own
         when apply_change/remove_change happen so undo/redo stay exact.
         """
@@ -144,6 +166,7 @@ class DraftSchedule:
             title=title,
             path=path,
             media_type=media_type,
+            move_id=move_id,
         )
         self._next_change_id += 1
         return change
@@ -314,20 +337,33 @@ class DraftSchedule:
         ]
         return sorted(hits, key=lambda block: block.true_start)
 
-    # ── pending-changes summary (Phase 2.1) ──────────────────────────
+    # ── pending-changes summary (Phase 2.1 / 3) ──────────────────────
 
     def describe_pending_changes(self):
         """Friendly-language rows for every currently-pending draft
-        change, in edit order -- the Pending Changes panel renders these
-        directly rather than keeping any list of its own (see dialog.py),
-        so it can never drift out of sync with the actual change model.
+        change, in edit order -- the Pending Changes panel (and Save
+        Review) render these directly rather than keeping any list of
+        their own, so they can never drift out of sync with the actual
+        change model. Changes sharing a `move_id` (MoveProgramCommand,
+        commands.py) collapse into one "Moved …" row instead of separate
+        Pull/Put On Air rows.
         """
-        return [self._describe_change(change) for change in self._changes]
+        rows = []
+        seen_move_ids = set()
+        for change in self._changes:
+            if change.move_id is not None:
+                if change.move_id in seen_move_ids:
+                    continue
+                seen_move_ids.add(change.move_id)
+                rows.append(self._describe_move_group(change.move_id))
+            else:
+                rows.append(self._describe_change(change))
+        return rows
 
     def _describe_change(self, change):
         lane = self.lane_for(change.channel_id)
         channel_label = f"Ch {lane.number} · {lane.name}" if lane is not None else "Ch ?"
-        time_label = _format_change_time_range(change.start, change.end)
+        time_label = format_time_range(change.start, change.end)
         if change.action == OVERRIDE_ACTION_ADD:
             headline = f"Put “{change.title or 'this media'}” on air"
         else:
@@ -337,6 +373,49 @@ class DraftSchedule:
             "action": change.action,
             "headline": headline,
             "subline": f"{channel_label} · {time_label}" if time_label else channel_label,
+        }
+
+    def _describe_move_group(self, move_id):
+        group = [change for change in self._changes if change.move_id == move_id]
+        add_change = next((change for change in group if change.action == OVERRIDE_ACTION_ADD), None)
+        if add_change is None:
+            # A move always produces exactly one add; this shouldn't
+            # happen, but fall back to a plain per-change description
+            # rather than crashing on an unexpected shape.
+            return self._describe_change(group[0])
+
+        lane = self.lane_for(add_change.channel_id)
+        channel_label = f"Ch {lane.number} · {lane.name}" if lane is not None else "Ch ?"
+        headline = f"Moved “{add_change.title or 'this program'}”"
+
+        # A move's own source interval is never inside its own
+        # destination interval (validate() rejects a same-time/same-
+        # channel move as a no-op), so "does this remove's interval
+        # overlap the add's" unambiguously separates the source pull from
+        # any replaced-block removals.
+        source_removes = [
+            change
+            for change in group
+            if change.action == OVERRIDE_ACTION_REMOVE
+            and not (change.channel_id == add_change.channel_id and change.start < add_change.end and change.end > add_change.start)
+        ]
+        replaced_removes = [change for change in group if change is not add_change and change not in source_removes]
+
+        dest_label = format_clock_time(add_change.start)
+        if source_removes:
+            source_label = format_clock_time(source_removes[0].start)
+            subline = f"{channel_label} · {source_label} → {dest_label}" if source_label and dest_label else channel_label
+        else:
+            subline = f"{channel_label} · {dest_label}" if dest_label else channel_label
+        if replaced_removes:
+            names = ", ".join(f"“{change.title or 'a program'}”" for change in replaced_removes)
+            subline += f" · Replaced {names}"
+
+        return {
+            "change_id": add_change.change_id,
+            "action": "move",
+            "headline": headline,
+            "subline": subline,
         }
 
     # ── save serialization ───────────────────────────────────────────
