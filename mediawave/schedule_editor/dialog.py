@@ -56,6 +56,7 @@ from .commands import (
     PullProgramCommand,
     PutOnAirCommand,
 )
+from .conflict_dialog import ConflictDialog
 from .copy_to_day_dialog import CopyToAnotherDayDialog
 from .draft_model import DraftSchedule
 from .duplicate_dialog import DuplicateHereDialog
@@ -545,9 +546,13 @@ class ScheduleEditorWorkspace(QWidget):
         self._update_tools_for_selection()
 
     def _update_tools_for_selection(self):
-        """Enable exactly the actions the current selection supports and
-        explain the state in the tools card's hint line -- a disabled
-        button always has its reason one line below it.
+        """Enable exactly the actions the current selection supports.
+        The hint line only ever carries a REASON something is disabled
+        (a real constraint the user can't see from the button alone,
+        e.g. "already aired") -- it stays silent when the buttons already
+        say everything there is to say. A protected companion selection
+        replaces the whole button grid with one calm locked message
+        (`set_locked`) rather than six grayed-out buttons.
         """
         block = self._selected_block
         put_btn = self._tools["put_btn"]
@@ -557,6 +562,7 @@ class ScheduleEditorWorkspace(QWidget):
         copy_btn = self._tools["copy_btn"]
         fill_btn = self._tools["fill_btn"]
         set_hint = self._tools["set_hint"]
+        set_locked = self._tools["set_locked"]
 
         def _disable_all():
             put_btn.setEnabled(False)
@@ -567,24 +573,22 @@ class ScheduleEditorWorkspace(QWidget):
             fill_btn.setEnabled(False)
 
         if block is None:
+            set_locked(None)
             _disable_all()
-            set_hint("Select a program to pull, move, duplicate, or copy it, or select open time to fill it.")
+            set_hint("")
             return
 
         lock_reason = self._draft.lane_lock_reason(block.channel_id)
         if lock_reason:
-            _disable_all()
-            set_hint(lock_reason)
+            set_locked(lock_reason)
             return
+        set_locked(None)
 
         if block.media_type == "open":
             _disable_all()
             put_btn.setEnabled(True)
             fill_btn.setEnabled(True)
-            set_hint(
-                "Open time is selected — Put On Air lets you choose anything; "
-                "Fill Open Time ranks media by how well it fits this gap."
-            )
+            set_hint("")
             return
 
         put_btn.setEnabled(False)
@@ -620,12 +624,10 @@ class ScheduleEditorWorkspace(QWidget):
         # offered), so the same probe result governs both buttons.
         copy_btn.setEnabled(duplicate_ok)
 
-        if validation.ok:
-            set_hint(f"Pull removes “{block.title}” from the draft lineup and leaves open time.")
-        elif move_ok:
-            set_hint(validation.reason + " You can still move, duplicate, or copy it to a different time.")
-        else:
-            set_hint(validation.reason)
+        # Nothing to say when Pull already works -- the buttons speak for
+        # themselves. Only surface the constraint when it actually blocks
+        # something the user might otherwise expect to work.
+        set_hint("" if validation.ok else validation.reason)
 
     # ── drag-and-drop (Phase 3) ──────────────────────────────────────
 
@@ -830,34 +832,31 @@ class ScheduleEditorWorkspace(QWidget):
         self._render_draft(reselect=(destination_channel_id, destination_start))
 
     def _ask_move_conflict(self, source_block, conflict):
-        """The move-destination-overlap flow (Phase 3 spec section 5-6):
-        explain exactly what would be overlapped/replaced in plain
-        language, and offer only the supported resolutions. Replacing
-        removes the overlapped block(s) from the draft -- fully undoable
-        as part of the same one move command (commands.py). Returns
+        """The destination-overlap flow shared by Move To…/drag/Duplicate
+        Here…/Copy to Another Day…: a compact dialog naming what's
+        affected instead of a paragraph. Replacing removes the
+        overlapped block(s) from the draft -- fully undoable as part of
+        the same one command (commands.py). Returns
         "replace" | "choose" | "cancel".
         """
         overlapping = conflict.get("overlapping_blocks") or []
-        if len(overlapping) == 1:
-            detail = f"Replacing will pull “{overlapping[0].title}” from the lineup."
-        else:
-            names = ", ".join(f"“{block.title}”" for block in overlapping)
-            detail = f"Replacing will pull {names} from the lineup."
-        box = self._make_message_box(
-            QMessageBox.Question,
-            "This time is already scheduled",
-            f"{conflict['message']}\n\nWhat should MediaWave do?\n\n{detail}",
+        plural = len(overlapping) != 1
+        dialog = ConflictDialog(
+            "Replace existing programs?" if plural else "Replace existing program?",
+            f"“{source_block.title}” overlaps {len(overlapping)} scheduled programs." if plural
+            else f"“{source_block.title}” overlaps “{overlapping[0].title}”.",
+            list_items=[block.title for block in overlapping],
+            note="Replacing removes them from this date's lineup." if plural
+            else "Replacing removes it from this date's lineup.",
+            actions=[
+                ("Choose Another Time", "neutral", "choose"),
+                ("Replace Programs" if plural else "Replace Program", "destructive", "replace"),
+                ("Cancel", "neutral", "cancel"),
+            ],
+            parent=self,
         )
-        choose_btn = box.addButton("Choose Another Time", QMessageBox.ActionRole)
-        replace_btn = box.addButton("Replace Overlapping Program", QMessageBox.DestructiveRole)
-        box.addButton("Cancel", QMessageBox.RejectRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is replace_btn:
-            return "replace"
-        if clicked is choose_btn:
-            return "choose"
-        return "cancel"
+        dialog.exec()
+        return dialog.result or "cancel"
 
     # ── duplicate / copy to another day (Phase 3.1) ───────────────────
 
@@ -1227,30 +1226,25 @@ class ScheduleEditorWorkspace(QWidget):
         self._make_message_box(QMessageBox.Warning, title, text).exec()
 
     def _ask_extend_conflict(self, conflict):
-        """The longer-than-slot flow (spec sections 10-11): explain the
-        overrun in plain language and offer exactly the supported
-        choices. Extending masks the overlapped part of the following
-        program (it's joined in progress afterward) -- nothing is
-        silently truncated or auto-moved.
+        """The longer-than-slot flow: explain the overrun and offer
+        exactly the supported choices. Extending masks the overlapped
+        part of the following program (it's joined in progress
+        afterward) -- nothing is silently truncated or auto-moved.
         Returns "extend" | "choose" | "cancel".
         """
-        box = self._make_message_box(
-            QMessageBox.Question,
-            "It runs longer than the open time",
-            conflict["message"]
-            + f"\n\nExtend into it, and “{conflict['following_title']}” will already be in progress "
-            "when it's joined afterward.",
+        dialog = ConflictDialog(
+            "Runs past open time",
+            conflict["message"],
+            note=f"“{conflict['following_title']}” will already be in progress when it's joined afterward.",
+            actions=[
+                ("Extend Anyway", "primary", "extend"),
+                ("Choose Something Else", "neutral", "choose"),
+                ("Cancel", "neutral", "cancel"),
+            ],
+            parent=self,
         )
-        extend_btn = box.addButton("Extend Into Following Time", QMessageBox.AcceptRole)
-        choose_btn = box.addButton("Choose Something Else", QMessageBox.ActionRole)
-        box.addButton("Cancel", QMessageBox.RejectRole)
-        box.exec()
-        clicked = box.clickedButton()
-        if clicked is extend_btn:
-            return "extend"
-        if clicked is choose_btn:
-            return "choose"
-        return "cancel"
+        dialog.exec()
+        return dialog.result or "cancel"
 
 
 def _empty_state_label(text):

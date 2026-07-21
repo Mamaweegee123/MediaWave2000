@@ -79,13 +79,13 @@ class MoveToDialog(QDialog):
 
         channel_label = f"CH {lane.number} · {lane.name}" if lane is not None else "this channel"
 
-        from_lbl = QLabel(f"From:\n{channel_label}\n{_time_label(block.true_start)}–{_time_label(block.true_end)}")
+        from_lbl = QLabel(f"From\n{channel_label}\n{_time_label(block.true_start)}–{_time_label(block.true_end)}")
         from_lbl.setStyleSheet(f"color: {_DIM_COLOR}; font-size: 12px;")
         layout.addWidget(from_lbl)
 
         time_row = QHBoxLayout()
         time_row.setSpacing(10)
-        time_row.addWidget(QLabel("New start time:"))
+        time_row.addWidget(QLabel("New start time"))
         self._time_edit = QTimeEdit()
         self._time_edit.setDisplayFormat("h:mm AP")
         start_local = time.localtime(block.true_start)
@@ -107,13 +107,13 @@ class MoveToDialog(QDialog):
         layout.addStretch(1)
 
         button_row = QHBoxLayout()
-        button_row.addStretch(1)
+        button_row.setSpacing(8)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
-        button_row.addWidget(cancel_btn)
+        button_row.addWidget(cancel_btn, 1)
         self._move_btn = QPushButton("Move Program")
         self._move_btn.clicked.connect(self.accept)
-        button_row.addWidget(self._move_btn)
+        button_row.addWidget(self._move_btn, 1)
         layout.addLayout(button_row)
 
         self._channel_label = channel_label
@@ -122,7 +122,7 @@ class MoveToDialog(QDialog):
     def _update_preview(self):
         dest_start = self.destination_start()
         dest_end = dest_start + self._duration
-        self._preview.setText(f"To:\n{self._channel_label}\n{_time_label(dest_start)}–{_time_label(dest_end)}")
+        self._preview.setText(f"To\n{self._channel_label}\n{_time_label(dest_start)}–{_time_label(dest_end)}")
 
     def destination_start(self):
         qt_time = self._time_edit.time()

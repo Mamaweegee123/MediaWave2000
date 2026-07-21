@@ -548,11 +548,11 @@ check(
 
 
 # ---------------------------------------------------------------------------
-section("Editing Tools: six real actions, deferred tools as one dim line")
+section("Editing Tools: six real actions in two tiers, calm locked state")
 # ---------------------------------------------------------------------------
 
 from PySide6.QtWidgets import QLabel, QPushButton
-from mediawave.schedule_editor.utility_panels import _COMING_LATER_TOOL_NAMES, build_editing_tools_card
+from mediawave.schedule_editor.utility_panels import build_editing_tools_card
 
 editing_tools_card, editing_tools_controls = build_editing_tools_card()
 editing_tools_buttons = editing_tools_card.findChildren(QPushButton)
@@ -564,21 +564,35 @@ check(
     [b.text() for b in editing_tools_buttons],
 )
 check(
-    "all three action buttons start disabled until a selection makes them meaningful",
+    "all six action buttons start disabled until a selection makes them meaningful",
     all(b.isEnabled() is False for b in editing_tools_buttons),
     [(b.text(), b.isEnabled()) for b in editing_tools_buttons],
 )
 
-editing_tools_text = " ".join(label.text() for label in editing_tools_card.findChildren(QLabel))
-check(
-    "every deferred bulk tool is still named, as a dim 'Coming later' line",
-    all(name in editing_tools_text for name in _COMING_LATER_TOOL_NAMES) and "Coming later" in editing_tools_text,
-    editing_tools_text,
-)
 editing_tools_controls["set_hint"]("A test hint.")
 check(
     "the tools card exposes a working hint line for explaining the selection state",
     "A test hint." in " ".join(label.text() for label in editing_tools_card.findChildren(QLabel)),
+)
+editing_tools_controls["set_hint"]("")
+check(
+    "clearing the hint removes it (no lingering narration when nothing needs explaining)",
+    "" == next((label.text() for label in editing_tools_card.findChildren(QLabel) if label.isVisible() and label.text() == "A test hint."), ""),
+)
+
+editing_tools_controls["set_locked"]("This channel can't be edited here.")
+check(
+    "a locked selection hides every action button",
+    all(not b.isVisibleTo(editing_tools_card) for b in editing_tools_buttons),
+)
+check(
+    "a locked selection shows exactly one calm message",
+    any(label.text() == "This channel can't be edited here." for label in editing_tools_card.findChildren(QLabel)),
+)
+editing_tools_controls["set_locked"](None)
+check(
+    "clearing the lock brings the action buttons back",
+    editing_tools_buttons[0].isVisibleTo(editing_tools_card),
 )
 
 
@@ -798,8 +812,8 @@ check("the inspector has real presence (fixed footer-band height, not a zero/ski
 
 footer_texts = [lbl.text() for lbl in footer.findChildren(QLabel)]
 check(
-    "with nothing selected, the inspector shows the calm full-details prompt",
-    any("Select a program to see its full details." in text for text in footer_texts),
+    "with nothing selected, the inspector shows the calm no-selection prompt",
+    any("No program selected." in text for text in footer_texts),
     footer_texts,
 )
 
@@ -821,7 +835,7 @@ check(
 
 update_inspector(None, None)
 update_inspector(None, None)
-prompt_labels = [lbl for lbl in inspector.findChildren(QLabel) if "Select a program" in lbl.text() and lbl.isVisibleTo(inspector)]
+prompt_labels = [lbl for lbl in inspector.findChildren(QLabel) if "No program selected" in lbl.text() and lbl.isVisibleTo(inspector)]
 check(
     "clearing the selection restores exactly one prompt (no duplicated widgets after repeated updates)",
     len(prompt_labels) == 1,
@@ -976,6 +990,63 @@ check(
     "the Channel Studio page source contains no 'Open Schedule Editor' entry",
     "Open Schedule Editor" not in _cs_source and "schedule_editor" not in _cs_source,
     None,
+)
+
+
+# ---------------------------------------------------------------------------
+section("UI polish pass: ConflictDialog sizing, no overexplaining dialog copy")
+# ---------------------------------------------------------------------------
+
+from mediawave.schedule_editor.conflict_dialog import ConflictDialog
+
+conflict_dialog = ConflictDialog(
+    "Replace existing programs?",
+    "“Pee-wee's Big Adventure” overlaps 2 scheduled programs.",
+    list_items=["TOYS", "Killer Klowns From Outer Space"],
+    note="Replacing removes them from this date's lineup.",
+    actions=[
+        ("Choose Another Time", "neutral", "choose"),
+        ("Replace Programs", "destructive", "replace"),
+        ("Cancel", "neutral", "cancel"),
+    ],
+)
+conflict_buttons = conflict_dialog.findChildren(QPushButton)
+check(
+    "the conflict dialog renders exactly the three action buttons, unclipped text intact",
+    sorted(b.text() for b in conflict_buttons) == ["Cancel", "Choose Another Time", "Replace Programs"],
+    [b.text() for b in conflict_buttons],
+)
+min_widths = [b.minimumWidth() for b in conflict_buttons]
+check(
+    "every conflict-dialog button is sized to the widest label's own natural width "
+    "(equal width by construction, not by dividing the row and hoping everything fits)",
+    len(set(min_widths)) == 1 and min_widths[0] > 0,
+    min_widths,
+)
+conflict_dialog._choose("replace")
+check("clicking an action sets .result to that action's key", conflict_dialog.result == "replace")
+
+from mediawave.schedule_editor.duplicate_dialog import DuplicateHereDialog
+from mediawave.schedule_editor.move_to_dialog import MoveToDialog
+
+_dup_block = ProgramBlock(channel_id="ch1", title="Pee-wee's Big Adventure", media_type="movie", start=T0, end=T0 + 1500, duration=1500, true_start=T0, true_end=T0 + 1500)
+_dup_lane = ChannelLane(channel_id="ch1", name="Movies", number=1, channel_type="media", logo_path="", blocks=[_dup_block], has_data=True)
+dup_dialog = DuplicateHereDialog(_dup_block, _dup_lane)
+dup_dialog_text = " ".join(lbl.text() for lbl in dup_dialog.findChildren(QLabel))
+check(
+    "Duplicate Here… no longer explains that the original stays where it is (the Original/New airing layout already shows that)",
+    "stays exactly where it is" not in dup_dialog_text,
+    dup_dialog_text,
+)
+dup_buttons = dup_dialog.findChildren(QPushButton)
+check("Duplicate Here…'s Cancel/Duplicate Program buttons share equal width", dup_dialog.layout().itemAt(dup_dialog.layout().count() - 1).layout().stretch(0) == dup_dialog.layout().itemAt(dup_dialog.layout().count() - 1).layout().stretch(1))
+
+move_dialog = MoveToDialog(_dup_block, _dup_lane)
+move_dialog_text = " ".join(lbl.text() for lbl in move_dialog.findChildren(QLabel))
+check(
+    "Move To… stays a short From/To layout with no added narration",
+    "From" in move_dialog_text and "stays exactly where it is" not in move_dialog_text,
+    move_dialog_text,
 )
 
 

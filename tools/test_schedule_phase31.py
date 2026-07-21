@@ -54,7 +54,12 @@ from mediawave.schedule_editor.schedule_model import ChannelLane, ProgramBlock
 from mediawave.schedule_overrides import compact_overrides
 
 NOW = time.time()
-T0 = NOW - (NOW % 1800) + 7200  # safely in the future, half-hour aligned
+# Anchored to 2 PM two days out, not "NOW + 2h" -- the latter wanders
+# past midnight whenever the suite happens to run late at night, which
+# silently collapses "same-day move" and "next-day copy" destinations
+# onto the same calendar date and made check 12/13b flaky by time of day.
+_anchor_local = time.localtime(NOW)
+T0 = time.mktime((_anchor_local.tm_year, _anchor_local.tm_mon, _anchor_local.tm_mday, 14, 0, 0, 0, 0, -1)) + 2 * 24 * 3600
 CH = "media:/catalog/Comedy"
 
 

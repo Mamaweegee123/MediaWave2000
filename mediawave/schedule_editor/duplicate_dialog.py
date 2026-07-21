@@ -47,7 +47,7 @@ class DuplicateHereDialog(QDialog):
 
         self.setWindowTitle("Duplicate Program")
         self.setModal(True)
-        self.resize(420, 320)
+        self.resize(400, 260)
         self.setStyleSheet(f"QDialog {{ background: {_PANEL_BG}; }} QLabel {{ color: {_TEXT_COLOR}; }}")
 
         layout = QVBoxLayout(self)
@@ -63,14 +63,14 @@ class DuplicateHereDialog(QDialog):
         self._channel_label = channel_label
 
         original_lbl = QLabel(
-            f"Original:\n{channel_label}\n{_time_label(block.true_start)}–{_time_label(block.true_end)}"
+            f"Original\n{channel_label}\n{_time_label(block.true_start)}–{_time_label(block.true_end)}"
         )
         original_lbl.setStyleSheet(f"color: {_DIM_COLOR}; font-size: 12px;")
         layout.addWidget(original_lbl)
 
         time_row = QHBoxLayout()
         time_row.setSpacing(10)
-        time_row.addWidget(QLabel("New airing's start time:"))
+        time_row.addWidget(QLabel("New start time"))
         self._time_edit = QTimeEdit()
         self._time_edit.setDisplayFormat("h:mm AP")
         start_local = time.localtime(block.true_start)
@@ -80,14 +80,6 @@ class DuplicateHereDialog(QDialog):
         time_row.addStretch(1)
         layout.addLayout(time_row)
 
-        note = QLabel(
-            "The original program stays exactly where it is — this adds one more airing "
-            "on the same channel and date."
-        )
-        note.setStyleSheet(f"color: {_DIM_COLOR}; font-size: 10px;")
-        note.setWordWrap(True)
-        layout.addWidget(note)
-
         self._preview = QLabel("")
         self._preview.setStyleSheet(f"color: {_DIM_COLOR}; font-size: 12px; font-weight: 600;")
         self._preview.setWordWrap(True)
@@ -95,13 +87,13 @@ class DuplicateHereDialog(QDialog):
         layout.addStretch(1)
 
         button_row = QHBoxLayout()
-        button_row.addStretch(1)
+        button_row.setSpacing(8)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
-        button_row.addWidget(cancel_btn)
+        button_row.addWidget(cancel_btn, 1)
         self._duplicate_btn = QPushButton("Duplicate Program")
         self._duplicate_btn.clicked.connect(self.accept)
-        button_row.addWidget(self._duplicate_btn)
+        button_row.addWidget(self._duplicate_btn, 1)
         layout.addLayout(button_row)
 
         self._update_preview()
@@ -110,7 +102,7 @@ class DuplicateHereDialog(QDialog):
         dest_start = self.destination_start()
         dest_end = dest_start + self._duration
         self._preview.setText(
-            f"New airing:\n{self._channel_label}\n{_time_label(dest_start)}–{_time_label(dest_end)}"
+            f"New airing\n{self._channel_label}\n{_time_label(dest_start)}–{_time_label(dest_end)}"
         )
 
     def destination_start(self):

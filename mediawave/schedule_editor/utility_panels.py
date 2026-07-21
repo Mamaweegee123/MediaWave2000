@@ -21,20 +21,10 @@ _NOTE_COLOR = "rgba(138, 158, 212, 220)"
 _VALUE_COLOR = "rgba(210, 222, 252, 235)"
 _ACCENT_NEUTRAL = "rgba(255, 255, 255, 24)"
 
-# Deferred bulk tools -- named so users know they're coming, but never
-# rendered as a wall of equal-weight dead buttons next to the two real
-# actions.
-_COMING_LATER_TOOL_NAMES = [
-    "Auto-Fill Block",
-    "Build Prime Time",
-    "Drop In Commercials",
-    "Clone Daypart",
-]
-
-# Compact real-action buttons for the Editing Tools card -- the same quiet
-# geometry as the top bar's nav buttons (the app-wide filled-blue
-# QPushButton default is too heavy stacked inside a side card), with a
-# clearly-lower-contrast :disabled state.
+# Compact real-action buttons for the Editing Tools card's primary row --
+# the same quiet geometry as the top bar's nav buttons (the app-wide
+# filled-blue QPushButton default is too heavy stacked inside a side
+# card), with a clearly-lower-contrast :disabled state.
 _TOOL_BUTTON_STYLE = """
     QPushButton {
         min-width: 0px;
@@ -60,6 +50,39 @@ _TOOL_BUTTON_STYLE = """
     }
 """
 
+# The secondary row (Duplicate Here…/Copy to Another Day…/Fill Open
+# Time) is deliberately quieter than the primary row -- no fill, thinner
+# text -- so six real actions don't all compete at the same visual
+# weight. These are the lower-frequency lineup-building shortcuts, not
+# the core editing verbs.
+_SECONDARY_BUTTON_STYLE = """
+    QPushButton {
+        min-width: 0px;
+        min-height: 26px;
+        padding: 4px 10px;
+        border-radius: 6px;
+        border: 1px solid rgba(96, 144, 255, 90);
+        background: transparent;
+        color: rgba(200, 214, 245, 215);
+        font-size: 11px;
+        font-weight: 500;
+    }
+    QPushButton:hover:enabled {
+        border: 1px solid rgba(120, 165, 255, 170);
+        background: rgba(60, 84, 190, 80);
+        color: white;
+    }
+    QPushButton:disabled {
+        border: 1px solid rgba(90, 100, 140, 50);
+        background: transparent;
+        color: rgba(120, 132, 168, 120);
+    }
+"""
+
+_LOCKED_MESSAGE_STYLE = (
+    f"color: {_NOTE_COLOR}; font-size: 12px; background: transparent;"
+)
+
 
 def _note_label(text):
     label = QLabel(text)
@@ -76,35 +99,33 @@ def build_editing_tools_card(
     on_copy_to_day=None,
     on_fill_open_time=None,
 ):
-    """The real editing actions, grouped so six equally-real buttons never
-    read as one undifferentiated wall: Put On Air / Pull / Move To… (the
-    core, higher-frequency actions) share one row on top; Duplicate
-    Here… / Copy to Another Day… / Fill Open Time (Phase 3.1 --
-    lineup-building shortcuts) stack full-width below, one per line --
-    three-across clipped "Copy to Another Day…" at this card's width, and
-    these are the lower-frequency actions anyway, so a taller stack reads
-    better than truncated labels. The deferred bulk tools stay one dim
-    "Coming later" line underneath everything (deliberately NOT more
-    disabled buttons -- real actions shouldn't share visual weight with
-    inert ones).
+    """Two tiers, not six equal-weight buttons: Put On Air / Pull / Move
+    To… are the primary row; Duplicate Here… / Copy to Another Day… /
+    Fill Open Time sit below in a quieter, unfilled style -- real, but
+    visibly secondary. A protected companion selection replaces the
+    whole grid with one calm locked line via `set_locked(reason)`.
 
-    Returns (card, controls): controls has one `*_btn` per action plus
-    `set_hint(text)` -- the hint line under the buttons explains, in plain
-    language, what the current selection allows (or why it doesn't allow
-    something), so a disabled button is never a mystery.
+    Returns (card, controls): one `*_btn` per action, `set_hint(text)`
+    for a short constraint explanation (empty string clears it), and
+    `set_locked(reason_or_none)`.
     """
     content = QWidget()
     layout = QVBoxLayout(content)
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
 
-    def _tool_button(label, handler):
+    def _tool_button(label, handler, style=_TOOL_BUTTON_STYLE):
         btn = QPushButton(label)
-        btn.setStyleSheet(_TOOL_BUTTON_STYLE)
+        btn.setStyleSheet(style)
         btn.setEnabled(False)
         if handler is not None:
             btn.clicked.connect(handler)
         return btn
+
+    buttons_container = QWidget()
+    buttons_layout = QVBoxLayout(buttons_container)
+    buttons_layout.setContentsMargins(0, 0, 0, 0)
+    buttons_layout.setSpacing(8)
 
     primary_row = QHBoxLayout()
     primary_row.setSpacing(8)
@@ -115,36 +136,45 @@ def build_editing_tools_card(
     move_btn = _tool_button("Move To…", on_move_to)
     primary_row.addWidget(move_btn)
     primary_row.addStretch(1)
-    layout.addLayout(primary_row)
+    buttons_layout.addLayout(primary_row)
 
-    # Full-width, one per line -- three across (like the primary row)
-    # clipped "Copy to Another Day…" at this card's ~316px content width
-    # (verified in the running app). Stacking keeps every label fully
-    # readable regardless of window size, at the cost of a taller card;
-    # given these are the lower-frequency, longer-named lineup-building
-    # actions, that trade favors legibility.
+    # Full-width, one per line -- three across clipped "Copy to Another
+    # Day…" at this card's width, and stacking also reads as visibly
+    # lower-priority than the primary row's horizontal group.
     secondary_col = QVBoxLayout()
-    secondary_col.setSpacing(6)
-    duplicate_btn = _tool_button("Duplicate Here…", on_duplicate_here)
+    secondary_col.setSpacing(4)
+    duplicate_btn = _tool_button("Duplicate Here…", on_duplicate_here, _SECONDARY_BUTTON_STYLE)
     secondary_col.addWidget(duplicate_btn)
-    copy_btn = _tool_button("Copy to Another Day…", on_copy_to_day)
+    copy_btn = _tool_button("Copy to Another Day…", on_copy_to_day, _SECONDARY_BUTTON_STYLE)
     secondary_col.addWidget(copy_btn)
-    fill_btn = _tool_button("Fill Open Time", on_fill_open_time)
+    fill_btn = _tool_button("Fill Open Time", on_fill_open_time, _SECONDARY_BUTTON_STYLE)
     secondary_col.addWidget(fill_btn)
-    layout.addLayout(secondary_col)
+    buttons_layout.addLayout(secondary_col)
 
-    hint_lbl = _note_label("Select a program to pull, move, duplicate, or copy it, or select open time to fill it.")
-    layout.addWidget(hint_lbl)
+    hint_lbl = _note_label("")
+    buttons_layout.addWidget(hint_lbl)
+    hint_lbl.hide()
 
-    coming_lbl = _note_label("Coming later:  " + "  ·  ".join(_COMING_LATER_TOOL_NAMES))
-    layout.addWidget(coming_lbl)
+    layout.addWidget(buttons_container)
+
+    locked_lbl = QLabel("")
+    locked_lbl.setWordWrap(True)
+    locked_lbl.setStyleSheet(_LOCKED_MESSAGE_STYLE)
+    locked_lbl.hide()
+    layout.addWidget(locked_lbl)
 
     def set_hint(text):
         hint_lbl.setText(text or "")
+        hint_lbl.setVisible(bool(text))
+
+    def set_locked(reason):
+        is_locked = bool(reason)
+        buttons_container.setVisible(not is_locked)
+        locked_lbl.setText(reason or "")
+        locked_lbl.setVisible(is_locked)
 
     card = StudioSection(
         "Editing Tools",
-        subtitle="Edits stay in your draft until you save.",
         content=content,
         collapsible=False,
         accent=False,
@@ -157,6 +187,7 @@ def build_editing_tools_card(
         "copy_btn": copy_btn,
         "fill_btn": fill_btn,
         "set_hint": set_hint,
+        "set_locked": set_locked,
     }
     return card, controls
 
@@ -198,7 +229,6 @@ def build_pending_changes_card():
     layout.setContentsMargins(0, 0, 0, 0)
     layout.setSpacing(8)
     layout.addWidget(_note_label("No unsaved changes"))
-    layout.addWidget(_note_label("Your lineup matches the saved schedule."))
 
     card = StudioSection(
         "Pending Changes",
@@ -244,7 +274,6 @@ def build_pending_changes_card():
 
         if not rows:
             layout.addWidget(_note_label("No unsaved changes"))
-            layout.addWidget(_note_label("Your lineup matches the saved schedule."))
             return
 
         count_label = f"{len(rows)} unsaved change" + ("" if len(rows) == 1 else "s") + " in this draft."
@@ -284,7 +313,7 @@ def build_next_up_card():
     placeholder = _note_label("Select a channel to see what's up next.")
     layout.addWidget(placeholder)
 
-    card = build_status_card("Next Up", content, subtitle="Real upcoming programming for the selected channel.")
+    card = build_status_card("Next Up", content)
 
     def update(lane, limit=6):
         while layout.count():
@@ -340,9 +369,7 @@ def build_channel_defaults_card():
     # accent=False for the same reason as the Editing Tools card: this is
     # a read-only summary, and its accent strip read as stray clutter
     # beside the otherwise accent-less right column.
-    card = StudioSection(
-        "Channel Defaults", subtitle="Real configuration for the selected channel.", content=content, collapsible=False, accent=False
-    )
+    card = StudioSection("Channel Defaults", content=content, collapsible=False, accent=False)
 
     def _row(text):
         label = QLabel(text)
@@ -436,7 +463,7 @@ def build_selected_program_footer():
         label.setStyleSheet(f"color: {_NOTE_COLOR}; font-size: 11px; background: transparent;")
         return label
 
-    layout.addWidget(_prompt_label("Select a program to see its full details."))
+    layout.addWidget(_prompt_label("No program selected."))
 
     def update(block, lane):
         while layout.count():
@@ -449,9 +476,9 @@ def build_selected_program_footer():
         if block is None:
             accent_bar.setStyleSheet(f"background: {_ACCENT_NEUTRAL}; border-radius: 1px;")
             if lane is not None:
-                layout.addWidget(_prompt_label(f"Ch {lane.number} · {lane.name} selected — choose a program for full details."))
+                layout.addWidget(_prompt_label(f"Ch {lane.number} · {lane.name}"))
             else:
-                layout.addWidget(_prompt_label("Select a program to see its full details."))
+                layout.addWidget(_prompt_label("No program selected."))
             return
 
         _, accent_color = MEDIA_TYPE_ACCENTS.get(block.media_type, MEDIA_TYPE_ACCENTS["tv"])
@@ -475,8 +502,7 @@ def build_selected_program_footer():
         layout.addWidget(_dim_line("   ·   ".join(detail_parts)))
 
         if block.media_type == "open":
-            layout.addWidget(_dim_line("Nothing is scheduled here — use Put On Air to fill this open time."))
-            origin_label = "Open time from unsaved edit" if block.source == "draft" else "Open time"
+            origin_label = "Unsaved open time" if block.source == "draft" else "Open time"
             layout.addWidget(_dim_line(origin_label))
             return
 

@@ -78,7 +78,7 @@ class CopyToAnotherDayDialog(QDialog):
         self._channel_label = channel_label
 
         original_lbl = QLabel(
-            f"Original:\n{channel_label}\n"
+            f"Original\n{channel_label}\n"
             f"{time.strftime('%A, %B %-d', time.localtime(block.true_start))}\n"
             f"{_time_label(block.true_start)}–{_time_label(block.true_end)}"
         )
@@ -87,7 +87,7 @@ class CopyToAnotherDayDialog(QDialog):
 
         date_row = QHBoxLayout()
         date_row.setSpacing(10)
-        date_row.addWidget(QLabel("New date:"))
+        date_row.addWidget(QLabel("New date"))
         self._date_edit = QDateEdit()
         self._date_edit.setDisplayFormat("MMMM d, yyyy")
         self._date_edit.setCalendarPopup(True)
@@ -104,7 +104,7 @@ class CopyToAnotherDayDialog(QDialog):
 
         time_row = QHBoxLayout()
         time_row.setSpacing(10)
-        time_row.addWidget(QLabel("New start time:"))
+        time_row.addWidget(QLabel("New start time"))
         self._time_edit = QTimeEdit()
         self._time_edit.setDisplayFormat("h:mm AP")
         start_local = time.localtime(block.true_start)
@@ -131,13 +131,13 @@ class CopyToAnotherDayDialog(QDialog):
         layout.addStretch(1)
 
         button_row = QHBoxLayout()
-        button_row.addStretch(1)
+        button_row.setSpacing(8)
         cancel_btn = QPushButton("Cancel")
         cancel_btn.clicked.connect(self.reject)
-        button_row.addWidget(cancel_btn)
+        button_row.addWidget(cancel_btn, 1)
         self._copy_btn = QPushButton("Copy Program")
         self._copy_btn.clicked.connect(self.accept)
-        button_row.addWidget(self._copy_btn)
+        button_row.addWidget(self._copy_btn, 1)
         layout.addLayout(button_row)
 
         self._update_preview()
@@ -147,7 +147,7 @@ class CopyToAnotherDayDialog(QDialog):
         dest_end = dest_start + self._duration
         date_label = time.strftime("%A, %B %-d", time.localtime(dest_start))
         self._preview.setText(
-            f"New airing:\n{self._channel_label}\n{date_label}\n"
+            f"New airing\n{self._channel_label}\n{date_label}\n"
             f"{_time_label(dest_start)}–{_time_label(dest_end)}"
         )
         # Deliberately explicit, every time the date changes -- this is
