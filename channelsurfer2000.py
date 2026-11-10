@@ -46,7 +46,9 @@ from mediawave.core_io import (
     PATH_ACCESS_PERMISSION_DENIED,
     PATH_ACCESS_SLOW_OR_TIMEOUT,
     PATH_ACCESS_UNREADABLE,
+    CATALOG_PATH_BLOCKING_STATUSES,
     _safe_realpath,
+    catalog_path_is_available,
     classify_path_access,
     ensure_user_content_structure,
     format_library_path_status,
@@ -98,6 +100,16 @@ from mediawave.schedule_editor.recent_media import (
     record_recent_media,
     save_recent_media,
 )
+from mediawave.schedule_editor.autofill_cursor import (
+    advance_cursor,
+    load_autofill_cursors,
+    save_autofill_cursors,
+)
+from mediawave.schedule_editor.programming_blocks import (
+    load_programming_blocks,
+    save_programming_blocks,
+)
+from mediawave.show_identity import load_show_identity_registry, save_show_identity_registry
 from mediawave.playback_state import active_playback_path, media_paths_match, playback_frame_matches, tune_context_matches
 from mediawave.playback_health import (
     LOCAL_PLAYBACK_HEALTHY,
@@ -636,12 +648,28 @@ MEDIA_CACHE_FILE = os.path.join(DATA_DIR, "media_cache.json")
 SCHEDULE_STATE_FILE = os.path.join(DATA_DIR, "schedule_state.json")
 SCHEDULE_OVERRIDES_FILE = os.path.join(DATA_DIR, "schedule_overrides.json")
 SCHEDULE_RECENT_MEDIA_FILE = os.path.join(DATA_DIR, "schedule_recent_media.json")
+SCHEDULE_AUTOFILL_CURSOR_FILE = os.path.join(DATA_DIR, "schedule_autofill_cursor.json")
+SCHEDULE_PROGRAMMING_BLOCKS_FILE = os.path.join(DATA_DIR, "schedule_programming_blocks.json")
+SCHEDULE_SHOW_IDENTITY_FILE = os.path.join(DATA_DIR, "schedule_show_identity.json")
 TMDB_CACHE_FILE = os.path.join(DATA_DIR, "tmdb_cache.json")
 TMDB_OVERRIDES_FILE = os.path.join(DATA_DIR, "tmdb_overrides.json")
 TMDB_REVIEW_FILE = os.path.join(DATA_DIR, "tmdb_review.json")
 TMDB_CONFIG_FILE = os.path.join(DATA_DIR, "tmdb_config.json")
 APP_SETTINGS_FILE = os.path.join(DATA_DIR, "app_settings.json")
 RESUME_STATE_FILE = os.path.join(DATA_DIR, "resume_state.json")
+DUMMY_TEST_CATALOG_DIR = resolve_resource_path(os.path.join("dev_testing", "dummy_catalog"))
+DUMMY_TEST_CATALOG_SEED_FILE = os.path.join(DUMMY_TEST_CATALOG_DIR, "_dummy_media_cache_seed.json")
+
+
+def dummy_test_catalog_available():
+    return os.path.isdir(DUMMY_TEST_CATALOG_DIR)
+
+
+def load_dummy_test_catalog_duration_seed():
+    if not os.path.isfile(DUMMY_TEST_CATALOG_SEED_FILE):
+        return {}
+    seed = load_json_file(DUMMY_TEST_CATALOG_SEED_FILE, {})
+    return seed if isinstance(seed, dict) else {}
 ON_DEMAND_CACHE_FILE = os.path.join(DATA_DIR, "on_demand_catalog.json")
 VAULT_DEBUG_LOG_FILE = os.path.join(DATA_DIR, "vault_debug.log")
 COMMERCIAL_LIBRARY_CACHE_FILE = os.path.join(DATA_DIR, "commercial_library_cache.json")
@@ -20197,7 +20225,10 @@ class AdvancedConfigDialog(QDialog):
                  channel_logo_lookup=None, studio_channels_by_id=None,
                  schedule_overrides_save=None, schedule_overrides_remove=None,
                  schedule_overrides_data_get=None, schedule_recent_media_get=None,
-                 schedule_recent_media_record=None):
+                 schedule_recent_media_record=None, schedule_autofill_cursor_advance=None,
+                 schedule_autofill_cursor_get=None, schedule_programming_blocks_get=None,
+                 schedule_programming_blocks_save=None, schedule_show_identity_get=None,
+                 schedule_show_identity_save=None):
         super().__init__(parent)
         self._init_settings = dict(settings or {})
         self.review_requested = False
@@ -20243,6 +20274,35 @@ class AdvancedConfigDialog(QDialog):
         # every successful record.
         self._schedule_recent_media_get = schedule_recent_media_get
         self._schedule_recent_media_record = schedule_recent_media_record
+        # Auto-Fill Block's Continue Sequentially cursor (Phase 4): same
+        # None-means-unavailable contract. Called ONLY from dialog.py's
+        # _perform_save, and only after that save has already succeeded --
+        # never on preview, execute, undo/redo, or a discarded draft.
+        self._schedule_autofill_cursor_advance = schedule_autofill_cursor_advance
+        # AutoFillBlockDialog's read-only lookup for Continue
+        # Sequentially's preview -- a getter, not a snapshot, same reason
+        # schedule_recent_media_get is: the main window reassigns (not
+        # mutates) self.schedule_autofill_cursor_data on every successful
+        # advance.
+        self._schedule_autofill_cursor_get = schedule_autofill_cursor_get
+        # Programming Blocks (Phase 5.4): unlike the cursor above, these
+        # are read AND written directly by the Programming Block manager
+        # dialog itself (not gated behind Save Schedule) -- creating,
+        # renaming, or deleting a block is its own immediate action, same
+        # as Advanced Configuration's other settings. Same None-means-
+        # unavailable contract as every other callback here.
+        self._schedule_programming_blocks_get = schedule_programming_blocks_get
+        self._schedule_programming_blocks_save = schedule_programming_blocks_save
+        # Show Identity registry: a getter, not a snapshot (Phase 5.5.3
+        # revises the read-only snapshot Phase 5.5.2 step 3 used) -- now
+        # that Rename Show can save a correction while this dialog is
+        # open, the workspace needs to see the freshly reassigned
+        # self.schedule_show_identity_data on its NEXT read, same getter/
+        # reassign contract schedule_programming_blocks_get/_save already
+        # have above. None-means-unavailable, same contract as every
+        # other callback here.
+        self._schedule_show_identity_get = schedule_show_identity_get
+        self._schedule_show_identity_save = schedule_show_identity_save
         self._schedule_editor_workspace = None
         self._channel_studio_drafts_file = CHANNEL_STUDIO_DRAFTS_FILE
         self._channel_studio_state_file = CHANNEL_STUDIO_STATE_FILE
@@ -20417,6 +20477,14 @@ class AdvancedConfigDialog(QDialog):
         self.allow_dummy_vault_catalog.setChecked(bool(settings.get("allow_dummy_vault_catalog", False)))
         self.dev_menu_enabled = QCheckBox("Enable Diagnostics for viewing")
         self.dev_menu_enabled.setChecked(bool(settings.get("dev_menu_enabled", True)))
+        self.use_dummy_test_catalog = QCheckBox("Use Dummy Test Catalog")
+        self.use_dummy_test_catalog.setChecked(bool(settings.get("use_dummy_test_catalog", False)))
+        self.use_dummy_test_catalog.setToolTip(
+            "Loads a small built-in placeholder catalog (fake channels, shows, movies, and "
+            "commercials with realistic runtimes) instead of your real catalog folder — handy "
+            "for testing the Schedule Editor and upcoming features without your own media. "
+            "Your real catalog path is remembered and restored when you turn this off."
+        )
         self.safe_playback_mode = QCheckBox("Safe Playback Mode (software decoding)")
         self.safe_playback_mode.setChecked(bool(settings.get("safe_playback_mode", False)))
         self.safe_playback_mode.setToolTip(
@@ -21620,6 +21688,7 @@ class AdvancedConfigDialog(QDialog):
         test_layout.addWidget(self.allow_dummy_vault_catalog)
         test_layout.addWidget(self.dev_menu_enabled)
         test_layout.addWidget(self.safe_playback_mode)
+        test_layout.addWidget(self.use_dummy_test_catalog)
         layout.addWidget(test_card)
 
         self.nettv_clear_cache_on_exit = QCheckBox("Delete NetTV cache on app close")
@@ -21747,6 +21816,7 @@ class AdvancedConfigDialog(QDialog):
             "allow_dummy_vault_catalog": self.allow_dummy_vault_catalog.isChecked(),
             "dev_menu_enabled": self.dev_menu_enabled.isChecked(),
             "safe_playback_mode": self.safe_playback_mode.isChecked(),
+            "use_dummy_test_catalog": self.use_dummy_test_catalog.isChecked(),
             "nettv_clear_cache_on_exit": self.nettv_clear_cache_on_exit.isChecked(),
             "commercials": commercials,
             "catalog_channel_settings": self.collect_all_catalog_channel_settings(),
@@ -22855,6 +22925,28 @@ class ChannelSurfer(QWidget):
         # SCHEDULED, not watched, and the two concepts have no reason to
         # ever merge.
         self.schedule_recent_media_data = load_recent_media(SCHEDULE_RECENT_MEDIA_FILE)
+        # Auto-Fill Block's Continue Sequentially cursor (Phase 4): the
+        # last episode PLACED (never "aired" -- see autofill_cursor.py's
+        # module docstring) by a sequential Auto-Fill Block action, per
+        # channel/show. Advanced only by advance_schedule_autofill_cursors,
+        # itself called only after a Save Schedule has actually succeeded.
+        self.schedule_autofill_cursor_data = load_autofill_cursors(SCHEDULE_AUTOFILL_CURSOR_FILE)
+        # Programming Blocks (Phase 5.4): loaded once at startup, then kept
+        # in memory and reassigned (never mutated in place) on every
+        # successful save from the Programming Block manager -- same
+        # getter/reassign contract as schedule_autofill_cursor_data above.
+        self.schedule_programming_blocks_data = load_programming_blocks(SCHEDULE_PROGRAMMING_BLOCKS_FILE)
+        # Show Identity registry (Phase 5.5.2 step 3): loaded once at
+        # startup, same defensive-load contract as the sidecars above --
+        # a missing or malformed file loads as an empty registry without
+        # being rewritten (see mediawave/show_identity.py). Read-only in
+        # this phase: nothing yet writes corrections, so unlike
+        # schedule_autofill_cursor_data/schedule_programming_blocks_data
+        # above, this is never reassigned after startup. No correction UI
+        # exists yet -- this makes a manually/synthetically populated
+        # schedule_show_identity.json visible to the Schedule Editor, and
+        # nothing else.
+        self.schedule_show_identity_data = load_show_identity_registry(SCHEDULE_SHOW_IDENTITY_FILE)
         self.commercial_library_cache_state = load_json_file(COMMERCIAL_LIBRARY_CACHE_FILE, {"signature": "", "root_folder": "", "assets": []})
         self.tmdb_cache = load_json_file(TMDB_CACHE_FILE, {})
         self.tmdb_overrides = load_json_file(TMDB_OVERRIDES_FILE, {"shows": {}})
@@ -22868,6 +22960,7 @@ class ChannelSurfer(QWidget):
         self.last_metadata_overlay_refresh_at = 0.0
         self.catalog_progress_last_pump = 0.0
         self.catalog_root = None
+        self._catalog_load_in_progress = False
         self.commercial_library = []
         self.commercial_library_loaded_root = ""
 
@@ -23222,13 +23315,7 @@ class ChannelSurfer(QWidget):
     # ---------------- LOAD ---------------- #
 
     def _path_access_blocks_scan(self, access):
-        return (access or {}).get("status") in {
-            PATH_ACCESS_MISSING,
-            PATH_ACCESS_NOT_DIRECTORY,
-            PATH_ACCESS_PERMISSION_DENIED,
-            PATH_ACCESS_UNREADABLE,
-            PATH_ACCESS_DISCONNECTED_VOLUME,
-        }
+        return (access or {}).get("status") in CATALOG_PATH_BLOCKING_STATUSES
 
     def _classify_catalog_path(self, path, context="", force=False):
         normalized = os.path.abspath(os.path.expanduser(str(path or ""))) if path else ""
@@ -23335,6 +23422,9 @@ class ChannelSurfer(QWidget):
         folder = self.choose_catalog_folder()
         if not folder:
             return False
+        if self.app_settings.get("use_dummy_test_catalog", False):
+            self.app_settings["use_dummy_test_catalog"] = False
+            save_json_file(APP_SETTINGS_FILE, self.app_settings)
         return self.load_catalog(folder, autoplay=False)
 
     @Slot()
@@ -23417,6 +23507,23 @@ class ChannelSurfer(QWidget):
         return folder
 
     def load_catalog(self, folder=None, autoplay=False):
+        """Entry point for every catalog load — manual Choose Catalog, the
+        Watch TV saved-path fallback, and startup auto-load all call this
+        exact method so validation, indexing, cache loading, progress UI,
+        error handling, channel construction, and schedule/cache
+        invalidation can never diverge between triggers. Guards against
+        re-entrant/duplicate loads (e.g. auto-load and a user click landing
+        at the same time) with a single in-progress flag.
+        """
+        if self._catalog_load_in_progress:
+            return False
+        self._catalog_load_in_progress = True
+        try:
+            return self._load_catalog_impl(folder=folder, autoplay=autoplay)
+        finally:
+            self._catalog_load_in_progress = False
+
+    def _load_catalog_impl(self, folder=None, autoplay=False):
         started_at = time.perf_counter()
         if folder is None:
             folder = self.choose_catalog_folder()
@@ -23616,14 +23723,26 @@ class ChannelSurfer(QWidget):
         return True
 
     def auto_load_catalog_if_available(self):
+        """Runs once, shortly after startup (QTimer.singleShot(0, ...) from
+        __init__, so the window/widgets/app_settings already exist). If the
+        previously selected catalog is still available, load it through the
+        exact same load_catalog() used by Choose Catalog -- same validation,
+        indexing, cache loading, progress UI, error handling, channel
+        construction, and schedule invalidation. If it isn't available, this
+        quietly leaves the setup screen as-is: no blocking error, the saved
+        path is never touched, and there is no retry loop.
+        """
         saved_catalog = self.app_settings.get("catalog_path", "").strip()
         if not saved_catalog:
             self._show_first_run_guidance()
+            return
+        if self._catalog_load_in_progress:
             return
         self.catalog_path_label.setText(saved_catalog)
         access = self._classify_catalog_path(saved_catalog, "catalog.startup.saved", force=True)
         if self._path_access_blocks_scan(access):
             self._apply_library_status(self._library_status_for_path(saved_catalog, access))
+            self.status.setText("Saved catalog is currently unavailable.")
             self.refresh_controls()
             return
         if access.get("status") == PATH_ACCESS_EMPTY:
@@ -23631,12 +23750,18 @@ class ChannelSurfer(QWidget):
             self.refresh_controls()
             return
         if access.get("status") in {PATH_ACCESS_OK, PATH_ACCESS_SLOW_OR_TIMEOUT}:
-            self.catalog_root = saved_catalog
-            self._apply_library_status(self._library_status_for_path(saved_catalog, access))
             if self.app_settings.get("auto_launch", False):
                 # Hide setup screen immediately so the user never sees it flash.
+                # watch_tv() calls load_catalog() itself (self.channels is
+                # still empty here), so this is the only load -- not a second one.
                 self.hide()
                 QTimer.singleShot(0, self._auto_launch_watch_tv)
+                return
+            # load_catalog() re-classifies and re-applies the library status
+            # itself (via _apply_library_status inside its own error paths and
+            # a final "Loaded N channels..." status on success), so there is
+            # nothing else to do here on either outcome.
+            self.load_catalog(saved_catalog, autoplay=False)
 
     def _auto_launch_watch_tv(self):
         """Called on startup when auto_launch is enabled — loads catalog and goes straight to TV."""
@@ -24363,6 +24488,12 @@ class ChannelSurfer(QWidget):
             schedule_overrides_data_get=lambda: self.schedule_overrides_data,
             schedule_recent_media_get=lambda: self.schedule_recent_media_data,
             schedule_recent_media_record=self.record_recent_scheduled_media,
+            schedule_autofill_cursor_advance=self.advance_schedule_autofill_cursors,
+            schedule_autofill_cursor_get=lambda: self.schedule_autofill_cursor_data,
+            schedule_programming_blocks_get=lambda: self.schedule_programming_blocks_data,
+            schedule_programming_blocks_save=self.save_schedule_programming_blocks_from_editor,
+            schedule_show_identity_get=lambda: self.schedule_show_identity_data,
+            schedule_show_identity_save=self.save_schedule_show_identity_from_editor,
         )
         if dialog.exec() != QDialog.Accepted:
             return
@@ -24384,6 +24515,9 @@ class ChannelSurfer(QWidget):
         self.app_settings["allow_empty_catalog_tv"] = values["allow_empty_catalog_tv"]
         self.app_settings["allow_dummy_vault_catalog"] = values["allow_dummy_vault_catalog"]
         self.app_settings["dev_menu_enabled"] = values["dev_menu_enabled"]
+        previous_dummy_catalog = bool(self.app_settings.get("use_dummy_test_catalog", False))
+        new_dummy_catalog = bool(values.get("use_dummy_test_catalog", False))
+        self.app_settings["use_dummy_test_catalog"] = new_dummy_catalog
         previous_safe_mode = bool(self.app_settings.get("safe_playback_mode", False))
         self.app_settings["safe_playback_mode"] = values.get("safe_playback_mode", False)
         self.app_settings["nettv_clear_cache_on_exit"] = values.get("nettv_clear_cache_on_exit", False)
@@ -24393,6 +24527,41 @@ class ChannelSurfer(QWidget):
         invalidate_channel_bug_cache()
         self.configure_channel_bug()
         save_json_file(APP_SETTINGS_FILE, self.app_settings)
+        _dummy_catalog_toggled = new_dummy_catalog != previous_dummy_catalog
+        if new_dummy_catalog and not dummy_test_catalog_available():
+            self.status.setText(
+                "Dummy Test Catalog files are missing — run dev_testing/generate_dummy_catalog.py to create them."
+            )
+            self.app_settings["use_dummy_test_catalog"] = False
+            new_dummy_catalog = False
+            _dummy_catalog_toggled = False
+        if _dummy_catalog_toggled:
+            dummy_commercials_dir = os.path.join(DUMMY_TEST_CATALOG_DIR, "Commercials")
+            commercials_settings = self.app_settings.get("commercials", {})
+            if new_dummy_catalog:
+                self.app_settings["real_catalog_path"] = self.app_settings.get("catalog_path", "")
+                self.duration_cache.update(load_dummy_test_catalog_duration_seed())
+                save_json_file(MEDIA_CACHE_FILE, self.duration_cache)
+                commercials_settings["real_root_folder"] = commercials_settings.get("root_folder", "")
+                commercials_settings["root_folder"] = dummy_commercials_dir
+                commercials_settings["enabled"] = True
+                self.app_settings["commercials"] = commercials_settings
+                self.load_catalog(folder=DUMMY_TEST_CATALOG_DIR)
+            else:
+                restore_root = commercials_settings.pop("real_root_folder", "")
+                commercials_settings["root_folder"] = restore_root
+                self.app_settings["commercials"] = commercials_settings
+                restore_path = self.app_settings.get("real_catalog_path", "")
+                if restore_path and os.path.isdir(restore_path):
+                    self.load_catalog(folder=restore_path)
+                else:
+                    self.channels = []
+                    self.loaded_media_channels = []
+                    self.catalog_root = ""
+                    self.app_settings["catalog_path"] = ""
+                    save_json_file(APP_SETTINGS_FILE, self.app_settings)
+                    self.catalog_path_label.setText("")
+            save_json_file(APP_SETTINGS_FILE, self.app_settings)
         if self.app_settings["safe_playback_mode"] != previous_safe_mode:
             if self.app_settings["safe_playback_mode"]:
                 self.activate_safe_playback_mode(retry_current=True, persist=False)
@@ -25512,6 +25681,68 @@ class ChannelSurfer(QWidget):
         """
         self.schedule_recent_media_data = record_recent_media(self.schedule_recent_media_data, item, now=time.time())
         save_recent_media(SCHEDULE_RECENT_MEDIA_FILE, self.schedule_recent_media_data)
+
+    def advance_schedule_autofill_cursors(self, entries):
+        """Auto-Fill Block's Continue Sequentially cursor write-through
+        (Phase 4). Called ONLY from the Schedule Editor's _perform_save,
+        and only once its own save() call has already returned success --
+        so a failed Save Schedule, a discarded draft, an undo/redo, or a
+        cancelled preview never reaches this at all. `entries` is already
+        collapsed to at most one advance per (channel, show) -- see
+        autofill_cursor.cursors_to_advance_from_saved_changes, dialog.py's
+        one caller of this method. On a write failure the in-memory
+        cursor state is simply left as it was for next time (this cursor
+        is a convenience for resuming a lineup, not schedule state, so a
+        failed write here never blocks or re-reports the Save Schedule
+        that already succeeded).
+        """
+        for entry in entries or []:
+            self.schedule_autofill_cursor_data = advance_cursor(
+                self.schedule_autofill_cursor_data,
+                entry.get("channel_id", ""),
+                entry.get("show_key", ""),
+                entry.get("path", ""),
+                title=entry.get("title", ""),
+                season_number=entry.get("season_number"),
+                episode_number=entry.get("episode_number"),
+                now=time.time(),
+            )
+        save_autofill_cursors(SCHEDULE_AUTOFILL_CURSOR_FILE, self.schedule_autofill_cursor_data)
+
+    def save_schedule_programming_blocks_from_editor(self, data):
+        """The Programming Block manager's one persistence call -- unlike
+        the Auto-Fill cursor above, this runs immediately when the user
+        clicks Save Block/Delete in the manager dialog, not gated behind
+        Save Schedule (a Programming Block is its own standing piece of
+        configuration, same as a channel setting, not a schedule change).
+        On success, in-memory state is reassigned (never mutated) to the
+        newly saved data so every open dialog reading via the getter sees
+        it on its next read; on failure the in-memory state is left as-is
+        and the manager dialog surfaces the error itself.
+        """
+        ok, error = save_programming_blocks(SCHEDULE_PROGRAMMING_BLOCKS_FILE, data)
+        if ok:
+            self.schedule_programming_blocks_data = load_programming_blocks(SCHEDULE_PROGRAMMING_BLOCKS_FILE)
+        return ok, error
+
+    def save_schedule_show_identity_from_editor(self, updated_registry):
+        """Show Identity's one persistence call (Phase 5.5.3, Rename
+        Show's save path) -- same immediate, not-gated-behind-Save-
+        Schedule contract as save_schedule_programming_blocks_from_editor
+        above, since a show-identity correction is standing configuration,
+        not a schedule change. On success, self.schedule_show_identity_data
+        is reassigned (never mutated) to the freshly reloaded data, so
+        AdvancedConfigDialog's getter (schedule_show_identity_get) sees it
+        on its next read -- the same getter/reassign pattern every other
+        Schedule Editor sidecar here already uses. On failure, in-memory
+        state is left exactly as-is and the calling dialog surfaces the
+        error itself; nothing here rewrites the file, and nothing here
+        touches media files, folders, or any other persisted data.
+        """
+        ok, error = save_show_identity_registry(SCHEDULE_SHOW_IDENTITY_FILE, updated_registry)
+        if ok:
+            self.schedule_show_identity_data = load_show_identity_registry(SCHEDULE_SHOW_IDENTITY_FILE)
+        return ok, error
 
     def stop_background_commercial_warmup(self):
         return

@@ -34,12 +34,41 @@ CONFLICT_MISSING_MEDIA = "missing_source_media"
 # overlap on either side (or be fully covered by) an existing block, not
 # only "runs past the end of an open slot into what follows".
 CONFLICT_OVERLAPS_DESTINATION = "overlaps_destination"
+# Phase 4: one item in an Auto-Fill Block lineup overlaps an existing
+# draft block. Its own type (not CONFLICT_OVERLAPS_FOLLOWING/
+# CONFLICT_OVERLAPS_DESTINATION) because those describe a single-item
+# placement's specific overrun/destination shape; an autofill lineup
+# item can overlap anything already in the block for reasons that have
+# nothing to do with either (most commonly: the draft changed between
+# preview and Apply Lineup).
+CONFLICT_OVERLAPS_EXISTING = "overlaps_existing_block"
 
 # The one shared snap-to-time interval for Move To…, drag placement math,
 # and command validation, so all three can never disagree about where a
 # placement actually lands. Not user-configurable yet (spec: later phases
 # may offer other increments; this phase ships one fixed default).
 SNAP_INTERVAL_SECONDS = 5 * 60
+
+
+def local_day_bounds(epoch_seconds):
+    """(day_start, day_end) -- the full LOCAL calendar day containing
+    `epoch_seconds`, as a half-open [midnight, next midnight) interval.
+    Phase 4.5.2's Clear Day needs this to be exactly correct across a
+    DST transition, so it deliberately does NOT use a fixed-86400-second
+    offset (epoch_seconds - (epoch_seconds % 86400) is UTC-day-aligned,
+    not local-day-aligned, and a fixed +86400 silently produces the
+    wrong boundary on a 23- or 25-hour local day). Two localtime/mktime
+    round-trips instead: mktime's own tm_isdst=-1 resolution handles the
+    "spring forward"/"fall back" arithmetic correctly, and re-deriving
+    the next midnight from a definitely-next-day instant (start + 25h
+    always lands in the next calendar day, whether today is 23, 24, or
+    25 hours long) rather than assuming a fixed day length.
+    """
+    local = time.localtime(epoch_seconds)
+    day_start = time.mktime((local.tm_year, local.tm_mon, local.tm_mday, 0, 0, 0, 0, 0, -1))
+    next_local = time.localtime(day_start + 25 * 3600)
+    day_end = time.mktime((next_local.tm_year, next_local.tm_mon, next_local.tm_mday, 0, 0, 0, 0, 0, -1))
+    return day_start, day_end
 
 
 def snap_to_interval(epoch_seconds, interval_seconds=SNAP_INTERVAL_SECONDS):
@@ -271,6 +300,16 @@ class PutOnAirCommand:
                 title=self._media.get("title", ""),
                 path=self._media.get("path", ""),
                 media_type=self._media.get("media_type", "tv") or "tv",
+                # Same helper AutoFillBlockCommand uses (below): a no-op
+                # unless `media` itself carries strategy="sequential" +
+                # show_key -- only the Show Picker's Continue Sequentially
+                # resolution (put_on_air_picker.resolve_show_episode)
+                # ever stamps those on an ordinary Put On Air item, so
+                # every other Put On Air/Fill Open Time/Advanced… placement
+                # is unaffected. Lets one Show placement share the exact
+                # same save-time cursor-advance path Auto-Fill already
+                # has, instead of a second one (Phase 5.2).
+                autofill_meta=_sequential_cursor_meta(self._media),
             )
         draft.apply_change(self._add_change)
 
@@ -424,6 +463,7 @@ class MoveProgramCommand:
                     self._source_block.true_end,
                     title=self._source_block.title,
                     group_id=id(self),
+                    is_move_source=True,
                 )
         if self._removed_source_add_change is not None:
             draft.remove_change(self._removed_source_add_change.change_id)
@@ -650,6 +690,230 @@ class DuplicateProgramCommand:
                 draft.apply_change(change)
             else:
                 draft.remove_change(change.change_id)
+
+
+def _sequential_cursor_meta(entry):
+    """The `autofill_meta` a lineup entry should carry onto its
+    DraftChange, or None. Only "Continue Sequentially" placements need
+    this (autofill_planner.plan_continue_sequentially tags each of its
+    placements with strategy="sequential" and a show_key) -- Best Fit
+    Mix/Show Marathon/Random Mix entries have no strategy tag and so
+    never produce cursor-tracked metadata, since only Continue
+    Sequentially has a "next episode" to remember (autofill_cursor.py).
+    """
+    if entry.get("strategy") != "sequential":
+        return None
+    show_key = entry.get("show_key")
+    if not show_key:
+        return None
+    return {
+        "strategy": "sequential",
+        "show_key": show_key,
+        "season_number": entry.get("season_number"),
+        "episode_number": entry.get("episode_number"),
+    }
+
+
+class AutoFillBlockCommand:
+    """Fills a selected Open Time block with an entire generated lineup
+    (Phase 4, Auto-Fill Block) as ONE atomic, undoable command. `lineup`
+    is a proposed lineup from autofill_planner.py -- an ordered list of
+    {path, title, duration, media_type, start, end} placements with
+    absolute times already assigned. This command never decides WHAT
+    fills the block; it only ever turns an already-chosen lineup into
+    draft changes, the same division of labor PutOnAirCommand has for
+    Fill Open Time (planner/picker choose, command applies).
+
+    Atomicity: `validate()` and `apply()` share one internal check
+    (`_check`) that walks every lineup item against the CURRENT draft
+    state. `apply()` re-runs it before creating any DraftChange, so a
+    caller that skipped validate() (or whose draft changed between
+    preview and Apply Lineup) still can't leave a partial lineup behind
+    -- it raises instead of writing anything. Every add-change shares
+    one `group_id` (this command's own id) and `group_kind="autofill"`,
+    so Pending Changes/undo/redo treat the whole generated lineup as
+    exactly one row, same mechanism MoveProgramCommand/
+    DuplicateProgramCommand already use for their own multi-change groups.
+    """
+
+    def __init__(self, channel_id, block_start, block_end, lineup):
+        self._channel_id = channel_id
+        self._block_start = float(block_start)
+        self._block_end = float(block_end)
+        self._lineup = list(lineup or [])
+        self._add_changes = []  # created once (first apply), reused across redo
+
+    @property
+    def description(self):
+        count = len(self._lineup)
+        return f"Auto-Fill Block ({count} program{'' if count == 1 else 's'})"
+
+    @property
+    def channel_id(self):
+        return self._channel_id
+
+    @property
+    def time_range(self):
+        return (self._block_start, self._block_end)
+
+    def command_change_id(self):
+        """The first add-change this command owns, or None before it has
+        ever been applied -- same "any one change in the group identifies
+        the whole group" contract MoveProgramCommand/DuplicateProgramCommand
+        rely on for remove_pending_change().
+        """
+        return self._add_changes[0].change_id if self._add_changes else None
+
+    def _check(self, draft, now):
+        """Every reason the whole lineup can't apply, shared by validate()
+        and apply()'s own defensive re-check. Returns a ValidationResult;
+        never mutates the draft.
+        """
+        lock_reason = draft.lane_lock_reason(self._channel_id)
+        if lock_reason:
+            return ValidationResult(False, lock_reason, [{"type": CONFLICT_PROTECTED_BLOCK, "message": lock_reason}])
+
+        if not self._lineup:
+            return ValidationResult(False, "There's nothing to fill this block with yet.")
+
+        if self._block_end <= now:
+            reason = "This time has already aired, so it can't be auto-filled."
+            return ValidationResult(False, reason, [{"type": CONFLICT_OUTSIDE_EDITABLE_RANGE, "message": reason}])
+
+        cursor = self._block_start
+        for entry in self._lineup:
+            title = entry.get("title") or "This item"
+            start = float(entry.get("start", 0) or 0)
+            end = float(entry.get("end", 0) or 0)
+
+            if start + 0.01 < cursor or start < self._block_start - 0.01 or end > self._block_end + 0.01:
+                reason = f"“{title}” doesn't fit inside the selected block."
+                return ValidationResult(False, reason, [{"type": CONFLICT_OUTSIDE_EDITABLE_RANGE, "message": reason}])
+            cursor = end
+
+            path = str(entry.get("path", "") or "")
+            if not path:
+                reason = f"“{title}” doesn't have a playable media file behind it, so this block can't be filled."
+                return ValidationResult(False, reason, [{"type": CONFLICT_MISSING_MEDIA, "message": reason}])
+
+            duration = float(entry.get("duration", 0) or 0)
+            if duration <= 0 or abs((start + duration) - end) > 1.0:
+                reason = f"“{title}” doesn't have a usable duration, so this block can't be filled."
+                return ValidationResult(False, reason, [{"type": CONFLICT_INVALID_DURATION, "message": reason}])
+
+            overlapped = draft.programs_overlapping(self._channel_id, start, end)
+            if overlapped:
+                titles = ", ".join(f"“{block.title}”" for block in overlapped)
+                reason = f"“{title}” would overlap {titles}."
+                conflict = {"type": CONFLICT_OVERLAPS_EXISTING, "message": reason, "overlapping_blocks": overlapped}
+                return ValidationResult(False, reason, [conflict])
+
+        return ValidationResult(True)
+
+    def validate(self, draft, now=None):
+        now = time.time() if now is None else now
+        return self._check(draft, now)
+
+    def apply(self, draft):
+        if not self._add_changes:
+            check = self._check(draft, time.time())
+            if not check.ok:
+                raise ValueError(f"Auto-Fill Block can no longer be applied: {check.reason}")
+            group_id = id(self)
+            built = [
+                draft.new_change(
+                    OVERRIDE_ACTION_ADD,
+                    self._channel_id,
+                    float(entry["start"]),
+                    float(entry["end"]),
+                    title=entry.get("title", ""),
+                    path=entry.get("path", ""),
+                    media_type=entry.get("media_type", "tv") or "tv",
+                    group_id=group_id,
+                    group_kind="autofill",
+                    autofill_meta=_sequential_cursor_meta(entry),
+                )
+                for entry in self._lineup
+            ]
+            self._add_changes = built
+        for change in self._add_changes:
+            draft.apply_change(change)
+
+    def undo(self, draft):
+        for change in reversed(self._add_changes):
+            draft.remove_change(change.change_id)
+
+
+class ClearChannelDayCommand:
+    """Replaces one channel's entire local calendar day with Open Time,
+    as ONE atomic, undoable command (Phase 4.5.2) -- a single
+    OVERRIDE_ACTION_REMOVE DraftChange spanning [day_start, day_end),
+    the exact same mechanism PullProgramCommand already uses for one
+    block, just with a whole day's wall-clock interval instead of one
+    program's. Interval-anchored, not content-anchored (same as every
+    saved override -- see schedule_overrides.py's module docstring), so
+    it never depends on which generated blocks happened to exist when
+    this command ran; no new saved-override schema or live-playback
+    change is needed for it to persist and resolve correctly (Phase
+    4.5.2 investigation).
+
+    Deliberately never deletes or rewrites any other pending DraftChange
+    on this channel/day -- it only ever adds this one change, which
+    masks everything under its span by being the most recent change
+    (last-edit-wins, same rule every command here already follows).
+    That means undo is always exact: removing this one change instantly
+    un-masks whatever was there before, with nothing to reconstruct.
+    """
+
+    def __init__(self, channel_id, day_start, day_end):
+        self._channel_id = channel_id
+        self._day_start = float(day_start)
+        self._day_end = float(day_end)
+        self._change = None  # created once, reused across redo
+
+    @property
+    def description(self):
+        weekday = time.strftime("%A", time.localtime(self._day_start))
+        return f"Clear {weekday}’s Day"
+
+    @property
+    def channel_id(self):
+        return self._channel_id
+
+    @property
+    def time_range(self):
+        return (self._day_start, self._day_end)
+
+    def command_change_id(self):
+        return self._change.change_id if self._change is not None else None
+
+    def validate(self, draft, now=None):
+        now = time.time() if now is None else now
+        lock_reason = draft.lane_lock_reason(self._channel_id)
+        if lock_reason:
+            return ValidationResult(False, lock_reason, [{"type": CONFLICT_PROTECTED_BLOCK, "message": lock_reason}])
+        if self._day_end <= self._day_start:
+            return ValidationResult(False, "That isn't a valid day to clear.")
+        if self._day_end <= now:
+            reason = "This day has already fully passed, so it can't be cleared."
+            return ValidationResult(False, reason, [{"type": CONFLICT_OUTSIDE_EDITABLE_RANGE, "message": reason}])
+        return ValidationResult(True)
+
+    def apply(self, draft):
+        if self._change is None:
+            self._change = draft.new_change(
+                OVERRIDE_ACTION_REMOVE,
+                self._channel_id,
+                self._day_start,
+                self._day_end,
+                group_id=id(self),
+                group_kind="clear_day",
+            )
+        draft.apply_change(self._change)
+
+    def undo(self, draft):
+        if self._change is not None:
+            draft.remove_change(self._change.change_id)
 
 
 class CommandHistory:

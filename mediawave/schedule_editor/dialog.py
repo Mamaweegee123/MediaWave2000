@@ -42,28 +42,33 @@ from mediawave.channel_studio import channel_actions
 from mediawave.channel_studio import companion_adapter
 from mediawave.channel_studio.channel_studio_adapter import build_channel_studio_summaries
 from mediawave.channel_studio.channel_studio_model import ChannelStudioSummary
+from mediawave.show_identity import empty_registry as empty_show_identity_registry
 from mediawave.studio.cards import build_empty_state_card
 from mediawave.studio.spacing import OUTER_MARGIN
 from mediawave.studio.styles import build_scroll_area
 
+from .autofill_cursor import cursors_to_advance_from_saved_changes
+from .autofill_dialog import AutoFillBlockDialog
 from .board import ProgrammingBoard
 from .commands import (
     CONFLICT_OVERLAPS_DESTINATION,
     CONFLICT_OVERLAPS_FOLLOWING,
+    AutoFillBlockCommand,
+    ClearChannelDayCommand,
     CommandHistory,
     DuplicateProgramCommand,
     MoveProgramCommand,
     PullProgramCommand,
     PutOnAirCommand,
+    local_day_bounds,
 )
 from .conflict_dialog import ConflictDialog
-from .copy_to_day_dialog import CopyToAnotherDayDialog
 from .draft_model import DraftSchedule
-from .duplicate_dialog import DuplicateHereDialog
 from .fill_open_time_picker import FillOpenTimePickerDialog
 from .move_to_dialog import MoveToDialog
 from .program_block import build_category_legend
-from .put_on_air_picker import PutOnAirPickerDialog, build_picker_catalog
+from .programming_block_dialog import ProgrammingBlockLibraryDialog
+from .put_on_air_picker import AddToScheduleDialog, PutOnAirPickerDialog, build_picker_catalog
 from .saved_changes_manager import SavedChangesManagerDialog
 from .schedule_model import build_board_model, sort_channel_rows
 from .utility_panels import (
@@ -85,6 +90,15 @@ _RIGHT_COLUMN_WIDTH = 360
 _TOP_BAR_BG = "rgba(9, 11, 27, 255)"
 _TOP_BAR_BORDER = "rgba(42, 54, 128, 255)"
 _SUBTITLE_COLOR = "rgba(138, 158, 212, 220)"
+
+# Editing Tools' Programming Blocks… entry point is one button whose LABEL
+# communicates which of the two Programming Blocks modes it will open --
+# _programming_blocks_fill_target() is the single source of truth both
+# _update_tools_for_selection (label) and _programming_blocks_clicked
+# (which mode the dialog actually opens in) read from, so the label and
+# the button's actual behavior can never drift apart.
+_PROGRAMMING_BLOCKS_LIBRARY_LABEL = "Programming Blocks…"
+_PROGRAMMING_BLOCKS_FILL_LABEL = "Fill with Programming Block…"
 
 # A quiet, flat look for Back/prev/Today/next -- the app-wide QPushButton
 # rule (channelsurfer2000.py) gives every plain button a filled-blue
@@ -245,6 +259,13 @@ class ScheduleEditorWorkspace(QWidget):
         self._draft = DraftSchedule()
         self._history = CommandHistory()
         self._selected_block = None
+        # Phase 4.5.2: which channel Quick Actions (Clear Day…) currently
+        # targets -- distinct from _selected_block because it must stay
+        # set with just a channel identity row selected (no program
+        # block at all). Updated from both selection paths
+        # (_on_channel_selected/_on_program_selected) and cleared/kept in
+        # step with _render_draft's own reselect fallback, below.
+        self._selected_channel_id = None
         self._saved_badge_timer = None
 
         outer = QVBoxLayout(self)
@@ -283,9 +304,10 @@ class ScheduleEditorWorkspace(QWidget):
             on_put_on_air=self._put_on_air_clicked,
             on_pull=self._pull_clicked,
             on_move_to=self._move_to_clicked,
-            on_duplicate_here=self._duplicate_here_clicked,
-            on_copy_to_day=self._copy_to_day_clicked,
             on_fill_open_time=self._fill_open_time_clicked,
+            on_auto_fill_block=self._auto_fill_block_clicked,
+            on_programming_blocks=self._programming_blocks_clicked,
+            on_clear_day=self._clear_day_clicked,
         )
         self._pending_changes_card, self._update_pending_changes = build_pending_changes_card()
         self._next_up_card, self._update_next_up = build_next_up_card()
@@ -519,6 +541,13 @@ class ScheduleEditorWorkspace(QWidget):
             reselected = self.board.select_block_at(target[0], target[1])
         if not reselected:
             self._selected_block = None
+            # A failed reselect still knows WHICH channel it was aiming
+            # for (target[0]) -- e.g. Clear Day leaves no single block at
+            # the exact prior selection point, but the user is still
+            # contextually "on" that channel, so Clear Day should stay
+            # available. Only a genuinely empty target (nothing was
+            # selected before this render at all) clears it.
+            self._selected_channel_id = target[0] if target is not None else None
             self._update_next_up(None)
             self._update_channel_defaults(None)
             self._update_details(None, None)
@@ -530,6 +559,7 @@ class ScheduleEditorWorkspace(QWidget):
 
     def _on_program_selected(self, block):
         self._selected_block = block
+        self._selected_channel_id = block.channel_id
         lane = self._lanes_by_channel_id.get(block.channel_id)
         self._update_details(block, lane)
         if lane is not None:
@@ -539,11 +569,36 @@ class ScheduleEditorWorkspace(QWidget):
 
     def _on_channel_selected(self, channel_id):
         self._selected_block = None
+        self._selected_channel_id = channel_id
         lane = self._lanes_by_channel_id.get(channel_id)
         self._update_next_up(lane)
         self._update_channel_defaults(self._summaries_by_id.get(channel_id))
         self._update_details(None, lane)
         self._update_tools_for_selection()
+
+    def _programming_blocks_fill_target(self):
+        """Whether the current selection is a real, editable Open Time gap
+        Programming Blocks could fill right now -- a selected program
+        block is not enough on its own (must be media_type == "open" with
+        positive duration), and a channel-row-only selection is never
+        enough (there's no specific interval to fill). Protected/locked
+        channels never qualify either. Returns (can_fill, block,
+        channel_id); block/channel_id are whatever the current selection
+        resolves to even when can_fill is False, so callers needing the
+        channel context (e.g. to still open Library Mode against the
+        right channel) don't have to re-derive it.
+        """
+        block = self._selected_block
+        channel_id = block.channel_id if block is not None else self._selected_channel_id
+        if channel_id is None or self._draft.lane_lock_reason(channel_id):
+            return False, block, channel_id
+        can_fill = (
+            block is not None
+            and block.channel_id == channel_id
+            and block.media_type == "open"
+            and (block.true_end - block.true_start) > 0
+        )
+        return can_fill, block, channel_id
 
     def _update_tools_for_selection(self):
         """Enable exactly the actions the current selection supports.
@@ -552,15 +607,31 @@ class ScheduleEditorWorkspace(QWidget):
         e.g. "already aired") -- it stays silent when the buttons already
         say everything there is to say. A protected companion selection
         replaces the whole button grid with one calm locked message
-        (`set_locked`) rather than six grayed-out buttons.
+        (`set_locked`) rather than five grayed-out buttons.
+
+        Clear Day… is channel/day-level, not block-level (Phase 4.5.2/
+        4.5.3): it stays enabled with only a channel identity row
+        selected (no `_selected_block` at all), driven by
+        `_selected_channel_id` independently of every other button's
+        block-derived logic below.
+
+        Programming Blocks… (Phase 5.4 redesign) is a DESTINATION, not a
+        block-scoped action: it's a library the user manages regardless
+        of what's selected, so unlike every other tool here it's always
+        enabled -- even with nothing selected at all -- except when the
+        whole grid is hidden for a protected channel. Whether its
+        internal Schedule Block action is reachable is decided
+        separately, by _programming_blocks_clicked, from whether
+        `_selected_block` is currently a real Open Time gap.
         """
         block = self._selected_block
         put_btn = self._tools["put_btn"]
         pull_btn = self._tools["pull_btn"]
         move_btn = self._tools["move_btn"]
-        duplicate_btn = self._tools["duplicate_btn"]
-        copy_btn = self._tools["copy_btn"]
         fill_btn = self._tools["fill_btn"]
+        auto_fill_btn = self._tools["auto_fill_btn"]
+        clear_day_btn = self._tools["clear_day_btn"]
+        programming_blocks_btn = self._tools["programming_blocks_btn"]
         set_hint = self._tools["set_hint"]
         set_locked = self._tools["set_locked"]
 
@@ -568,14 +639,28 @@ class ScheduleEditorWorkspace(QWidget):
             put_btn.setEnabled(False)
             pull_btn.setEnabled(False)
             move_btn.setEnabled(False)
-            duplicate_btn.setEnabled(False)
-            copy_btn.setEnabled(False)
             fill_btn.setEnabled(False)
+            auto_fill_btn.setEnabled(False)
 
         if block is None:
+            # A channel-row-only selection (no block at all) still needs
+            # the protected-channel check -- otherwise a locked channel
+            # selected by its identity row alone would skip straight
+            # past the lock-hide branch below (which only ever looks at
+            # block.channel_id) and leave the grid visible.
+            channel_id = self._selected_channel_id
+            channel_lock_reason = self._draft.lane_lock_reason(channel_id) if channel_id is not None else ""
+            if channel_lock_reason:
+                set_locked(channel_lock_reason)
+                return
             set_locked(None)
             _disable_all()
             set_hint("")
+            clear_day_btn.setEnabled(channel_id is not None and not channel_lock_reason)
+            programming_blocks_btn.setEnabled(True)
+            # A channel-row-only selection is never enough to fill a
+            # specific Open Time interval -- always the Library Mode label.
+            programming_blocks_btn.setText(_PROGRAMMING_BLOCKS_LIBRARY_LABEL)
             return
 
         lock_reason = self._draft.lane_lock_reason(block.channel_id)
@@ -583,46 +668,37 @@ class ScheduleEditorWorkspace(QWidget):
             set_locked(lock_reason)
             return
         set_locked(None)
+        programming_blocks_btn.setEnabled(True)
+        can_fill, _target_block, _target_channel_id = self._programming_blocks_fill_target()
+        programming_blocks_btn.setText(_PROGRAMMING_BLOCKS_FILL_LABEL if can_fill else _PROGRAMMING_BLOCKS_LIBRARY_LABEL)
 
         if block.media_type == "open":
             _disable_all()
             put_btn.setEnabled(True)
             fill_btn.setEnabled(True)
+            auto_fill_btn.setEnabled(True)
+            clear_day_btn.setEnabled(True)
             set_hint("")
             return
 
         put_btn.setEnabled(False)
         fill_btn.setEnabled(False)
+        auto_fill_btn.setEnabled(False)
+        clear_day_btn.setEnabled(True)
         validation = PullProgramCommand(block).validate(self._draft)
         pull_btn.setEnabled(validation.ok)
-        # Move To…/Duplicate Here…/Copy to Another Day… each use a
-        # placeholder same-time-ish destination purely to ask "can this
-        # block be acted on at all" (protected/commercial/already-aired/
-        # missing-media) -- the real destination time is only known once
-        # the relevant dialog is open, so its own overlap check happens
-        # later. All three share the exact same underlying validate()
-        # shape (Move via MoveProgramCommand, Duplicate/Copy via
-        # DuplicateProgramCommand), so a destination-overlap-only failure
-        # means "still possible, just needs a different time" for all of
-        # them alike.
+        # Move To… uses a placeholder same-time-ish destination purely to
+        # ask "can this block be acted on at all" (protected/commercial/
+        # already-aired/missing-media) -- the real destination time is
+        # only known once the dialog is open, so its own overlap check
+        # happens later. A destination-overlap-only failure here means
+        # "still possible, just needs a different time".
         move_probe = MoveProgramCommand(block, block.channel_id, block.true_start + 60)
         move_probe_result = move_probe.validate(self._draft)
         move_ok = move_probe_result.ok or any(
             c["type"] == CONFLICT_OVERLAPS_DESTINATION for c in move_probe_result.conflicts
         )
         move_btn.setEnabled(move_ok)
-
-        duplicate_probe = DuplicateProgramCommand(block, block.true_start + 60, kind="duplicate")
-        duplicate_probe_result = duplicate_probe.validate(self._draft)
-        duplicate_ok = duplicate_probe_result.ok or any(
-            c["type"] == CONFLICT_OVERLAPS_DESTINATION for c in duplicate_probe_result.conflicts
-        )
-        duplicate_btn.setEnabled(duplicate_ok)
-        # Copy to Another Day shares Duplicate's validate() shape exactly
-        # (same-channel, different-date destinations aren't checked by
-        # validate() at all -- only the dialog constrains which date is
-        # offered), so the same probe result governs both buttons.
-        copy_btn.setEnabled(duplicate_ok)
 
         # Nothing to say when Pull already works -- the buttons speak for
         # themselves. Only surface the constraint when it actually blocks
@@ -685,23 +761,33 @@ class ScheduleEditorWorkspace(QWidget):
         if lane is None:
             return
         names_by_id = {cid: summary.name for cid, summary in self._summaries_by_id.items()}
-        items = build_picker_catalog(self._studio_channels_by_id, names_by_id)
+        items = build_picker_catalog(self._studio_channels_by_id, names_by_id, show_identity_registry=self._show_identity_registry())
         if not items:
             self._show_info(
                 "Nothing to schedule yet",
                 "No catalog media is available to put on air. Load a catalog with playable files first.",
             )
             return
-        picker = PutOnAirPickerDialog(
+        picker = AddToScheduleDialog(
             items,
             lane.number,
             lane.name,
             block.true_start,
             max(0.0, block.true_end - block.true_start),
             recent_paths=self._recent_paths(),
+            channel_id=block.channel_id,
+            cursor_data=self._autofill_cursor_data(),
+            get_programming_blocks=self._programming_blocks_get,
+            save_programming_blocks=self._programming_blocks_save,
+            show_identity_registry=self._show_identity_registry(),
+            show_identity_registry_save=self._show_identity_registry_save,
             parent=self,
         )
-        if picker.exec() != PutOnAirPickerDialog.Accepted:
+        if picker.exec() != AddToScheduleDialog.Accepted:
+            return
+        lineup = picker.selected_lineup()
+        if lineup:
+            self._try_auto_fill_block(block, lineup)
             return
         item = picker.selected_item()
         if item:
@@ -713,6 +799,16 @@ class ScheduleEditorWorkspace(QWidget):
             "title": item["title"],
             "duration": item["duration"],
             "media_type": item.get("media_type", "tv"),
+            # Carried through only so PutOnAirCommand's own
+            # _sequential_cursor_meta helper can recognize a Show
+            # Picker Continue Sequentially placement (put_on_air_picker.
+            # resolve_show_episode stamps these); absent/None on every
+            # other Put On Air/Fill Open Time/Advanced… item, so this is
+            # a no-op for everything except that one flow.
+            "strategy": item.get("strategy"),
+            "show_key": item.get("show_key"),
+            "season_number": item.get("season_number"),
+            "episode_number": item.get("episode_number"),
         }
         command = PutOnAirCommand(
             slot_block.channel_id,
@@ -858,85 +954,12 @@ class ScheduleEditorWorkspace(QWidget):
         dialog.exec()
         return dialog.result or "cancel"
 
-    # ── duplicate / copy to another day (Phase 3.1) ───────────────────
-
-    def _duplicate_here_clicked(self):
-        """Duplicate Here…: another airing of the selected program on the
-        same channel and date -- the source program is never touched.
-        """
-        block = self._selected_block
-        if block is None:
-            return
-        lane = self._lanes_by_channel_id.get(block.channel_id)
-        if lane is None:
-            return
-        dialog = DuplicateHereDialog(block, lane, parent=self)
-        if dialog.exec() != DuplicateHereDialog.Accepted:
-            return
-        self._try_duplicate(
-            block, block.channel_id, dialog.destination_start(),
-            kind="duplicate", on_choose_another=self._duplicate_here_clicked,
-        )
-
-    def _copy_to_day_clicked(self):
-        """Copy to Another Day…: one airing on a different calendar date
-        -- explicitly NOT a recurring rule (spec section 4). The
-        underlying command is identical to Duplicate Here…'s; only the
-        destination date (and the wording) differ.
-        """
-        block = self._selected_block
-        if block is None:
-            return
-        lane = self._lanes_by_channel_id.get(block.channel_id)
-        if lane is None:
-            return
-        dialog = CopyToAnotherDayDialog(block, lane, default_date_epoch=self._window_start + 24 * 3600, parent=self)
-        if dialog.exec() != CopyToAnotherDayDialog.Accepted:
-            return
-        self._try_duplicate(
-            block, block.channel_id, dialog.destination_start(),
-            kind="copy", on_choose_another=self._copy_to_day_clicked,
-        )
-
-    def _try_duplicate(self, source_block, destination_channel_id, destination_start, replace_blocks=None, kind="duplicate", on_choose_another=None):
-        """The one path both Duplicate Here… and Copy to Another Day…
-        funnel through -- mirrors `_try_move`'s shape exactly (same
-        validate/conflict-resolution/execute flow, same shared conflict
-        dialog), since DuplicateProgramCommand backs both workflows and
-        never removes the source.
-        """
-        command = DuplicateProgramCommand(
-            source_block, destination_start, destination_channel_id, replace_blocks=replace_blocks, kind=kind,
-        )
-        validation = command.validate(self._draft)
-        overlap = next((c for c in validation.conflicts if c["type"] == CONFLICT_OVERLAPS_DESTINATION), None)
-        if not validation.ok and overlap is not None:
-            choice = self._ask_move_conflict(source_block, overlap)
-            if choice == "replace":
-                self._try_duplicate(
-                    source_block,
-                    destination_channel_id,
-                    destination_start,
-                    replace_blocks=overlap["overlapping_blocks"],
-                    kind=kind,
-                    on_choose_another=on_choose_another,
-                )
-            elif choice == "choose" and on_choose_another is not None:
-                on_choose_another()
-            return
-        if not validation.ok:
-            verb_label = "duplicate" if kind == "duplicate" else "copy"
-            self._show_info(f"Can't {verb_label} this program", validation.reason)
-            return
-        self._history.execute(command, self._draft)
-        path = (source_block.raw_entries[0] or {}).get("path", "") if source_block.raw_entries else ""
-        self._record_recent_placement(
-            path, source_block.title, source_block.media_type or "tv",
-            max(0.0, source_block.true_end - source_block.true_start),
-            channel_name=self._lanes_by_channel_id.get(destination_channel_id).name
-            if self._lanes_by_channel_id.get(destination_channel_id) is not None else "",
-        )
-        self._render_draft(reselect=(destination_channel_id, destination_start))
+    # ── duplicate / copy to another day ─────────────────────────────────
+    # Duplicate Here…/Copy to Another Day… were removed from Editing Tools
+    # (kept feeling curated rather than exhaustive) -- DuplicateProgramCommand
+    # itself is still used elsewhere (e.g. Move To…'s own enablement probe),
+    # so only the two button handlers and their now-unreachable shared
+    # _try_duplicate path were removed, not the command class.
 
     # ── fill open time (Phase 3.1) ────────────────────────────────────
 
@@ -955,7 +978,7 @@ class ScheduleEditorWorkspace(QWidget):
         if lane is None:
             return
         names_by_id = {cid: summary.name for cid, summary in self._summaries_by_id.items()}
-        items = build_picker_catalog(self._studio_channels_by_id, names_by_id)
+        items = build_picker_catalog(self._studio_channels_by_id, names_by_id, show_identity_registry=self._show_identity_registry())
         if not items:
             self._show_info(
                 "Nothing to schedule yet",
@@ -976,6 +999,247 @@ class ScheduleEditorWorkspace(QWidget):
         item = picker.selected_item()
         if item:
             self._try_put_on_air(block, item, extend_over_following=False)
+
+    # ── auto-fill block (Phase 4) ──────────────────────────────────────
+
+    def _autofill_cursor_data(self):
+        """The Continue Sequentially cursor snapshot, read-only -- same
+        None-means-unavailable/empty-fallback contract as
+        _recent_paths(). AutoFillBlockDialog only ever READS this
+        (last_aired_path_for); nothing on this path writes it -- the
+        cursor only ever advances from _advance_autofill_cursors_for_
+        saved_changes, after a successful Save Schedule.
+        """
+        getter = getattr(self._studio_dialog, "_schedule_autofill_cursor_get", None)
+        return getter() if getter is not None else None
+
+    def _show_identity_registry(self):
+        """The current Show Identity registry -- a getter, not a
+        snapshot (Phase 5.5.3 revises Phase 5.5.2 step 3's read-only
+        snapshot now that Rename Show can save a correction while this
+        workspace is open): reads `_schedule_show_identity_get` fresh
+        every call, same getter/reassign contract
+        `_programming_blocks_get` below already has, so a successful
+        rename is visible to every NEW catalog build without this
+        workspace needing to cache or be told to invalidate anything.
+        Missing/invalid falls back to an empty registry, the same "no
+        corrections known" state build_picker_catalog already treats as
+        identical to not passing a registry at all.
+        """
+        getter = getattr(self._studio_dialog, "_schedule_show_identity_get", None)
+        registry = getter() if getter is not None else None
+        return registry if isinstance(registry, dict) else empty_show_identity_registry()
+
+    def _show_identity_registry_save(self, updated_registry):
+        """Rename Show's one persistence call -- same None-means-
+        unavailable contract as `_programming_blocks_save` below.
+        Returns (ok, error); the caller (ProgrammingBlockLibraryDialog,
+        via the callback threaded in at construction) is responsible for
+        surfacing `error` and for refreshing its own already-built views,
+        since this workspace has no reference back into an open dialog
+        to refresh it directly.
+        """
+        saver = getattr(self._studio_dialog, "_schedule_show_identity_save", None)
+        if saver is None:
+            return False, "Renaming a show isn't available in this context."
+        return saver(updated_registry)
+
+    def _programming_blocks_get(self):
+        """Read-only lookup for the saved Programming Blocks store, same
+        None-means-unavailable/getter-not-snapshot contract as
+        _autofill_cursor_data(). None here just means Programming Blocks
+        are unavailable in this context (e.g. a test constructing this
+        workspace standalone) -- the picker/manager dialogs already treat
+        an empty list the same way "no blocks yet" is shown.
+        """
+        getter = getattr(self._studio_dialog, "_schedule_programming_blocks_get", None)
+        return getter() if getter is not None else None
+
+    def _programming_blocks_save(self, data):
+        saver = getattr(self._studio_dialog, "_schedule_programming_blocks_save", None)
+        if saver is None:
+            return False, "Programming Blocks can't be saved in this context."
+        return saver(data)
+
+    def _programming_blocks_clicked(self):
+        """Opens the unified Programming Block library (Phase 5.4
+        redesign) -- always, regardless of selection, since it's a
+        destination for managing reusable collections, not a block-scoped
+        action. When a channel IS identified (via `_selected_block.
+        channel_id` or `_selected_channel_id`, same dual selection Clear
+        Day… reads), the dialog knows which channel/lane to show; with no
+        selection at all it still opens in pure management mode with no
+        channel context. Browsing, creating, editing, duplicating, and
+        deleting a block never require an Open Time selection;
+        `can_schedule` is only True when the current selection is a real
+        Open Time gap with positive duration, and that's the ONLY thing
+        that changes what the dialog lets the user reach -- not whether
+        it opens at all.
+        """
+        can_schedule, block, channel_id = self._programming_blocks_fill_target()
+        lane = self._lanes_by_channel_id.get(channel_id) if channel_id is not None else None
+        names_by_id = {cid: summary.name for cid, summary in self._summaries_by_id.items()}
+        items = build_picker_catalog(self._studio_channels_by_id, names_by_id, show_identity_registry=self._show_identity_registry())
+
+        dialog = ProgrammingBlockLibraryDialog(
+            items,
+            self._programming_blocks_get,
+            self._programming_blocks_save,
+            lane.number if lane is not None else "",
+            lane.name if lane is not None else "",
+            can_schedule=can_schedule,
+            slot_start=block.true_start if can_schedule else None,
+            slot_duration=(block.true_end - block.true_start) if can_schedule else None,
+            show_identity_registry=self._show_identity_registry(),
+            show_identity_registry_save=self._show_identity_registry_save,
+            channel_id=channel_id,
+            cursor_data=self._autofill_cursor_data(),
+            parent=self,
+        )
+        result = dialog.exec()
+        lineup = dialog.previewed_lineup()
+        # deleteLater() schedules the C++ side's destruction deterministically
+        # on the next event loop tick, rather than leaving it to Python's
+        # cyclic garbage collector: the card grid wires each card's overflow
+        # menu and click handler back to bound dialog methods (self._cards_by_id
+        # -> card -> bound method -> dialog, and card -> menu -> action ->
+        # bound method -> card), which are real Python reference cycles GC-only
+        # cleanup can't avoid. Left alone, that GC pass can fire at an
+        # arbitrary later moment -- observed in practice firing WHILE another
+        # dialog was mid-construction right after this one closed, destroying
+        # this dialog's widget tree at an unsafe time and crashing with a
+        # SIGSEGV deep in Qt/shiboken. Calling deleteLater() here means the
+        # C++ objects are already gone by the time GC eventually collects the
+        # dangling Python wrappers, so that later collection is a safe no-op
+        # instead of a use-after-free.
+        dialog.deleteLater()
+        if result != ProgrammingBlockLibraryDialog.Accepted:
+            return
+        if lineup and can_schedule:
+            self._try_auto_fill_block(block, lineup)
+
+    def _auto_fill_block_clicked(self):
+        """Opens AutoFillBlockDialog for the selected Open Time block and,
+        on Place Lineup, builds and runs ONE AutoFillBlockCommand from
+        whatever it previewed -- the dialog itself never touches the
+        draft (Phase 4 spec: "Dialog creates previews only").
+        """
+        block = self._selected_block
+        if block is None or block.media_type != "open":
+            return
+        lane = self._lanes_by_channel_id.get(block.channel_id)
+        if lane is None:
+            return
+        names_by_id = {cid: summary.name for cid, summary in self._summaries_by_id.items()}
+        items = build_picker_catalog(self._studio_channels_by_id, names_by_id, show_identity_registry=self._show_identity_registry())
+        if not items:
+            self._show_info(
+                "Nothing to schedule yet",
+                "No catalog media is available to auto-fill this block. Load a catalog with playable files first.",
+            )
+            return
+        dialog = AutoFillBlockDialog(
+            items,
+            block.channel_id,
+            lane.number,
+            lane.name,
+            block.true_start,
+            block.true_end,
+            cursor_data=self._autofill_cursor_data(),
+            show_identity_registry=self._show_identity_registry(),
+            parent=self,
+        )
+        if dialog.exec() != AutoFillBlockDialog.Accepted:
+            return
+        lineup = dialog.previewed_lineup()
+        if not lineup:
+            return
+        self._try_auto_fill_block(block, lineup)
+
+    def _try_auto_fill_block(self, block, lineup):
+        command = AutoFillBlockCommand(block.channel_id, block.true_start, block.true_end, lineup)
+        validation = command.validate(self._draft)
+        if not validation.ok:
+            self._show_warning(
+                "This block has changed",
+                validation.reason
+                + "\n\nNothing was placed — the open time this lineup was built for is no longer available exactly as previewed.",
+            )
+            return
+        self._history.execute(command, self._draft)
+        lane = self._lanes_by_channel_id.get(block.channel_id)
+        for entry in lineup:
+            self._record_recent_placement(
+                entry.get("path", ""), entry.get("title", ""), entry.get("media_type", "tv") or "tv",
+                entry.get("duration", 0),
+                channel_name=lane.name if lane is not None else "",
+            )
+        self._render_draft(reselect=(block.channel_id, block.true_start))
+
+    # ── clear day (Phase 4.5.2) ────────────────────────────────────────
+
+    def _clear_day_clicked(self):
+        """Quick Actions' Clear Day…: confirm, then build ONE
+        ClearChannelDayCommand for the currently viewed local calendar
+        day on the selected channel. Works from either selection path
+        (_selected_channel_id is set by both a channel-row click and a
+        program-block click), matching Quick Actions' channel/day scope
+        rather than Editing Tools' block scope.
+        """
+        channel_id = self._selected_channel_id
+        if channel_id is None:
+            return
+        lane = self._lanes_by_channel_id.get(channel_id)
+        if lane is None:
+            return
+        day_start, day_end = local_day_bounds(self._window_start)
+
+        # Only used to decide whether to show the extra explanatory
+        # sentence below -- Clear Day itself never alters, removes, or
+        # merges these changes; it only ever adds its own masking change
+        # (commands.py), so this detection has no bearing on correctness.
+        has_unsaved_overlap = any(
+            change.channel_id == channel_id and change.start < day_end and change.end > day_start
+            for change in self._draft.changes
+        )
+
+        date_label = time.strftime("%A, %B %-d", time.localtime(day_start))
+        body = (
+            f"Ch {lane.number} · {lane.name}\n{date_label}\n\n"
+            "This will replace the full lineup for this day with Open Time.\n\n"
+            "Your media, channel settings, and other dates will not be changed."
+        )
+        note = (
+            "Any unsaved edits already on this date will be hidden by the clear and will return if you undo it."
+            if has_unsaved_overlap else None
+        )
+        dialog = ConflictDialog(
+            "Clear this channel’s day?",
+            body,
+            note=note,
+            actions=[
+                ("Cancel", "neutral", "cancel"),
+                ("Clear Day", "destructive", "clear"),
+            ],
+            parent=self,
+        )
+        dialog.exec()
+        if dialog.result != "clear":
+            return
+        self._try_clear_day(channel_id, day_start, day_end)
+
+    def _try_clear_day(self, channel_id, day_start, day_end):
+        command = ClearChannelDayCommand(channel_id, day_start, day_end)
+        validation = command.validate(self._draft)
+        if not validation.ok:
+            self._show_info("Can't clear this day", validation.reason)
+            return
+        self._history.execute(command, self._draft)
+        # Reselecting at the currently viewed window's own start (rather
+        # than day_start, which is usually scrolled off-screen) lands
+        # exactly on the merged Open Time block the clear just produced
+        # there, keeping the channel actively selected post-apply.
+        self._render_draft(reselect=(channel_id, self._window_start))
 
     def _undo_clicked(self):
         command = self._history.undo(self._draft)
@@ -1137,6 +1401,49 @@ class ScheduleEditorWorkspace(QWidget):
         box.exec()
         return box.clickedButton() is save_btn
 
+    def _advance_autofill_cursors_for_saved_changes(self):
+        """The shared Continue Sequentially cursor (Phase 4, extended in
+        Phase 5.2 to cover Show Picker placements too): called from
+        _perform_save ONLY after `save()` has already returned success,
+        and ONLY before `self._draft.clear_changes()` runs -- still-
+        pending DraftChanges are the one place their `autofill_meta` is
+        visible; overrides_for_save()'s output has already dropped it by
+        design, same as group_id/group_kind. Collapses to at most one
+        advance per (channel, show) so several sequential placements
+        saved together land on the final episode, not an earlier one
+        (cursors_to_advance_from_saved_changes). A no-op whenever nothing
+        sequential is pending, or this workspace has no running-session
+        cursor sink to advance.
+
+        Deliberately keyed on `autofill_meta.get("strategy") ==
+        "sequential"` alone, NOT on `group_kind == "autofill"`: that
+        excluded Show Picker's placements, which are ordinary ungrouped
+        Put On Air changes (group_kind stays None) that only ever carry
+        autofill_meta when PutOnAirCommand's `media` was stamped
+        strategy="sequential" by resolve_show_episode. One shared
+        collector, one shared cursor file -- not a second persistence
+        path, matching Phase 5.2's "do not create a second cursor system".
+        """
+        advance = getattr(self._studio_dialog, "_schedule_autofill_cursor_advance", None)
+        if advance is None:
+            return
+        autofill_entries = [
+            {
+                "channel_id": change.channel_id,
+                "show_key": change.autofill_meta["show_key"],
+                "path": change.path,
+                "title": change.title,
+                "season_number": change.autofill_meta.get("season_number"),
+                "episode_number": change.autofill_meta.get("episode_number"),
+                "start": change.start,
+            }
+            for change in self._draft.changes
+            if change.autofill_meta and change.autofill_meta.get("strategy") == "sequential"
+        ]
+        if not autofill_entries:
+            return
+        advance(cursors_to_advance_from_saved_changes(autofill_entries))
+
     def _perform_save(self, records):
         """Validate -> hand to the app's save pipeline -> mark clean. On
         failure the draft and Undo history are untouched.
@@ -1156,6 +1463,8 @@ class ScheduleEditorWorkspace(QWidget):
                 + "\n\nYour draft is untouched — nothing was lost, and you can try saving again.",
             )
             return False
+
+        self._advance_autofill_cursors_for_saved_changes()
 
         now = time.time()
         covers_now = any(record["start"] <= now < record["end"] for record in records)

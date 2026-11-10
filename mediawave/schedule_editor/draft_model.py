@@ -102,6 +102,17 @@ class DraftChange:
     reaches `overrides_for_save()`'s output, so the persisted override
     schema is unaffected by it. `group_kind` says which one user-facing
     verb the group collapses to: "move" | "duplicate" | "copy".
+
+    `is_move_source` is True ONLY on the one remove-change that pulls a
+    move's OWN original placement -- an explicit identity tag, not
+    something re-derived from interval overlap. A short move's
+    destination can legitimately overlap its own original interval (only
+    an exact same-time/same-channel move is a no-op; "overlaps but
+    isn't identical" is a completely ordinary move), so a describer that
+    tried to infer "is this the source pull" from "does this remove's
+    interval NOT overlap the destination" would wrongly reclassify the
+    source pull as a replaced block whenever that happens -- see
+    `_describe_group`'s "move" branch, which reads this flag instead.
     """
 
     change_id: int
@@ -114,6 +125,17 @@ class DraftChange:
     media_type: str = "tv"
     group_id: int = None
     group_kind: str = None
+    is_move_source: bool = False
+    # Set ONLY on adds AutoFillBlockCommand produced for its "Continue
+    # Sequentially" strategy (commands.py) -- {"strategy": "sequential",
+    # "show_key", "season_number", "episode_number"}. Purely a save-time
+    # signal: Save Schedule (dialog.py's _perform_save) reads this off
+    # still-pending changes to know which placements should advance the
+    # autofill_cursor.py sequencing cursor, and only after the save
+    # itself has actually succeeded. None for every other change --
+    # never reaches overrides_for_save()'s output, so the persisted
+    # override schema is unaffected by it, same as group_id/group_kind.
+    autofill_meta: dict = None
 
 
 class DraftSchedule:
@@ -155,7 +177,7 @@ class DraftSchedule:
 
     # ── change bookkeeping ───────────────────────────────────────────
 
-    def new_change(self, action, channel_id, start, end, title="", path="", media_type="tv", group_id=None, group_kind=None):
+    def new_change(self, action, channel_id, start, end, title="", path="", media_type="tv", group_id=None, group_kind=None, is_move_source=False, autofill_meta=None):
         """A DraftChange with a fresh id -- NOT yet applied; commands own
         when apply_change/remove_change happen so undo/redo stay exact.
         """
@@ -170,6 +192,8 @@ class DraftSchedule:
             media_type=media_type,
             group_id=group_id,
             group_kind=group_kind,
+            is_move_source=is_move_source,
+            autofill_meta=dict(autofill_meta) if autofill_meta else None,
         )
         self._next_change_id += 1
         return change
@@ -391,20 +415,63 @@ class DraftSchedule:
 
     def _describe_group(self, group_id):
         """Dispatches to the right verb for a grouped change (move /
-        duplicate / copy) -- all three share the same underlying shape
-        (optional replaced-block removes + one destination add, all
-        tagged with the same group_id), differing only in whether a
-        source is also removed and what the headline calls it.
+        duplicate / copy / autofill / clear_day) -- most share the same
+        underlying shape (optional replaced-block removes + one
+        destination add, all tagged with the same group_id), differing
+        only in whether a source is also removed and what the headline
+        calls it; autofill and clear_day are the two shapes with no
+        single add to key off (autofill has several, clear_day has none
+        at all -- a Clear Day group is exactly one remove change), so
+        `kind` is read off any group member's own group_kind rather than
+        assuming an add_change exists at all.
         """
         group = [change for change in self._changes if change.group_id == group_id]
+        kind = next((change.group_kind for change in group if change.group_kind), None) or "move"
+
+        if kind == "clear_day":
+            # ClearChannelDayCommand (commands.py): exactly one remove
+            # change spanning a whole local day, no add at all -- its own
+            # branch since every other kind below assumes at least one
+            # add_change exists.
+            change = group[0]
+            lane = self.lane_for(change.channel_id)
+            channel_label = f"Ch {lane.number} · {lane.name}" if lane is not None else "Ch ?"
+            weekday = time.strftime("%A", time.localtime(change.start))
+            return {
+                "change_id": change.change_id,
+                "action": kind,
+                "headline": f"Cleared {weekday}’s lineup",
+                "subline": f"{channel_label} · Full day",
+                **self._date_fields(change.start),
+            }
+
         add_change = next((change for change in group if change.action == OVERRIDE_ACTION_ADD), None)
         if add_change is None:
-            # A group always produces exactly one add; this shouldn't
-            # happen, but fall back to a plain per-change description
-            # rather than crashing on an unexpected shape.
+            # A group always produces exactly one add, apart from the
+            # kinds already handled above; this shouldn't happen, but
+            # fall back to a plain per-change description rather than
+            # crashing on an unexpected shape.
             return self._describe_change(group[0])
 
-        kind = add_change.group_kind or "move"
+        if kind == "autofill":
+            # AutoFillBlockCommand (commands.py) is the one group shape
+            # with MULTIPLE adds and no removes -- every other kind here
+            # assumes exactly one add, so it gets its own branch rather
+            # than trying to fold into the single-add logic below.
+            adds = sorted((c for c in group if c.action == OVERRIDE_ACTION_ADD), key=lambda c: c.start)
+            lane = self.lane_for(adds[0].channel_id)
+            channel_label = f"Ch {lane.number} · {lane.name}" if lane is not None else "Ch ?"
+            span_label = format_time_range(adds[0].start, adds[-1].end)
+            headline = f"Auto-filled {len(adds)} program{'' if len(adds) == 1 else 's'}"
+            subline = f"{channel_label} · {span_label}" if span_label else channel_label
+            return {
+                "change_id": adds[0].change_id,
+                "action": kind,
+                "headline": headline,
+                "subline": subline,
+                **self._date_fields(adds[0].start),
+            }
+
         lane = self.lane_for(add_change.channel_id)
         channel_label = f"Ch {lane.number} · {lane.name}" if lane is not None else "Ch ?"
         title = add_change.title or "this program"
@@ -421,17 +488,18 @@ class DraftSchedule:
             subline = f"{channel_label} · {dest_label}" if dest_label else channel_label
         else:
             headline = f"Moved “{title}”"
-            # A move's own source interval is never inside its own
-            # destination interval (validate() rejects a same-time/same-
-            # channel move as a no-op), so "does this remove's interval
-            # overlap the add's" unambiguously separates the source pull
-            # from any replaced-block removals.
-            source_removes = [
-                change
-                for change in group
-                if change.action == OVERRIDE_ACTION_REMOVE
-                and not (change.channel_id == add_change.channel_id and change.start < add_change.end and change.end > add_change.start)
-            ]
+            # `is_move_source` is an explicit identity tag set by
+            # MoveProgramCommand on the ONE remove-change that pulls its
+            # own original placement (commands.py) -- NOT re-derived from
+            # interval overlap. A short move's destination can legitimately
+            # overlap its own original interval (only an exact same-time/
+            # same-channel move is a no-op; "overlaps but isn't identical"
+            # is an ordinary move), so inferring "is this the source" from
+            # "does this remove's interval NOT overlap the destination"
+            # would wrongly reclassify the source pull as a replaced block
+            # whenever that happens -- which is exactly the bug that made
+            # a moved program's own title appear in its own "Replaced" list.
+            source_removes = [change for change in group if change.is_move_source]
             replaced_removes = [change for change in group if change is not add_change and change not in source_removes]
             if source_removes:
                 source_label = format_clock_time(source_removes[0].start)

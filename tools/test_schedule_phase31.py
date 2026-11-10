@@ -496,9 +496,8 @@ if getattr(live_ws, "board", None) is not None and live_ws.board._grid_content.r
     if real_blocks:
         live_ws._on_program_selected(real_blocks[0])
         check(
-            "34a. a real program selected enables Pull/Move/Duplicate/Copy, disables Fill Open Time",
+            "34a. a real program selected enables Pull/Move, disables Fill Open Time",
             live_ws._tools["pull_btn"].isEnabled() and live_ws._tools["move_btn"].isEnabled()
-            and live_ws._tools["duplicate_btn"].isEnabled() and live_ws._tools["copy_btn"].isEnabled()
             and not live_ws._tools["fill_btn"].isEnabled() and not live_ws._tools["put_btn"].isEnabled(),
             {k: v.isEnabled() for k, v in live_ws._tools.items() if hasattr(v, "isEnabled")},
         )
@@ -513,8 +512,7 @@ if getattr(live_ws, "board", None) is not None and live_ws.board._grid_content.r
     check(
         "34b. Open Time selected enables Put On Air/Fill Open Time, disables program-only actions",
         live_ws._tools["put_btn"].isEnabled() and live_ws._tools["fill_btn"].isEnabled()
-        and not live_ws._tools["pull_btn"].isEnabled() and not live_ws._tools["move_btn"].isEnabled()
-        and not live_ws._tools["duplicate_btn"].isEnabled() and not live_ws._tools["copy_btn"].isEnabled(),
+        and not live_ws._tools["pull_btn"].isEnabled() and not live_ws._tools["move_btn"].isEnabled(),
         {k: v.isEnabled() for k, v in live_ws._tools.items() if hasattr(v, "isEnabled")},
     )
 else:

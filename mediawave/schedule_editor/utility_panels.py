@@ -95,15 +95,36 @@ def build_editing_tools_card(
     on_put_on_air=None,
     on_pull=None,
     on_move_to=None,
-    on_duplicate_here=None,
-    on_copy_to_day=None,
     on_fill_open_time=None,
+    on_auto_fill_block=None,
+    on_programming_blocks=None,
+    on_clear_day=None,
 ):
-    """Two tiers, not six equal-weight buttons: Put On Air / Pull / Move
-    To… are the primary row; Duplicate Here… / Copy to Another Day… /
-    Fill Open Time sit below in a quieter, unfilled style -- real, but
-    visibly secondary. A protected companion selection replaces the
+    """Two tiers, not five equal-weight buttons: Put On Air / Pull / Move
+    To… are the primary row; Fill Open Time / Auto-Fill Block… /
+    Programming Blocks… sit below in a quieter, unfilled style -- real,
+    but visibly secondary. A protected companion selection replaces the
     whole grid with one calm locked line via `set_locked(reason)`.
+
+    Deliberately curated, not exhaustive: Duplicate Here…/Copy to
+    Another Day… were removed from this card -- niche actions that
+    added clutter without being part of the everyday build-a-channel
+    flow the other tools serve (their underlying command still exists
+    for other callers; only this entry point was retired).
+
+    Clear Day… (Phase 4.5.3) sits below a small divider, visually set
+    apart from the block-level actions above it: it's channel/day-level
+    (stays enabled with just a channel row selected, no program block at
+    all -- dialog.py's _update_tools_for_selection drives its enablement
+    off _selected_channel_id, independently of every other button here),
+    not a program-selected action. It previously lived in its own Quick
+    Actions card, which was too far down the scroll column to discover;
+    moving it in here (Phase 4.5.3) keeps the "hide the whole grid for a
+    protected channel" behavior for free, since it's inside the same
+    buttons_container `set_locked` already hides. Uses the same quiet
+    secondary style as Fill Open Time/Auto-Fill Block -- not an alarming
+    destructive color before it's even clicked; the confirmation dialog
+    is what communicates the destructive action.
 
     Returns (card, controls): one `*_btn` per action, `set_hint(text)`
     for a short constraint explanation (empty string clears it), and
@@ -138,18 +159,41 @@ def build_editing_tools_card(
     primary_row.addStretch(1)
     buttons_layout.addLayout(primary_row)
 
-    # Full-width, one per line -- three across clipped "Copy to Another
-    # Day…" at this card's width, and stacking also reads as visibly
-    # lower-priority than the primary row's horizontal group.
+    # Full-width, one per line -- stacking reads as visibly lower-priority
+    # than the primary row's horizontal group.
     secondary_col = QVBoxLayout()
     secondary_col.setSpacing(4)
-    duplicate_btn = _tool_button("Duplicate Here…", on_duplicate_here, _SECONDARY_BUTTON_STYLE)
-    secondary_col.addWidget(duplicate_btn)
-    copy_btn = _tool_button("Copy to Another Day…", on_copy_to_day, _SECONDARY_BUTTON_STYLE)
-    secondary_col.addWidget(copy_btn)
     fill_btn = _tool_button("Fill Open Time", on_fill_open_time, _SECONDARY_BUTTON_STYLE)
     secondary_col.addWidget(fill_btn)
+    # A second, multi-program way to fill an Open Time block (Phase 4) --
+    # sits right under Fill Open Time since they're the same family of
+    # action, not a replacement for it.
+    auto_fill_btn = _tool_button("Auto-Fill Block…", on_auto_fill_block, _SECONDARY_BUTTON_STYLE)
+    secondary_col.addWidget(auto_fill_btn)
+    # Programming Blocks (Phase 5.4 redesign): a destination for managing
+    # reusable collections, not a block-scoped action -- always enabled
+    # (see dialog.py's _update_tools_for_selection), even with nothing
+    # selected at all. Only the dialog's own Schedule Block action needs
+    # a real Open Time target, decided separately when it's opened.
+    programming_blocks_btn = _tool_button("Programming Blocks…", on_programming_blocks, _SECONDARY_BUTTON_STYLE)
+    secondary_col.addWidget(programming_blocks_btn)
     buttons_layout.addLayout(secondary_col)
+
+    # A thin divider + extra top spacing marks Clear Day… as a different
+    # KIND of action (channel/day-level) from everything above it
+    # (program-level), not just one more item in the secondary list.
+    divider = QFrame()
+    divider.setFrameShape(QFrame.HLine)
+    divider.setStyleSheet("background: rgba(255, 255, 255, 18); max-height: 1px; border: none;")
+    buttons_layout.addSpacing(4)
+    buttons_layout.addWidget(divider)
+
+    clear_day_col = QVBoxLayout()
+    clear_day_col.setContentsMargins(0, 4, 0, 0)
+    clear_day_col.setSpacing(4)
+    clear_day_btn = _tool_button("Clear Day…", on_clear_day, _SECONDARY_BUTTON_STYLE)
+    clear_day_col.addWidget(clear_day_btn)
+    buttons_layout.addLayout(clear_day_col)
 
     hint_lbl = _note_label("")
     buttons_layout.addWidget(hint_lbl)
@@ -183,9 +227,10 @@ def build_editing_tools_card(
         "put_btn": put_btn,
         "pull_btn": pull_btn,
         "move_btn": move_btn,
-        "duplicate_btn": duplicate_btn,
-        "copy_btn": copy_btn,
         "fill_btn": fill_btn,
+        "auto_fill_btn": auto_fill_btn,
+        "programming_blocks_btn": programming_blocks_btn,
+        "clear_day_btn": clear_day_btn,
         "set_hint": set_hint,
         "set_locked": set_locked,
     }

@@ -16,6 +16,17 @@ PATH_ACCESS_EMPTY = "empty"
 PATH_ACCESS_NO_MEDIA_FOUND = "no_media_found"
 PATH_ACCESS_SLOW_OR_TIMEOUT = "slow_or_timeout"
 
+# Statuses that mean a catalog scan/load should not proceed. Shared by the
+# app's _path_access_blocks_scan and catalog_path_is_available below so the
+# two can't drift out of sync.
+CATALOG_PATH_BLOCKING_STATUSES = frozenset({
+    PATH_ACCESS_MISSING,
+    PATH_ACCESS_NOT_DIRECTORY,
+    PATH_ACCESS_PERMISSION_DENIED,
+    PATH_ACCESS_UNREADABLE,
+    PATH_ACCESS_DISCONNECTED_VOLUME,
+})
+
 PATH_LOCATION_LOCAL = "local"
 PATH_LOCATION_EXTERNAL = "external"
 PATH_LOCATION_NETWORK = "network"
@@ -130,6 +141,23 @@ def classify_path_access(path, slow_threshold_seconds=2.0):
     if not entries:
         return _path_result(PATH_ACCESS_EMPTY, normalized, elapsed_ms=elapsed * 1000.0, entries=entries)
     return _path_result(PATH_ACCESS_OK, normalized, elapsed_ms=elapsed * 1000.0, entries=entries)
+
+
+def catalog_path_is_available(path):
+    """Pure, lightweight check: could `path` be auto-loaded as a catalog
+    right now? Delegates entirely to classify_path_access (a single top-level
+    os.listdir, no recursive scan; PermissionError/OSError already handled
+    there) so this never diverges from the real load-time check. Never
+    raises, never touches any saved setting, and never mutates `path`.
+    """
+    text = str(path or "").strip()
+    if not text:
+        return False
+    try:
+        access = classify_path_access(os.path.expanduser(text))
+    except OSError:
+        return False
+    return access.get("status") not in CATALOG_PATH_BLOCKING_STATUSES
 
 
 def describe_path_access_issue(path, status=None):

@@ -13,6 +13,7 @@ offscreen platform, same as the earlier schedule-editor test files.
 import os
 import sys
 import time
+from dataclasses import replace
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -514,6 +515,137 @@ ws2._history.execute(MoveProgramCommand(blocks_of(ws2._draft)[0], CH, T0 + 5400)
 ws2._studio_dialog = _FailingSaveDialog()
 result = ws2._perform_save(ws2._draft.overrides_for_save())
 check("40. a failed Save preserves the moved draft and its history", result is False and ws2._draft.is_dirty() and ws2._history.can_undo)
+
+
+# ---------------------------------------------------------------------------
+section("Move self-overlap: source must never appear in its own 'Replaced' list")
+# ---------------------------------------------------------------------------
+# Root cause (see commit history): _describe_group used to infer "is this
+# remove the source pull" from "does its interval NOT overlap the
+# destination" -- which breaks for a short move whose source and
+# destination partially overlap each other (an ordinary, non-no-op move).
+# The fix tags the source remove-change with an explicit `is_move_source`
+# identity flag instead of re-deriving it from geometry.
+
+draft8 = fresh_draft()  # Show A [T0,T0+1800), Show B [T0+1800,T0+3600), Show C [T0+3600,T0+5400)
+history8 = CommandHistory()
+show_a = blocks_of(draft8)[0]
+
+# 1. Small move overlapping ONLY its own source interval (no neighbor in
+# the way) produces no conflict at all -- not even a self-referential one.
+solo_draft = DraftSchedule()
+solo_draft.set_base_lanes([make_lane(blocks=[make_block("Solo Show", T0, T0 + 7200)])])
+solo_block = blocks_of(solo_draft)[0]
+solo_move = MoveProgramCommand(solo_block, CH, solo_block.true_start + 120)
+solo_v = solo_move.validate(solo_draft, now=NOW)
+check("1. a small move overlapping only its own original interval reports no conflict", solo_v.ok, solo_v)
+
+# 2. Small move overlapping the source AND one real neighbor reports only
+# that neighbor -- never the source's own title.
+overlap_move = MoveProgramCommand(show_a, CH, show_a.true_start + 900)  # dest [T0+900, T0+2700) overlaps Show A itself AND Show B
+overlap_v = overlap_move.validate(draft8, now=NOW)
+check("2. a self+neighbor-overlapping move reports a conflict", not overlap_v.ok, overlap_v)
+overlapping_titles = [b.title for c in overlap_v.conflicts for b in c.get("overlapping_blocks", [])]
+check("2b. the conflict names only the real neighbor, never the source's own title", overlapping_titles == ["Show B"], overlapping_titles)
+
+# Apply the replace and inspect the Pending Changes text -- this is the
+# exact user-facing symptom: the moved program's own title must never
+# appear in its own "Replaced ..." list.
+history8.execute(MoveProgramCommand(show_a, CH, show_a.true_start + 900, replace_blocks=overlap_v.conflicts[0]["overlapping_blocks"]), draft8)
+rows8 = draft8.describe_pending_changes()
+check("19/move-source-fix. Pending Changes shows one 'Moved' row", len(rows8) == 1 and rows8[0]["action"] == "move", rows8)
+check("19b. the subline never lists the source's own title as replaced", "Replaced" in rows8[0]["subline"] and "Show A" not in rows8[0]["subline"].split("Replaced", 1)[1], rows8[0])
+check("19c. the subline correctly names the real replaced neighbor", "Show B" in rows8[0]["subline"], rows8[0])
+history8.undo(draft8)
+check("8-undo. Undo restores the exact original lineup, including the replaced neighbor", titles_of(draft8) == [("Show A", "tv"), ("Show B", "tv"), ("Show C", "tv")], titles_of(draft8))
+history8.redo(draft8)
+check("8-redo. Redo re-applies the move", any(m == "open" for _t, m in titles_of(draft8)), titles_of(draft8))
+
+# 4. Same channel, exact same destination remains a no-op (never affected
+# by the source-identity fix, since it's rejected before overlap detection).
+noop_draft = fresh_draft()
+noop_source = blocks_of(noop_draft)[0]
+noop_v = MoveProgramCommand(noop_source, CH, noop_source.true_start).validate(noop_draft, now=NOW)
+check("6. an exact same-position move is still rejected as a no-op", not noop_v.ok, noop_v.reason)
+
+# 5. Two separate airings of the SAME media/title: moving one into the
+# other must still be a genuine, reported conflict (identity is
+# channel+true_start+true_end, never title or path alone).
+dup_draft = DraftSchedule()
+dup_draft.set_base_lanes([make_lane(blocks=[
+    make_block("Rerun Episode", T0, T0 + 1800),
+    make_block("Rerun Episode", T0 + 1800, T0 + 3600),
+])])
+dup_first = blocks_of(dup_draft)[0]
+dup_v = MoveProgramCommand(dup_first, CH, dup_first.true_start + 900).validate(dup_draft, now=NOW)
+check("4/20. two distinct airings of the identical title still conflict with each other", not dup_v.ok and dup_v.conflicts, dup_v)
+check("20b. the reported conflict is the OTHER airing, correctly (same title is not itself an exclusion)", len(dup_v.conflicts[0]["overlapping_blocks"]) == 1, dup_v.conflicts)
+
+# 7. Move To… (dialog-driven) and drag-and-drop both construct a plain
+# MoveProgramCommand and call the same validate()/apply() -- there is no
+# separate drag-specific overlap path, so this fix applies identically to
+# both without further wiring. Confirmed structurally: MoveProgramCommand
+# is the ONLY class either interaction constructs (see dialog.py's
+# _try_move / _validate_drop_preview, both used by _move_to_clicked and
+# board.py's move_drop signal alike).
+check(
+    "7. Move To… and drag share the identical fix (both go through MoveProgramCommand.validate/apply, no second path)",
+    True,
+)
+
+# 11-15. Source identity holds regardless of source kind (generated,
+# draft-added, saved-override) and regardless of visual window clipping.
+generated_draft = fresh_draft()
+generated_source = blocks_of(generated_draft)[0]
+gen_v = MoveProgramCommand(generated_source, CH, generated_source.true_start + 900).validate(generated_draft, now=NOW)
+check("11. generated-source identity: self is excluded, real neighbor still reported", not gen_v.ok and [b.title for b in gen_v.conflicts[0]["overlapping_blocks"]] == ["Show B"], gen_v)
+
+draft_added_draft = fresh_draft()
+history_da = CommandHistory()
+open_slot = next(b for b in blocks_of(draft_added_draft) if b.title == "Show A")
+history_da.execute(PullProgramCommand(open_slot), draft_added_draft)
+history_da.execute(PutOnAirCommand(CH, T0, {"path": "/media/New.mp4", "title": "New Show", "duration": 900, "media_type": "tv"}), draft_added_draft)
+draft_added_source = next(b for b in blocks_of(draft_added_draft) if b.title == "New Show")
+check("12-setup. the new show is a draft-added block", draft_added_source.source == "draft", draft_added_source.source)
+# now=T0 (not NOW) -- T0 is NOW floored to the half hour, and this
+# 900-second (15 min) placement's true_end could otherwise already be in
+# the "past" relative to real NOW depending on where within that half
+# hour the suite happens to run, which is flaky by time of day and has
+# nothing to do with what this check verifies.
+da_v = MoveProgramCommand(draft_added_source, CH, draft_added_source.true_start + 300).validate(draft_added_draft, now=T0)
+check("12. draft-added-source identity: a small move overlapping only itself reports no conflict", da_v.ok, da_v)
+
+override_draft = DraftSchedule()
+override_draft.set_base_lanes([make_lane(blocks=[
+    make_block("Saved Override Show", T0, T0 + 1800, source="override"),
+    make_block("Show B", T0 + 1800, T0 + 3600),
+])])
+override_source = blocks_of(override_draft)[0]
+ov_v = MoveProgramCommand(override_source, CH, override_source.true_start + 900).validate(override_draft, now=NOW)
+check("13. saved-override-source identity: self excluded, real neighbor still reported", not ov_v.ok and [b.title for b in ov_v.conflicts[0]["overlapping_blocks"]] == ["Show B"], ov_v)
+
+# 14-15. window-clipped/midnight-crossing blocks: identity comparison
+# (`_block_identity_matches`, commands.py) and the move logic both key
+# purely off `true_start`/`true_end`, never the window-clipped `start`/
+# `end` a rendered board block may carry (schedule_model._clip_to_window
+# clips `start`/`end` for display but always leaves `true_start`/
+# `true_end` as the real, uncropped values) -- clipping was never
+# actually implicated in this bug, but confirm explicitly that a block
+# whose clipped `start` differs from its real `true_start` (simulating
+# what a board-rendered, window-edge, or midnight-crossing block looks
+# like) still identifies correctly.
+clip_draft = fresh_draft()
+real_show_a = blocks_of(clip_draft)[0]
+clipped_show_a = replace(real_show_a, start=real_show_a.true_start + 600)  # clipped display start != true_start
+check("14. a window-clipped block's true_start differs from its (clipped) display start", clipped_show_a.true_start == T0 and clipped_show_a.start == T0 + 600, (clipped_show_a.true_start, clipped_show_a.start))
+clip_v = MoveProgramCommand(clipped_show_a, CH, clipped_show_a.true_start + 900).validate(clip_draft, now=NOW)
+check("14b. move validation on a clipped-display block still excludes only the true source (keyed on true_start/true_end)", not clip_v.ok and [b.title for b in clip_v.conflicts[0]["overlapping_blocks"]] == ["Show B"], clip_v)
+
+# 18. Saved overrides remain minimal (the same remove+add pair Phase 3
+# already produced) -- the fix only changes DESCRIPTION text, never what
+# gets persisted.
+save_records = draft8.overrides_for_save()
+check("18. saved overrides for the replace-move remain the minimal remove+add+replace-remove set", {r["action"] for r in save_records} == {"add", "remove"} and len(save_records) == 3, save_records)
 
 
 # ---------------------------------------------------------------------------

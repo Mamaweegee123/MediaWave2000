@@ -548,7 +548,7 @@ check(
 
 
 # ---------------------------------------------------------------------------
-section("Editing Tools: six real actions in two tiers, calm locked state")
+section("Editing Tools: seven curated actions in two tiers, calm locked state")
 # ---------------------------------------------------------------------------
 
 from PySide6.QtWidgets import QLabel, QPushButton
@@ -557,14 +557,14 @@ from mediawave.schedule_editor.utility_panels import build_editing_tools_card
 editing_tools_card, editing_tools_controls = build_editing_tools_card()
 editing_tools_buttons = editing_tools_card.findChildren(QPushButton)
 check(
-    "exactly the six real actions exist as buttons (no wall of deferred inert controls)",
+    "exactly the seven curated actions exist as buttons (Duplicate Here…/Copy to Another Day… removed)",
     sorted(b.text() for b in editing_tools_buttons) == [
-        "Copy to Another Day…", "Duplicate Here…", "Fill Open Time", "Move To…", "Pull", "Put On Air",
+        "Auto-Fill Block…", "Clear Day…", "Fill Open Time", "Move To…", "Programming Blocks…", "Pull", "Put On Air",
     ],
     [b.text() for b in editing_tools_buttons],
 )
 check(
-    "all six action buttons start disabled until a selection makes them meaningful",
+    "all seven action buttons start disabled until a selection makes them meaningful",
     all(b.isEnabled() is False for b in editing_tools_buttons),
     [(b.text(), b.isEnabled()) for b in editing_tools_buttons],
 )
